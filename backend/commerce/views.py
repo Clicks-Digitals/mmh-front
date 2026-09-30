@@ -156,12 +156,24 @@ class MyOrdersView(generics.ListAPIView):
 
 
 class OrderDetailView(generics.RetrieveAPIView):
+    """Order lookup for its owner, or a guest who supplies the order email."""
+
     permission_classes = [AllowAny]
     serializer_class = OrderSerializer
     lookup_field = "order_number"
 
     def get_queryset(self):
-        return Order.objects.prefetch_related("items")
+        qs = Order.objects.prefetch_related("items")
+        user = self.request.user
+        email = (self.request.query_params.get("email") or "").strip()
+        access = Q()
+        if getattr(user, "is_authenticated", False):
+            access |= Q(user=user)
+        if email:
+            access |= Q(email__iexact=email)
+        if not access:
+            return qs.none()
+        return qs.filter(access)
 
 
 # --- Admin serializers ---

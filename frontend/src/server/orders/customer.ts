@@ -11,13 +11,14 @@ type ApiOrder = {
   items: Array<{
     id: number;
     product_name: string;
+    variant_name?: string;
     quantity: number;
   }>;
 };
 
 type Paginated<T> = { results: T[] } | T[];
 
-export async function loadCustomerOrders(_userId: string, token?: string): Promise<CustomerOrderSummary[]> {
+export async function loadCustomerOrders(token?: string): Promise<CustomerOrderSummary[]> {
   if (!token) return [];
   try {
     const data = (await myOrders(token)) as Paginated<ApiOrder>;
@@ -29,15 +30,18 @@ export async function loadCustomerOrders(_userId: string, token?: string): Promi
       paymentStatus: order.payment_status,
       fulfillmentStatus: order.fulfillment_status,
       totalJod: order.total_jod,
-      items: order.items.map((item) => ({
-        id: String(item.id),
-        name: item.product_name,
-        nameAr: item.product_name,
-        quantity: item.quantity,
-        fulfillmentType: "CODE",
-        fields: [],
-        codes: [],
-      })),
+      items: order.items.map((item) => {
+        const name = item.variant_name ? `${item.product_name} · ${item.variant_name}` : item.product_name;
+        return {
+          id: String(item.id),
+          name,
+          nameAr: name,
+          quantity: item.quantity,
+          fulfillmentType: "CODE",
+          fields: [],
+          codes: [],
+        };
+      }),
     }));
   } catch {
     return [];

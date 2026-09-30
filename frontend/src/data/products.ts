@@ -1020,8 +1020,8 @@ const CATEGORY_GROUPS: Record<string, (product: Product) => boolean> = {
   steam: (product) => product.platform === "steam",
   xbox: (product) => product.platform === "xbox",
   nintendo: (product) => product.platform === "nintendo",
-  "mobile-games": (product) => ["pubg", "freefire", "mlbb", "roblox"].includes(product.platform),
-  "pc-games": (product) => ["steam", "valorant", "lol", "ea", "fortnite"].includes(product.platform),
+  "mobile-games": (product) => ["pubg", "freefire", "free-fire", "mlbb", "roblox"].includes(product.platform),
+  "pc-games": (product) => ["steam", "valorant", "lol", "riot", "ea", "fortnite"].includes(product.platform),
   "game-top-ups": (product) => product.fulfillmentType === "direct_topup",
   "gift-cards": (product) =>
     product.digitalOptions.kind === "gift_card" || product.digitalOptions.kind === "wallet",
@@ -1036,6 +1036,15 @@ const CATEGORY_GROUPS: Record<string, (product: Product) => boolean> = {
   "special-offers": (product) => Boolean(product.compareAtPriceJod),
   deals: (product) => Boolean(product.compareAtPriceJod),
 };
+
+/** Whether a navigation grouping (e.g. "playstation", "mobile-games") includes the product. */
+export function matchesCategoryGroup(slug: string, product: Product): boolean {
+  return CATEGORY_GROUPS[slug]?.(product) ?? false;
+}
+
+export function isCategoryGroup(slug: string): boolean {
+  return slug in CATEGORY_GROUPS;
+}
 
 export function getProductsByCategory(slug: string): Product[] {
   const group = CATEGORY_GROUPS[slug];

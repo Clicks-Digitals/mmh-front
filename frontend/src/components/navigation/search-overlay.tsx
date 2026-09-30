@@ -258,9 +258,13 @@ export function SearchOverlay() {
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-medium">{locale === "ar" ? product.nameAr : product.name}</p>
                           <p className="mt-0.5 text-xs text-muted">
-                            {locale === "ar" ? product.digitalOptions.platformLabelAr : product.digitalOptions.platformLabel}
-                            {` · ${locale === "ar" ? product.digitalOptions.regions[0]?.nameAr : product.digitalOptions.regions[0]?.name}`}
-                            {` · ${product.fulfillmentType === "direct_topup" ? t("common.topup") : t("common.instant")}`}
+                            {[
+                              locale === "ar" ? product.digitalOptions.platformLabelAr : product.digitalOptions.platformLabel,
+                              locale === "ar" ? product.digitalOptions.regions[0]?.nameAr : product.digitalOptions.regions[0]?.name,
+                              product.fulfillmentType === "direct_topup" ? t("common.topup") : t("common.instant"),
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
                           </p>
                         </div>
                         <Price amount={product.priceJod} locale={locale} size="sm" />

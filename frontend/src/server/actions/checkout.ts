@@ -1,7 +1,10 @@
 "use server";
 
+import { cookies } from "next/headers";
 import { z } from "zod";
+import { auth } from "@/auth";
 import { createOrder, validateCoupon } from "@/lib/api/orders";
+import { ORDER_ACCESS_COOKIE } from "@/server/orders/access";
 
 const checkoutSchema = z.object({
   email: z.string().email(),
@@ -44,24 +47,37 @@ export async function validateStorefrontCoupon(input: unknown) {
 
 export async function createStorefrontOrder(input: unknown) {
   const parsed = checkoutSchema.parse(input);
-  const order = await createOrder({
-    email: parsed.email,
-    full_name: parsed.fullName,
-    phone: parsed.phone,
-    notes: parsed.notes ?? "",
-    coupon_code: parsed.couponCode ?? "",
-    idempotency_key: parsed.idempotencyKey,
-    region_confirmed: true,
-    refund_confirmed: true,
-    items: parsed.items.map((item) => ({
-      product_id: item.productId,
-      denomination_id: item.variantId != null ? String(item.variantId) : "",
-      quantity: item.quantity,
-      fields: item.fields ?? {},
-    })),
+  const session = await auth();
+  const customerToken = session?.user?.kind === "CUSTOMER" ? session.user.accessToken : undefined;
+  const order = await createOrder(
+    {
+      email: parsed.email,
+      full_name: parsed.fullName,
+      phone: parsed.phone,
+      notes: parsed.notes ?? "",
+      coupon_code: parsed.couponCode ?? "",
+      idempotency_key: parsed.idempotencyKey,
+      region_confirmed: true,
+      refund_confirmed: true,
+      items: parsed.items.map((item) => ({
+        product_id: item.productId,
+        denomination_id: item.variantId != null ? String(item.variantId) : "",
+        quantity: item.quantity,
+        fields: item.fields ?? {},
+      })),
+    },
+    customerToken,
+  );
+  (await cookies()).set(ORDER_ACCESS_COOKIE, JSON.stringify({ number: order.order_number, email: parsed.email }), {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 60 * 60 * 24,
   });
   return {
     id: String(order.id),
     orderNumber: order.order_number,
+    paymentStatus: order.payment_status,
   };
 }

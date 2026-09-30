@@ -52,6 +52,9 @@ type ApiProduct = {
     name_en: string;
     name_ar: string;
     region_slug?: string | null;
+    region_name_en?: string | null;
+    region_name_ar?: string | null;
+    region_locked?: boolean | null;
   }>;
   fields?: Array<{
     key: string;
@@ -67,6 +70,7 @@ type ApiProduct = {
   }>;
   media?: Array<{ url: string; is_primary?: boolean; sort_order?: number }>;
   primary_image_url?: string;
+  created_at?: string;
 };
 
 type ApiCategory = {
@@ -78,6 +82,21 @@ type ApiCategory = {
   name_ar: string;
   description_en: string;
   description_ar: string;
+};
+
+const DEFAULT_FIELD_HELP: Record<string, { en: string; ar: string }> = {
+  playerId: {
+    en: "Open the game, tap your avatar or profile, and copy the numeric Player ID shown there.",
+    ar: "افتح اللعبة، اضغط على صورتك أو ملفك الشخصي، وانسخ معرّف اللاعب الرقمي الظاهر هناك.",
+  },
+  userId: {
+    en: "Open your in-game profile. The User ID is the number shown next to your avatar.",
+    ar: "افتح ملفك داخل اللعبة. معرّف المستخدم هو الرقم الظاهر بجانب صورتك.",
+  },
+  zoneId: {
+    en: "The Zone ID is the number in parentheses after your User ID on the profile screen.",
+    ar: "معرّف المنطقة هو الرقم بين القوسين بعد معرّف المستخدم في شاشة الملف الشخصي.",
+  },
 };
 
 function mapKind(kind: string): ProductKind {
@@ -94,15 +113,21 @@ export function mapApiProduct(row: ApiProduct): Product {
   for (const variant of variants) {
     const regionId = variant.region_slug || "global";
     if (!regionsMap.has(regionId)) {
+      const name = variant.region_name_en || (regionId === "global" ? "Global" : regionId.toUpperCase());
       regionsMap.set(regionId, {
         id: regionId,
-        name: regionId,
-        nameAr: regionId,
-        locked: regionId !== "global",
+        name,
+        nameAr: variant.region_name_ar || (regionId === "global" ? "عالمي" : name),
+        locked: variant.region_locked ?? regionId !== "global",
         currency: variant.package_currency,
       });
     }
   }
+  const firstVariant = variants[0];
+  const firstCompareAt =
+    firstVariant?.compare_at_price_jod != null && firstVariant.compare_at_price_jod > firstVariant.price_jod
+      ? firstVariant.compare_at_price_jod
+      : undefined;
   const fields: RequiredCustomerField[] = [...(row.fields ?? [])]
     .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
     .map((field) => ({
@@ -113,8 +138,8 @@ export function mapApiProduct(row: ApiProduct): Product {
       placeholderAr: field.placeholder_ar,
       type: (field.type.toLowerCase() as RequiredCustomerField["type"]) || "text",
       required: field.required,
-      helpText: field.help_text_en,
-      helpTextAr: field.help_text_ar,
+      helpText: field.help_text_en || DEFAULT_FIELD_HELP[field.key]?.en,
+      helpTextAr: field.help_text_ar || DEFAULT_FIELD_HELP[field.key]?.ar,
     }));
 
   const primaryMedia = [...(row.media ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
@@ -141,8 +166,8 @@ export function mapApiProduct(row: ApiProduct): Product {
     category: categorySlug,
     images: gallery.length ? gallery : [image],
     artworkKey: row.artwork_key,
-    priceJod: row.price_jod ?? variants[0]?.price_jod ?? 0,
-    compareAtPriceJod: variants[0]?.compare_at_price_jod ?? undefined,
+    priceJod: firstVariant?.price_jod ?? row.price_jod ?? 0,
+    compareAtPriceJod: firstCompareAt,
     rating: Number(row.rating) || 0,
     reviewCount: row.review_count || 0,
     badges: (row.badges || []) as ProductBadge[],
@@ -150,7 +175,7 @@ export function mapApiProduct(row: ApiProduct): Product {
     featured: row.featured,
     bestseller: row.bestseller,
     trending: row.trending,
-    createdAt: new Date().toISOString(),
+    createdAt: row.created_at ?? new Date(0).toISOString(),
     tags: row.tags || [],
     platform: row.platform_slug || platform?.slug || row.brand.toLowerCase(),
     digitalOptions: {

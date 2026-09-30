@@ -35,6 +35,7 @@ from catalog.serializers import (
     ProductDetailSerializer,
     ProductListSerializer,
     ProductWriteSerializer,
+    PublicProductSerializer,
     RegionSerializer,
     VariantSerializer,
     VariantWriteSerializer,
@@ -164,24 +165,32 @@ class RegionListView(generics.ListAPIView):
     pagination_class = None
 
 
-class ProductListView(generics.ListAPIView):
-    permission_classes = [AllowAny]
-    serializer_class = ProductListSerializer
-    filterset_class = ProductFilter
-    search_fields = ["name_en", "name_ar", "slug", "brand"]
-    ordering_fields = ["sort_order", "rating", "created_at", "name_en"]
-    queryset = Product.objects.filter(status=PublishStatus.PUBLISHED).select_related("category", "platform")
-
-
-class ProductDetailView(generics.RetrieveAPIView):
-    permission_classes = [AllowAny]
-    serializer_class = ProductDetailSerializer
-    lookup_field = "slug"
-    queryset = (
+def _public_product_queryset():
+    return (
         Product.objects.filter(status=PublishStatus.PUBLISHED)
         .select_related("category", "platform")
         .prefetch_related("variants__region", "fields", "media")
     )
+
+
+class ProductListView(generics.ListAPIView):
+    permission_classes = [AllowAny]
+    serializer_class = PublicProductSerializer
+    filterset_class = ProductFilter
+    search_fields = ["name_en", "name_ar", "slug", "brand"]
+    ordering_fields = ["sort_order", "rating", "created_at", "name_en"]
+
+    def get_queryset(self):
+        return _public_product_queryset()
+
+
+class ProductDetailView(generics.RetrieveAPIView):
+    permission_classes = [AllowAny]
+    serializer_class = PublicProductSerializer
+    lookup_field = "slug"
+
+    def get_queryset(self):
+        return _public_product_queryset()
 
 
 class AdminCategoryViewSet(ProtectedDestroyMixin, viewsets.ModelViewSet):

@@ -179,6 +179,7 @@ class AdminQaTests(TestCase):
         with self.assertRaises(CheckoutError):
             validate_coupon("MAXED", 10)
 
+    @override_settings(ALLOW_DEMO_AUTO_PAYMENT=True)
     def test_checkout_increments_coupon_usage_and_marks_paid(self):
         coupon = Coupon.objects.create(code="OK10", active=True, percent_off="10.00", max_uses=5, used_count=0)
         order = create_storefront_order(

@@ -6,5 +6,5 @@ export const metadata = { title: "Top-up orders" };
 
 export default async function TopUpsPage() {
   const user = await requireCustomer("/account/top-ups");
-  return <CustomerOrders orders={await loadCustomerOrders(user.id)} mode="topups" />;
+  return <CustomerOrders orders={await loadCustomerOrders(user.accessToken)} mode="topups" />;
 }
