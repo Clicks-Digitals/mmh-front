@@ -29,6 +29,9 @@ PAYMENT_TRANSITIONS: dict[str, set[str]] = {
         PaymentStatus.REFUNDED,
         PaymentStatus.PARTIALLY_REFUNDED,
     },
+    PaymentStatus.PARTIALLY_REFUNDED: {
+        PaymentStatus.REFUNDED,
+    },
 }
 
 FULFILLMENT_TRANSITIONS: dict[str, set[str]] = {

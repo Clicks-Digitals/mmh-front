@@ -11,7 +11,16 @@ export function validateCoupon(code: string, subtotalJod = 0) {
 }
 
 export function createOrder(payload: Record<string, unknown>) {
-  return apiFetch<{ id: number; order_number: string; total_jod: number }>("/checkout/orders/", {
+  return apiFetch<{
+    id: number;
+    order_number: string;
+    total_jod: number;
+    payment_status?: string;
+    payment_provider?: string;
+    checkout_token?: string;
+    paypal_amount?: string;
+    paypal_currency?: string;
+  }>("/checkout/orders/", {
     method: "POST",
     body: JSON.stringify(payload),
   });

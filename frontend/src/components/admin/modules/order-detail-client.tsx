@@ -30,12 +30,13 @@ const FULFILLMENT_NEXT: Record<string, string[]> = {
 export function OrderDetailClient({ id }: { id: string }) {
   const toast = useAdminToast();
   const [pending, setPending] = useState(false);
+  const [partialJod, setPartialJod] = useState("");
   const { data: order, setData: setOrder, loading, error, reload, token } = useAdminQuery(
     (tok) => getOrder(tok, id),
     [id],
   );
 
-  async function doTransition(body: { payment_status?: string; fulfillment_status?: string }) {
+  async function doTransition(body: { payment_status?: string; fulfillment_status?: string; refund_amount_fils?: number }) {
     if (!token || !order) return;
     setPending(true);
     try {
@@ -115,6 +116,17 @@ export function OrderDetailClient({ id }: { id: string }) {
                     <div>
                       <p className="font-medium">{p.provider}</p>
                       <p className="text-xs text-[var(--clicks-muted)]">{p.external_ref || "—"}</p>
+                      {p.provider_order_id ? (
+                        <p className="text-xs text-[var(--clicks-muted)]">Order {p.provider_order_id}</p>
+                      ) : null}
+                      {p.provider_capture_id ? (
+                        <p className="text-xs text-[var(--clicks-muted)]">Capture {p.provider_capture_id}</p>
+                      ) : null}
+                      {p.provider_amount ? (
+                        <p className="text-xs text-[var(--clicks-muted)]">
+                          Charged {p.provider_amount} {p.currency || ""}
+                        </p>
+                      ) : null}
                     </div>
                     <div className="text-end">
                       <p className="tabular-nums">{formatFils(p.amount_fils)} JOD</p>
@@ -158,6 +170,17 @@ export function OrderDetailClient({ id }: { id: string }) {
 
           <div className="admin-card p-4">
             <p className="text-sm font-semibold text-[var(--clicks-navy)]">Payment transitions</p>
+            {order.payments?.some((payment) => payment.provider === "paypal" && payment.status === "PAID") ? (
+              <label className="mt-3 block text-xs text-[var(--clicks-muted)]">
+                Partial refund (JOD)
+                <input
+                  value={partialJod}
+                  onChange={(event) => setPartialJod(event.target.value)}
+                  inputMode="decimal"
+                  className="mt-1 h-9 w-full rounded-md border border-[var(--clicks-border)] px-2 text-sm"
+                />
+              </label>
+            ) : null}
             <div className="mt-3 flex flex-wrap gap-2">
               {paymentOptions.length ? (
                 paymentOptions.map((status) => (
@@ -165,10 +188,26 @@ export function OrderDetailClient({ id }: { id: string }) {
                     key={status}
                     type="button"
                     disabled={pending}
-                    onClick={() => void doTransition({ payment_status: status })}
+                    onClick={() => {
+                      const paypalPaid = order.payments?.some(
+                        (payment) => payment.provider === "paypal" && (payment.status === "PAID" || payment.status === "PARTIALLY_REFUNDED"),
+                      );
+                      if (status === "PARTIALLY_REFUNDED" && paypalPaid) {
+                        const fils = Math.round(Number(partialJod) * 1000);
+                        if (!Number.isFinite(fils) || fils <= 0) {
+                          toast.push("Enter a partial refund amount in JOD", "error");
+                          return;
+                        }
+                        void doTransition({ payment_status: status, refund_amount_fils: fils });
+                        return;
+                      }
+                      void doTransition({ payment_status: status });
+                    }}
                     className="admin-btn admin-btn-secondary h-8 text-xs disabled:opacity-60"
                   >
-                    → {status.replaceAll("_", " ")}
+                    → {status === "REFUNDED" && order.payments?.some((payment) => payment.provider === "paypal")
+                      ? "Refund PayPal"
+                      : status.replaceAll("_", " ")}
                   </button>
                 ))
               ) : (

@@ -136,10 +136,48 @@ class Payment(models.Model):
     provider = models.CharField(max_length=64, default="placeholder")
     status = models.CharField(max_length=32, choices=PaymentStatus.choices, default=PaymentStatus.PENDING)
     amount_fils = models.IntegerField()
+    currency = models.CharField(max_length=8, default="JOD")
+    provider_amount = models.CharField(max_length=32, blank=True)
+    provider_order_id = models.CharField(max_length=64, null=True, blank=True)
+    provider_capture_id = models.CharField(max_length=64, null=True, blank=True)
     external_ref = models.CharField(max_length=255, blank=True, db_index=True)
+    checkout_token = models.CharField(max_length=64, blank=True)
     raw = models.JSONField(default=dict, blank=True)
+    raw_create_response = models.JSONField(null=True, blank=True)
+    raw_capture_response = models.JSONField(null=True, blank=True)
+    raw_refund_response = models.JSONField(null=True, blank=True)
+    refunds = models.JSONField(default=list, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider_order_id"],
+                condition=models.Q(provider_order_id__isnull=False),
+                name="uniq_paypal_order_id",
+            ),
+            models.UniqueConstraint(
+                fields=["provider_capture_id"],
+                condition=models.Q(provider_capture_id__isnull=False),
+                name="uniq_paypal_capture_id",
+            ),
+        ]
+
+
+class PayPalWebhookEvent(models.Model):
+    """Processed PayPal webhook ids. Replays of the same event are ignored."""
+
+    event_id = models.CharField(max_length=64, unique=True)
+    event_type = models.CharField(max_length=128)
+    processed = models.BooleanField(default=False)
+    summary = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
 
 
 class CodeImportBatch(models.Model):

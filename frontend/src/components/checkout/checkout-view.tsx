@@ -1,5 +1,6 @@
 "use client";
 
+import { PayPalCheckout } from "@/components/checkout/paypal-checkout";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { Price } from "@/components/ui/price";
@@ -7,18 +8,25 @@ import { useCart } from "@/context/cart-context";
 import { useLanguage } from "@/context/language-context";
 import { linePrice, maskAccountValue } from "@/lib/cart";
 import { getProductById } from "@/data/products";
+import { ApiError } from "@/lib/api/client";
+import { createPayPalOrder } from "@/lib/api/paypal";
 import { isValidDemoPhone, isValidEmail } from "@/lib/validation";
 import { STORAGE_KEYS, writeJson } from "@/lib/storage";
 import type { CheckoutDraft } from "@/types";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
-import { choiceClass } from "@/components/ui/control";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+
+function errorCode(error: ApiError) {
+  if (!error.body || typeof error.body !== "object") return "";
+  const code = (error.body as { code?: unknown }).code;
+  return typeof code === "string" ? code : "";
+}
 
 const empty: CheckoutDraft = {
   customer: { fullName: "", email: "", phone: "" },
   digital: { method: "account", contact: "" },
-  payment: { method: "placeholder" },
+  payment: { method: "paypal" },
   notes: "",
   regionConfirmed: false,
   refundConfirmed: false,
@@ -31,9 +39,27 @@ export function CheckoutView() {
   const [step, setStep] = useState(1);
   const [draft, setDraft] = useState<CheckoutDraft>(empty);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [placing, setPlacing] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const [placeError, setPlaceError] = useState("");
+  const [prepared, setPrepared] = useState<{
+    id: string;
+    orderNumber: string;
+    checkoutToken: string;
+    paypalAmount: string;
+    paypalCurrency: string;
+  } | null>(null);
   const total = subtotal - discount;
+  const idempotencyKey = useMemo(
+    () =>
+      items
+        .map((item) => `${item.lineId}:${item.quantity}:${item.digital?.denominationId ?? ""}`)
+        .join("|") + `:${draft.customer.email}:paypal`,
+    [items, draft.customer.email],
+  );
+
+  useEffect(() => {
+    setPrepared(null);
+  }, [idempotencyKey]);
 
   const patch = (next: Partial<CheckoutDraft>) => setDraft((current) => ({ ...current, ...next }));
 
@@ -53,6 +79,61 @@ export function CheckoutView() {
   };
 
   const steps = useMemo(() => [t("checkout.step1"), t("checkout.step2"), t("checkout.step3"), t("checkout.step4")], [t]);
+
+  const finish = (orderId: string, orderNumber: string) => {
+    writeJson(STORAGE_KEYS.checkout, { draft, items, total, createdAt: new Date().toISOString(), orderId });
+    clear();
+    router.push(`/order-success?ref=${encodeURIComponent(orderId)}&number=${encodeURIComponent(orderNumber)}`);
+  };
+
+  const prepareOrder = async () => {
+    setPreparing(true);
+    setPlaceError("");
+    try {
+      const { createStorefrontOrder } = await import("@/server/actions/checkout");
+      const result = await createStorefrontOrder({
+        email: draft.customer.email,
+        fullName: draft.customer.fullName,
+        phone: draft.customer.phone,
+        notes: draft.notes,
+        idempotencyKey,
+        couponCode: promoCode || undefined,
+        paymentProvider: "paypal",
+        items: items.map((item) => ({
+          productId: item.productId,
+          variantId: item.digital?.denominationId || getProductById(item.productId)?.digitalOptions.denominations[0]?.id || item.productId,
+          quantity: item.quantity,
+          fields: item.digital?.customerFields,
+        })),
+      });
+      if (!result.ok) {
+        setPlaceError(result.message);
+        patch({ regionConfirmed: false, refundConfirmed: false });
+        return;
+      }
+      if (result.paymentStatus === "PAID") {
+        finish(result.id, result.orderNumber);
+        return;
+      }
+      if (!result.checkoutToken || !result.paypalAmount || !result.paypalCurrency) {
+        setPlaceError(t("checkout.paypalUnavailable"));
+        patch({ regionConfirmed: false, refundConfirmed: false });
+        return;
+      }
+      setPrepared({
+        id: result.id,
+        orderNumber: result.orderNumber,
+        checkoutToken: result.checkoutToken,
+        paypalAmount: result.paypalAmount,
+        paypalCurrency: result.paypalCurrency,
+      });
+    } catch (error) {
+      setPlaceError(error instanceof Error ? error.message : t("checkout.paypalUnavailable"));
+      patch({ regionConfirmed: false, refundConfirmed: false });
+    } finally {
+      setPreparing(false);
+    }
+  };
 
   if (!hydrated) return <div className="container-mmh py-16">{t("common.loading")}</div>;
   if (items.length === 0) {
@@ -126,10 +207,7 @@ export function CheckoutView() {
         {step === 3 ? (
           <div className="mt-8 space-y-3">
             <p className="text-sm text-muted">{t("checkout.payNote")}</p>
-            <div
-              role="status"
-              className={choiceClass(true, "flex min-h-12 w-full items-center px-4 text-start")}
-            >
+            <div className="flex min-h-12 w-full items-center rounded-xl border border-line bg-card px-4 text-start font-medium">
               {t("checkout.payCard")}
             </div>
           </div>
@@ -139,18 +217,60 @@ export function CheckoutView() {
           <div className="mt-8 space-y-3 text-sm">
             <p className="break-words"><strong>{draft.customer.fullName}</strong> · {draft.customer.email} · {draft.customer.phone}</p>
             <p className="rounded-xl border border-line bg-card p-3 text-muted">{t("checkout.payNote")}</p>
+            {prepared ? (
+              <p className="rounded-xl border border-line bg-card p-3 text-sm">
+                <span className="text-muted">{t("checkout.paypalCharge")}</span>
+                <span className="ms-2 font-semibold">
+                  {prepared.paypalAmount} {prepared.paypalCurrency}
+                </span>
+              </p>
+            ) : null}
             <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-card p-4 leading-5 text-muted">
               <input
                 type="checkbox"
                 className="mt-0.5 h-4 w-4 shrink-0 accent-[#F7C037]"
                 checked={draft.regionConfirmed && draft.refundConfirmed}
-                onChange={(event) =>
-                  patch({ regionConfirmed: event.target.checked, refundConfirmed: event.target.checked })
-                }
+                disabled={preparing}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  patch({ regionConfirmed: checked, refundConfirmed: checked });
+                  if (!checked) {
+                    setPrepared(null);
+                    return;
+                  }
+                  void prepareOrder();
+                }}
               />
               <span>{t("product.confirmCombined")}</span>
             </label>
             {errors.confirm || errors.refund ? <p className="text-xs text-danger">{t("checkout.required")}</p> : null}
+            {preparing ? <p className="text-sm text-muted">{t("checkout.paypalPreparing")}</p> : null}
+            {prepared ? (
+              <PayPalCheckout
+                currencyCode={prepared.paypalCurrency}
+                createOrder={async () => {
+                  try {
+                    const created = await createPayPalOrder(prepared.orderNumber, prepared.checkoutToken);
+                    if (!created.paypal_order_id) throw new Error(t("checkout.paypalUnavailable"));
+                    return { orderId: created.paypal_order_id };
+                  } catch (error) {
+                    if (error instanceof ApiError && errorCode(error) === "already_paid") {
+                      finish(prepared.id, prepared.orderNumber);
+                      throw new Error("ALREADY_PAID");
+                    }
+                    throw error;
+                  }
+                }}
+                onPaid={() => finish(prepared.id, prepared.orderNumber)}
+                onCancel={() => setPlaceError(t("checkout.paypalCancel"))}
+                onError={(message) => setPlaceError(message)}
+              />
+            ) : null}
+            {draft.regionConfirmed && !prepared && !preparing ? (
+              <Button variant="secondary" onClick={() => void prepareOrder()}>
+                {t("checkout.payCard")}
+              </Button>
+            ) : null}
           </div>
         ) : null}
 
@@ -162,49 +282,8 @@ export function CheckoutView() {
           ) : null}
           {step < 4 ? (
             <Button className="w-full sm:w-auto" onClick={() => validate(step) && setStep((value) => value + 1)}>{t("common.continue")}</Button>
-          ) : (
-            <>
-            <Button
-              className="w-full sm:w-auto"
-              disabled={placing}
-              onClick={async () => {
-                if (!validate(4)) return;
-                setPlacing(true);
-                setPlaceError("");
-                const payload = {
-                  email: draft.customer.email,
-                  fullName: draft.customer.fullName,
-                  phone: draft.customer.phone,
-                  notes: draft.notes,
-                  idempotencyKey: items.map((item) => item.lineId).join(":") + draft.customer.email,
-                  couponCode: promoCode || undefined,
-                  items: items.map((item) => ({
-                    productId: item.productId,
-                    variantId: item.digital?.denominationId || getProductById(item.productId)?.digitalOptions.denominations[0]?.id || item.productId,
-                    quantity: item.quantity,
-                    fields: item.digital?.customerFields,
-                  })),
-                };
-                const finish = (orderId: string, orderNumber: string) => {
-                  writeJson(STORAGE_KEYS.checkout, { draft, items, total, createdAt: new Date().toISOString(), orderId });
-                  clear();
-                  router.push(`/order-success?ref=${encodeURIComponent(orderId)}&number=${encodeURIComponent(orderNumber)}`);
-                };
-                try {
-                  const { createStorefrontOrder } = await import("@/server/actions/checkout");
-                  const result = await createStorefrontOrder(payload);
-                  finish(result.id, result.orderNumber);
-                } catch {
-                  setPlaceError(locale === "ar" ? "تعذر إنشاء الطلب. لم يتم خصم أي مبلغ. راجع بياناتك وحاول مرة أخرى." : "We could not create the order. Nothing was charged. Review your details and try again.");
-                  setPlacing(false);
-                }
-              }}
-            >
-              {placing ? t("common.loading") : t("checkout.place")}
-            </Button>
-            {placeError ? <p className="text-sm text-error">{placeError}</p> : null}
-            </>
-          )}
+          ) : null}
+          {placeError ? <p className="text-sm text-danger">{placeError}</p> : null}
         </div>
       </div>
       <aside className="order-first h-fit rounded-[14px] border border-line bg-elevated p-5 lg:order-none">

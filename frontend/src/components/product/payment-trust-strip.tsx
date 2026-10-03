@@ -2,7 +2,7 @@
 
 import { useLanguage } from "@/context/language-context";
 
-const METHODS = ["Visa", "Mastercard", "Apple Pay", "CliQ", "Cash"] as const;
+const METHODS = ["PayPal"] as const;
 
 export function PaymentTrustStrip() {
   const { t } = useLanguage();

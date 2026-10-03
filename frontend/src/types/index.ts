@@ -247,7 +247,7 @@ export interface CheckoutDigital {
 }
 
 export interface CheckoutPayment {
-  method: "card" | "cliq" | "placeholder";
+  method: "card" | "cliq" | "placeholder" | "paypal";
 }
 
 export interface CheckoutDraft {

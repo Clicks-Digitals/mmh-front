@@ -14,9 +14,9 @@ export const FAQ_ITEMS: FaqItem[] = [
     question: "How fast are digital cards delivered?",
     questionAr: "ما سرعة تسليم البطاقات الرقمية؟",
     answer:
-      "No live delivery promise is currently offered. Checkout creates a pending order; code delivery remains locked until a payment method and fulfillment provider are connected and verified.",
+      "Payment is taken with PayPal and the order is marked paid only after our server confirms the capture. Digital delivery starts after that confirmation and appears when fulfillment is completed.",
     answerAr:
-      "لا يوجد حالياً وعد بتسليم حي. ينشئ إتمام الطلب سجلاً معلّقاً، ويبقى تسليم الكود مقفلاً حتى ربط وسيلة دفع ومزوّد تنفيذ والتحقق منهما.",
+      "يتم الدفع عبر PayPal، ولا يُعلَّم الطلب مدفوعاً إلا بعد أن يؤكد خادمنا عملية القبض. يبدأ التسليم الرقمي بعد ذلك ويظهر عند اكتمال التنفيذ.",
   },
   {
     id: "region",

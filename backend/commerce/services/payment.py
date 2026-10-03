@@ -16,10 +16,11 @@ logger = logging.getLogger("commerce")
 
 
 class PaymentError(Exception):
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400, code: str = "payment_error"):
         super().__init__(message)
         self.message = message
         self.status = status
+        self.code = code
 
 
 def create_pending_payment(*, order: Order, provider: str = "pending") -> Payment:
@@ -70,11 +71,12 @@ def mark_payment_verified(
     payment.status = PaymentStatus.PAID
     if external_ref:
         payment.external_ref = external_ref
-    safe_meta = {"verified_at": timezone.now().isoformat()}
+    payment.paid_at = timezone.now()
+    safe_meta = {"verified_at": payment.paid_at.isoformat()}
     if provider_payload:
         safe_meta["provider_keys"] = sorted(str(k) for k in provider_payload.keys())[:40]
     payment.raw = {**(payment.raw or {}), **safe_meta}
-    payment.save(update_fields=["status", "external_ref", "raw", "updated_at"])
+    payment.save(update_fields=["status", "external_ref", "raw", "paid_at", "updated_at"])
 
     was_unpaid = order.payment_status != PaymentStatus.PAID
     if was_unpaid:

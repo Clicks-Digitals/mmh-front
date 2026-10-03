@@ -9,6 +9,7 @@ type ApiOrder = {
   total_jod: number;
   currency: string;
   payment_status: string;
+  payment_provider?: string;
   fulfillment_status: string;
   items: Array<{
     id: number;
@@ -35,7 +36,7 @@ export default async function OrderSuccessPage({
         currency: order.currency,
         paymentStatus: order.payment_status,
         fulfillmentStatus: order.fulfillment_status,
-        paymentMethod: "placeholder",
+        paymentMethod: order.payment_provider || "paypal",
         items: order.items.map((item) => ({
           id: String(item.id),
           name: item.product_name,

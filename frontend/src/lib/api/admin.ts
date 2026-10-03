@@ -401,6 +401,9 @@ export type Payment = {
   status: string;
   amount_fils: number;
   currency?: string;
+  provider_amount?: string;
+  provider_order_id?: string | null;
+  provider_capture_id?: string | null;
   external_ref?: string | null;
   external_id?: string | null;
   created_at: string;
@@ -843,7 +846,7 @@ export function getOrder(token: string, id: string) {
 export function transitionOrder(
   token: string,
   id: number | string,
-  body: { payment_status?: string; fulfillment_status?: string },
+  body: { payment_status?: string; fulfillment_status?: string; refund_amount_fils?: number },
 ) {
   return adminFetch<AdminOrder>(`/admin/orders/${encodeURIComponent(String(id))}/transition/`, {
     token,

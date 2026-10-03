@@ -71,4 +71,17 @@ def check_production_launch_guards(app_configs, **kwargs):
             )
         )
 
+    if (
+        getattr(settings, "PAYPAL_CLIENT_ID", "")
+        and getattr(settings, "PAYPAL_CURRENCY", "JOD") != "JOD"
+        and not getattr(settings, "PAYPAL_FX_RATE", "")
+    ):
+        warnings.append(
+            Warning(
+                "PAYPAL_FX_RATE must be set when PAYPAL_CURRENCY is not JOD. "
+                "PayPal charges are converted from the JOD order total on the server.",
+                id="config.W002",
+            )
+        )
+
     return errors + warnings

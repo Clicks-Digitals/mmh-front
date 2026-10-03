@@ -1,6 +1,7 @@
 "use server";
 
 import { z } from "zod";
+import { ApiError } from "@/lib/api/client";
 import { createOrder, validateCoupon } from "@/lib/api/orders";
 
 const checkoutSchema = z.object({
@@ -10,6 +11,7 @@ const checkoutSchema = z.object({
   notes: z.string().max(1000).optional(),
   idempotencyKey: z.string().min(8).max(200),
   couponCode: z.string().trim().max(64).optional(),
+  paymentProvider: z.literal("paypal").optional(),
   items: z
     .array(
       z.object({
@@ -43,25 +45,39 @@ export async function validateStorefrontCoupon(input: unknown) {
 }
 
 export async function createStorefrontOrder(input: unknown) {
-  const parsed = checkoutSchema.parse(input);
-  const order = await createOrder({
-    email: parsed.email,
-    full_name: parsed.fullName,
-    phone: parsed.phone,
-    notes: parsed.notes ?? "",
-    coupon_code: parsed.couponCode ?? "",
-    idempotency_key: parsed.idempotencyKey,
-    region_confirmed: true,
-    refund_confirmed: true,
-    items: parsed.items.map((item) => ({
-      product_id: item.productId,
-      denomination_id: item.variantId != null ? String(item.variantId) : "",
-      quantity: item.quantity,
-      fields: item.fields ?? {},
-    })),
-  });
-  return {
-    id: String(order.id),
-    orderNumber: order.order_number,
-  };
+  const parsed = checkoutSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false as const, message: "Check the checkout details and try again." };
+  }
+  try {
+    const order = await createOrder({
+      email: parsed.data.email,
+      full_name: parsed.data.fullName,
+      phone: parsed.data.phone,
+      notes: parsed.data.notes ?? "",
+      coupon_code: parsed.data.couponCode ?? "",
+      idempotency_key: parsed.data.idempotencyKey,
+      region_confirmed: true,
+      refund_confirmed: true,
+      payment_provider: parsed.data.paymentProvider ?? "",
+      items: parsed.data.items.map((item) => ({
+        product_id: item.productId,
+        denomination_id: item.variantId != null ? String(item.variantId) : "",
+        quantity: item.quantity,
+        fields: item.fields ?? {},
+      })),
+    });
+    return {
+      ok: true as const,
+      id: String(order.id),
+      orderNumber: order.order_number,
+      paymentStatus: order.payment_status ?? "",
+      checkoutToken: order.checkout_token ?? "",
+      paypalAmount: order.paypal_amount ?? "",
+      paypalCurrency: order.paypal_currency ?? "",
+    };
+  } catch (error) {
+    if (error instanceof ApiError) return { ok: false as const, message: error.message };
+    return { ok: false as const, message: "We could not start checkout. Nothing was charged." };
+  }
 }

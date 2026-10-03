@@ -230,6 +230,20 @@ ONEEPIN_RECONCILE_TOKEN = os.getenv("ONEEPIN_RECONCILE_TOKEN", "")
 ONEEPIN_ALLOW_LIVE = _env_bool("ONEEPIN_ALLOW_LIVE", default=False)
 ONEEPIN_REQUEST_TIMEOUT_MS = int(os.getenv("ONEEPIN_REQUEST_TIMEOUT_MS", "15000"))
 
+# PayPal Orders v2. The client secret stays on the server.
+# Orders are priced in JOD (fils). PAYPAL_CURRENCY is the business-account
+# settlement currency. When it differs from JOD, PAYPAL_FX_RATE is the number
+# of PayPal major units per 1 JOD, applied only on the server.
+_paypal_env = os.getenv("PAYPAL_ENV", "sandbox").strip().lower()
+PAYPAL_ENV = _paypal_env if _paypal_env in {"sandbox", "live"} else "sandbox"
+PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "").strip()
+PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
+PAYPAL_WEBHOOK_ID = os.getenv("PAYPAL_WEBHOOK_ID", "").strip()
+PAYPAL_CURRENCY = (os.getenv("PAYPAL_CURRENCY", "USD").strip().upper() or "USD")
+PAYPAL_FX_RATE = os.getenv("PAYPAL_FX_RATE", "").strip()
+PAYPAL_BRAND_NAME = os.getenv("PAYPAL_BRAND_NAME", "MMH").strip() or "MMH"
+PAYPAL_TIMEOUT_SECONDS = float(os.getenv("PAYPAL_TIMEOUT_SECONDS", "20"))
+
 # Live OneEpin remains locked until payment + fulfillment go-live is explicitly approved.
 if IS_PRODUCTION and (ONEEPIN_ALLOW_LIVE or SUPPLIER_MODE == "live"):
     raise RuntimeError(

@@ -87,10 +87,13 @@ def create_storefront_order(*, data: dict[str, Any], user=None) -> Order:
       leaves payment PENDING; no codes; coupon not consumed until payment verified.
       Real PSP integration must call commerce.services.payment.mark_payment_verified.
     """
+    provider = str(data.get("payment_provider") or "").strip().lower()
     idem = data.get("idempotency_key") or ""
     if idem:
         existing = Order.objects.filter(idempotency_key=idem).first()
         if existing:
+            if provider == "paypal" and existing.payment_status != PaymentStatus.PAID:
+                _prepare_paypal(existing)
             return existing
 
     items = data.get("items") or []
@@ -134,6 +137,14 @@ def create_storefront_order(*, data: dict[str, Any], user=None) -> Order:
             discount = min(coupon.amount_off_fils, subtotal)
 
     total = max(subtotal - discount, 0)
+    if provider == "paypal":
+        from commerce.services.paypal import assert_paypal_ready, quote_paypal_amount
+
+        try:
+            assert_paypal_ready()
+            quote_paypal_amount(total, "JOD")
+        except PaymentError as exc:
+            raise CheckoutError(exc.message, status=exc.status) from exc
     order_user = user if user is not None and getattr(user, "is_authenticated", False) else None
 
     order = Order.objects.create(
@@ -171,6 +182,10 @@ def create_storefront_order(*, data: dict[str, Any], user=None) -> Order:
             platform_name=product.platform.name_en,
         )
 
+    if provider == "paypal":
+        _prepare_paypal(order)
+        return order
+
     create_pending_payment(order=order, provider="pending")
 
     allow_demo = bool(getattr(settings, "ALLOW_DEMO_AUTO_PAYMENT", False))
@@ -187,3 +202,12 @@ def create_storefront_order(*, data: dict[str, Any], user=None) -> Order:
 
     # Production / staging without demo: pending payment only — no codes, no coupon burn.
     return order
+
+
+def _prepare_paypal(order: Order) -> None:
+    from commerce.services.paypal import prepare_paypal_checkout
+
+    try:
+        prepare_paypal_checkout(order)
+    except PaymentError as exc:
+        raise CheckoutError(exc.message, status=exc.status) from exc

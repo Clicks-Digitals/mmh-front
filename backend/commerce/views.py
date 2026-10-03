@@ -70,7 +70,14 @@ class CheckoutSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(required=False, allow_blank=True)
     region_confirmed = serializers.BooleanField(default=False)
     refund_confirmed = serializers.BooleanField(default=False)
+    payment_provider = serializers.CharField(required=False, allow_blank=True)
     items = CheckoutItemSerializer(many=True)
+
+    def validate_payment_provider(self, value: str) -> str:
+        value = (value or "").strip().lower()
+        if value and value != "paypal":
+            raise serializers.ValidationError("Unsupported payment provider")
+        return value
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -96,6 +103,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
     total_jod = serializers.FloatField(read_only=True)
+    payment_provider = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -112,10 +120,17 @@ class OrderSerializer(serializers.ModelSerializer):
             "total_jod",
             "currency",
             "payment_status",
+            "payment_provider",
             "fulfillment_status",
             "created_at",
             "items",
         )
+
+    def get_payment_provider(self, obj: Order) -> str:
+        payments = list(obj.payments.all())
+        if not payments:
+            return ""
+        return max(payments, key=lambda payment: payment.id).provider
 
 
 class CouponValidateView(APIView):
@@ -134,6 +149,22 @@ class CouponValidateView(APIView):
             return Response({"valid": False, "detail": exc.message}, status=exc.status)
 
 
+def _new_order_payload(order: Order) -> dict:
+    data = OrderSerializer(order).data
+    payments = list(order.payments.all())
+    payment = max(payments, key=lambda item: item.id) if payments else None
+    if (
+        payment
+        and payment.provider == "paypal"
+        and payment.checkout_token
+        and order.payment_status != PaymentStatus.PAID
+    ):
+        data["checkout_token"] = payment.checkout_token
+        data["paypal_amount"] = payment.provider_amount
+        data["paypal_currency"] = payment.currency
+    return data
+
+
 class CreateOrderView(APIView):
     permission_classes = [AllowAny]
 
@@ -144,7 +175,7 @@ class CreateOrderView(APIView):
             order = create_storefront_order(data=serializer.validated_data, user=request.user)
         except CheckoutError as exc:
             return Response({"detail": exc.message, "code": "checkout_error"}, status=exc.status)
-        return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
+        return Response(_new_order_payload(order), status=status.HTTP_201_CREATED)
 
 
 class MyOrdersView(generics.ListAPIView):
@@ -152,7 +183,7 @@ class MyOrdersView(generics.ListAPIView):
     serializer_class = OrderSerializer
 
     def get_queryset(self):
-        return Order.objects.filter(user=self.request.user).prefetch_related("items")
+        return Order.objects.filter(user=self.request.user).prefetch_related("items", "payments")
 
 
 class OrderDetailView(generics.RetrieveAPIView):
@@ -161,7 +192,7 @@ class OrderDetailView(generics.RetrieveAPIView):
     lookup_field = "order_number"
 
     def get_queryset(self):
-        return Order.objects.prefetch_related("items")
+        return Order.objects.prefetch_related("items", "payments")
 
 
 # --- Admin serializers ---
@@ -203,7 +234,12 @@ class AdminPaymentSerializer(serializers.ModelSerializer):
             "provider",
             "status",
             "amount_fils",
+            "currency",
+            "provider_amount",
+            "provider_order_id",
+            "provider_capture_id",
             "external_ref",
+            "paid_at",
             "created_at",
             "updated_at",
         )
@@ -275,6 +311,7 @@ class AdminOrderListSerializer(serializers.ModelSerializer):
 class OrderTransitionSerializer(serializers.Serializer):
     payment_status = serializers.ChoiceField(choices=PaymentStatus.choices, required=False)
     fulfillment_status = serializers.ChoiceField(choices=FulfillmentStatus.choices, required=False)
+    refund_amount_fils = serializers.IntegerField(required=False, min_value=1)
 
     def validate(self, attrs):
         if "payment_status" not in attrs and "fulfillment_status" not in attrs:
@@ -412,13 +449,46 @@ class AdminOrderTransitionView(APIView):
         order = get_object_or_404(Order, pk=pk) if str(pk).isdigit() else get_object_or_404(Order, order_number=pk)
         serializer = OrderTransitionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        try:
-            order = transition_order(
-                order,
-                payment_status=serializer.validated_data.get("payment_status"),
-                fulfillment_status=serializer.validated_data.get("fulfillment_status"),
-                actor=request.user,
+        payment_status = serializer.validated_data.get("payment_status")
+        fulfillment_status = serializer.validated_data.get("fulfillment_status")
+        if payment_status in {PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED}:
+            paypal_statuses = [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED]
+            paypal_payment = (
+                order.payments.filter(provider="paypal", status__in=paypal_statuses).order_by("-id").first()
             )
+            if paypal_payment:
+                if payment_status == PaymentStatus.PARTIALLY_REFUNDED and not serializer.validated_data.get(
+                    "refund_amount_fils"
+                ):
+                    return Response(
+                        {"detail": "Provide refund_amount_fils for a partial PayPal refund"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                from commerce.services.payment import PaymentError
+                from commerce.services.paypal import refund_paypal_payment
+
+                try:
+                    refund_paypal_payment(
+                        paypal_payment,
+                        actor=request.user,
+                        amount_fils=(
+                            serializer.validated_data.get("refund_amount_fils")
+                            if payment_status == PaymentStatus.PARTIALLY_REFUNDED
+                            else None
+                        ),
+                    )
+                except PaymentError as exc:
+                    return Response({"detail": exc.message, "code": exc.code}, status=exc.status)
+                order.refresh_from_db()
+                payment_status = None
+        try:
+            if payment_status or fulfillment_status:
+                order = transition_order(
+                    order,
+                    payment_status=payment_status,
+                    fulfillment_status=fulfillment_status,
+                    actor=request.user,
+                )
         except OrderTransitionError as exc:
             return Response({"detail": exc.message}, status=exc.status)
         return Response(AdminOrderSerializer(order).data)
@@ -461,7 +531,13 @@ class AdminPaymentListView(generics.ListAPIView):
     permission_classes = [IsAdminUser, HasAdminPermission]
     admin_permission = "orders.read"
     serializer_class = AdminPaymentSerializer
-    search_fields = ["external_ref", "order__order_number", "provider"]
+    search_fields = [
+        "external_ref",
+        "order__order_number",
+        "provider",
+        "provider_order_id",
+        "provider_capture_id",
+    ]
     filterset_fields = ["status", "provider"]
     queryset = Payment.objects.select_related("order").order_by("-created_at")
 
