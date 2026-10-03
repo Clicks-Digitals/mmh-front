@@ -6,5 +6,5 @@ export const metadata = { title: "Orders" };
 
 export default async function OrdersPage() {
   const user = await requireCustomer("/account/orders");
-  return <CustomerOrders orders={await loadCustomerOrders(user.id)} />;
+  return <CustomerOrders orders={await loadCustomerOrders(user.accessToken)} />;
 }

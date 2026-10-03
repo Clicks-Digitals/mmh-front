@@ -1,3 +1,4 @@
+import { matchesCategoryGroup } from "@/data/products";
 import { applyFilters } from "@/lib/catalog";
 import { resolveStorefrontCategories, resolveStorefrontProducts } from "@/server/catalog/resolve";
 import type { FilterState, Product } from "@/types";
@@ -9,9 +10,8 @@ function categoryMatches(product: Product, slug: string, descendants: Set<string
   if (slug === "deals" || slug === "special-offers") {
     return Boolean(product.compareAtPriceJod && product.compareAtPriceJod > product.priceJod);
   }
-  if (slug === "best-sellers") return Boolean(product.bestseller);
   if (slug === "new-products") return product.badges.includes("new");
-  return false;
+  return matchesCategoryGroup(slug, product);
 }
 
 export async function queryPublishedProducts(filters: FilterState, lockedCategory?: string) {

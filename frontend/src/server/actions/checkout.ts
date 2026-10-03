@@ -1,8 +1,11 @@
 "use server";
 
+import { cookies } from "next/headers";
 import { z } from "zod";
+import { auth } from "@/auth";
 import { ApiError } from "@/lib/api/client";
 import { createOrder, validateCoupon } from "@/lib/api/orders";
+import { ORDER_ACCESS_COOKIE } from "@/server/orders/access";
 
 const checkoutSchema = z.object({
   email: z.string().email(),
@@ -50,22 +53,34 @@ export async function createStorefrontOrder(input: unknown) {
     return { ok: false as const, message: "Check the checkout details and try again." };
   }
   try {
-    const order = await createOrder({
-      email: parsed.data.email,
-      full_name: parsed.data.fullName,
-      phone: parsed.data.phone,
-      notes: parsed.data.notes ?? "",
-      coupon_code: parsed.data.couponCode ?? "",
-      idempotency_key: parsed.data.idempotencyKey,
-      region_confirmed: true,
-      refund_confirmed: true,
-      payment_provider: parsed.data.paymentProvider ?? "",
-      items: parsed.data.items.map((item) => ({
-        product_id: item.productId,
-        denomination_id: item.variantId != null ? String(item.variantId) : "",
-        quantity: item.quantity,
-        fields: item.fields ?? {},
-      })),
+    const session = await auth();
+    const customerToken = session?.user?.kind === "CUSTOMER" ? session.user.accessToken : undefined;
+    const order = await createOrder(
+      {
+        email: parsed.data.email,
+        full_name: parsed.data.fullName,
+        phone: parsed.data.phone,
+        notes: parsed.data.notes ?? "",
+        coupon_code: parsed.data.couponCode ?? "",
+        idempotency_key: parsed.data.idempotencyKey,
+        region_confirmed: true,
+        refund_confirmed: true,
+        payment_provider: parsed.data.paymentProvider ?? "",
+        items: parsed.data.items.map((item) => ({
+          product_id: item.productId,
+          denomination_id: item.variantId != null ? String(item.variantId) : "",
+          quantity: item.quantity,
+          fields: item.fields ?? {},
+        })),
+      },
+      customerToken,
+    );
+    (await cookies()).set(ORDER_ACCESS_COOKIE, JSON.stringify({ number: order.order_number, email: parsed.data.email }), {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 60 * 60 * 24,
     });
     return {
       ok: true as const,

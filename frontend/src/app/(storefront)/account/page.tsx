@@ -1,14 +1,12 @@
 import { CustomerAccount } from "@/components/account/customer-account";
 import { requireCustomer } from "@/server/auth/require-customer";
 import { loadCustomerOrders } from "@/server/orders/customer";
-import { auth } from "@/auth";
 
 export const metadata = { title: "Account" };
 
 export default async function AccountPage() {
   const sessionUser = await requireCustomer();
-  const session = await auth();
-  const orders = await loadCustomerOrders(sessionUser.id, session?.user?.accessToken);
+  const orders = await loadCustomerOrders(sessionUser.accessToken);
   return (
     <CustomerAccount
       profile={{

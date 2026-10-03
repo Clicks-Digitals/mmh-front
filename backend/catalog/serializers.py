@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.conf import settings
 from django.db import transaction
 from rest_framework import serializers
 
@@ -319,7 +320,8 @@ class ProductListSerializer(serializers.ModelSerializer):
                 primary = None
         if primary:
             url = primary.url
-        if request and url and url.startswith("/"):
+        # Only uploaded media lives on the API host; other relative paths are storefront assets.
+        if request and url and url.startswith(settings.MEDIA_URL):
             return request.build_absolute_uri(url)
         return url
 
@@ -406,6 +408,95 @@ class ProductDetailSerializer(ProductListSerializer):
                 }
             )
         return rows
+
+
+class PublicVariantSerializer(serializers.ModelSerializer):
+    price_jod = serializers.FloatField(read_only=True)
+    compare_at_price_jod = serializers.FloatField(read_only=True)
+    region_slug = serializers.CharField(source="region.slug", read_only=True, allow_null=True)
+    region_name_en = serializers.CharField(source="region.name_en", read_only=True, allow_null=True)
+    region_name_ar = serializers.CharField(source="region.name_ar", read_only=True, allow_null=True)
+    region_locked = serializers.BooleanField(source="region.locked", read_only=True, allow_null=True)
+
+    class Meta:
+        model = ProductVariant
+        fields = (
+            "id",
+            "external_id",
+            "denomination",
+            "package_value",
+            "package_currency",
+            "price_jod",
+            "compare_at_price_jod",
+            "stock_status",
+            "min_quantity",
+            "max_quantity",
+            "sort_order",
+            "name_en",
+            "name_ar",
+            "region_slug",
+            "region_name_en",
+            "region_name_ar",
+            "region_locked",
+        )
+
+
+_PUBLIC_EXCLUDED = {"supplier_names", "codes_available", "variants_count", "price_min_fils", "price_max_fils"}
+
+
+class PublicProductSerializer(ProductListSerializer):
+    """Storefront-facing product: no cost, stock counts, or supplier data."""
+
+    variants = serializers.SerializerMethodField()
+    fields = FieldSerializer(many=True, read_only=True)
+    media = MediaAssetSerializer(many=True, read_only=True)
+    category = CategorySerializer(read_only=True)
+    platform = PlatformSerializer(read_only=True)
+
+    class Meta(ProductListSerializer.Meta):
+        fields = tuple(f for f in ProductListSerializer.Meta.fields if f not in _PUBLIC_EXCLUDED) + (
+            "description_en",
+            "description_ar",
+            "instructions_en",
+            "instructions_ar",
+            "how_to_use_en",
+            "how_to_use_ar",
+            "region_restrictions_en",
+            "region_restrictions_ar",
+            "refund_policy_en",
+            "refund_policy_ar",
+            "region_warning_en",
+            "region_warning_ar",
+            "delivery_estimate_en",
+            "delivery_estimate_ar",
+            "account_currency",
+            "refundable",
+            "sort_order",
+            "variants",
+            "fields",
+            "media",
+            "category",
+            "platform",
+        )
+
+    def get_variants(self, obj) -> list[dict]:
+        published = [v for v in obj.variants.all() if v.published]
+        return PublicVariantSerializer(published, many=True, context=self.context).data
+
+    def get_region_labels(self, obj) -> list[str]:
+        return sorted({v.region.name_en for v in obj.variants.all() if v.published and v.region_id})
+
+    def get_price_jod(self, obj) -> float:
+        prices = [v.price_fils for v in obj.variants.all() if v.published]
+        return min(prices) / 1000.0 if prices else 0.0
+
+    def get_price_min_jod(self, obj) -> float | None:
+        prices = [v.price_fils for v in obj.variants.all() if v.published]
+        return min(prices) / 1000.0 if prices else None
+
+    def get_price_max_jod(self, obj) -> float | None:
+        prices = [v.price_fils for v in obj.variants.all() if v.published]
+        return max(prices) / 1000.0 if prices else None
 
 
 class ProductWriteSerializer(serializers.ModelSerializer):

@@ -61,7 +61,7 @@ API base: `http://localhost:8000/api/v1/`
 Health: `http://localhost:8000/api/health/`
 
 Demo customer (development seed): `demo@mmh.local` / `DemoCustomer1!`  
-Demo checkout auto-pay is enabled only when `ALLOW_DEMO_AUTO_PAYMENT=true` (dev default).
+Checkout creates **pending** orders by default (no payment, no code delivery). Demo auto-pay is opt-in via `ALLOW_DEMO_AUTO_PAYMENT=true` in development only.
 
 ### 3. Frontend
 

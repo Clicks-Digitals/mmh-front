@@ -108,7 +108,7 @@ Also: `FAILED`, `MANUAL_REVIEW`, `CANCELLED`
    - Creates `Order` with `payment_status=PENDING`, `fulfillment_status=NOT_STARTED`.
    - Creates `Payment` with `status=PENDING`.
    - **Does not** issue codes yet.
-3. If `ALLOW_DEMO_AUTO_PAYMENT=true` (development default only):
+3. If `ALLOW_DEMO_AUTO_PAYMENT=true` (development opt-in only; default is false):
    - Calls `commerce.services.payment.apply_demo_auto_payment` → `mark_payment_verified` → `fulfill_order`.
    - Issues `CHECKOUT_DEMO` encrypted codes.
 4. If demo auto-pay is **false** (required for production):

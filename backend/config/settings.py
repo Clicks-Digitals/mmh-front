@@ -42,8 +42,9 @@ ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.
 if IS_PRODUCTION and (not ALLOWED_HOSTS or ALLOWED_HOSTS == ["*"]):
     raise RuntimeError("ALLOWED_HOSTS must be set explicitly for production")
 
-# Demo auto-pay: ONLY for local/dev demos. Hard-blocked in production via checks + runtime.
-ALLOW_DEMO_AUTO_PAYMENT = _env_bool("ALLOW_DEMO_AUTO_PAYMENT", default=IS_DEVELOPMENT)
+# Demo auto-pay: opt-in for local demos only. Off by default so storefront orders stay PENDING,
+# matching the "no payment provider connected" checkout copy. Hard-blocked in production.
+ALLOW_DEMO_AUTO_PAYMENT = _env_bool("ALLOW_DEMO_AUTO_PAYMENT", default=False)
 if IS_PRODUCTION and ALLOW_DEMO_AUTO_PAYMENT:
     raise RuntimeError(
         "ALLOW_DEMO_AUTO_PAYMENT cannot be true when DJANGO_ENV=production. "

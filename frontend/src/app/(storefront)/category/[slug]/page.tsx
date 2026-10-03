@@ -5,6 +5,16 @@ import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { resolveStorefrontCategories } from "@/server/catalog/resolve";
 import { queryPublishedProducts } from "@/server/catalog/query";
+import { getCategory } from "@/data/categories";
+import { isCategoryGroup } from "@/data/products";
+import type { Category } from "@/types";
+
+/** Database category, or a built-in navigation grouping such as PlayStation or Mobile Games. */
+function findCategory(categories: Category[], slug: string): Category | undefined {
+  const fromApi = categories.find((item) => item.slug === slug);
+  if (fromApi) return fromApi;
+  return isCategoryGroup(slug) ? getCategory(slug) : undefined;
+}
 
 export async function generateMetadata({
   params,
@@ -13,7 +23,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { slug } = await params;
   const categories = await resolveStorefrontCategories();
-  const category = categories.find((item) => item.slug === slug);
+  const category = findCategory(categories, slug);
   if (!category) return pageMeta("Category", "MMH category", "/shop");
   return pageMeta(category.name, category.description, `/category/${slug}`);
 }
@@ -27,7 +37,7 @@ export default async function CategoryPage({
 }) {
   const { slug } = await params;
   const categories = await resolveStorefrontCategories();
-  const category = categories.find((item) => item.slug === slug);
+  const category = findCategory(categories, slug);
   if (!category) notFound();
 
   const query = await searchParams;

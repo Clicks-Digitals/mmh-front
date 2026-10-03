@@ -395,7 +395,6 @@ export function DigitalProductDetail({ product }: { product: Product }) {
                         label={locale === "ar" ? field.labelAr : field.label}
                         placeholder={locale === "ar" ? field.placeholderAr : field.placeholder}
                         value={fields[field.id] ?? ""}
-                        hint={locale === "ar" ? field.helpTextAr : field.helpText}
                         error={
                           fields[field.id] && !validateCustomerField(field.id, fields[field.id], field.required)
                             ? t("product.playerIdError")
@@ -403,13 +402,26 @@ export function DigitalProductDetail({ product }: { product: Product }) {
                         }
                         onChange={(event) => setFields((current) => ({ ...current, [field.id]: event.target.value }))}
                       />
-                      <button type="button" className="mt-1 text-xs text-gold" onClick={() => setGuideId(guideId === field.id ? null : field.id)}>
-                        {t("product.findId")}
-                      </button>
-                      {guideId === field.id ? (
-                        <p className="mt-2 rounded-[12px] border border-line bg-elevated p-3 text-xs leading-5 text-muted">
-                          {locale === "ar" ? field.helpTextAr : field.helpText}
-                        </p>
+                      {(locale === "ar" ? field.helpTextAr : field.helpText) ? (
+                        <>
+                          <button
+                            type="button"
+                            className={cn("mt-1 rounded-md text-xs text-gold hover:underline", FOCUS_RING)}
+                            aria-expanded={guideId === field.id}
+                            aria-controls={`guide-${field.id}`}
+                            onClick={() => setGuideId(guideId === field.id ? null : field.id)}
+                          >
+                            {t("product.findId")}
+                          </button>
+                          {guideId === field.id ? (
+                            <p
+                              id={`guide-${field.id}`}
+                              className="mt-2 rounded-[12px] border border-line bg-elevated p-3 text-xs leading-5 text-muted"
+                            >
+                              {locale === "ar" ? field.helpTextAr : field.helpText}
+                            </p>
+                          ) : null}
+                        </>
                       ) : null}
                     </div>
                   ))}
