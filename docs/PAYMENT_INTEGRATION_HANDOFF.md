@@ -1,10 +1,47 @@
 # Payment Integration Handoff
 
-**Owner:** external payment developer  
-**Status:** payment provider integration is **OUT OF SCOPE** for the current MMH team phase.  
-**Commerce go-live:** **BLOCKED** until this work is complete and verified.
+**Provider:** PayPal Orders v2 (implemented, sandbox).  
+**Commerce go-live:** blocked on a signed-off sandbox payment, a registered webhook, and automated fulfillment (see below).
 
 This document describes the **actual** MMH architecture as of production-prep. Do not invent parallel order stores or mark orders paid from the browser.
+
+---
+
+## PayPal (implemented)
+
+```text
+Checkout (payment_provider=paypal)
+  → Order PENDING + Payment(provider=paypal, checkout_token, provider_amount)
+  → POST /api/v1/payments/paypal/create-order/   (order_number + checkout_token; server prices it)
+  → Buyer approves in the PayPal popup (web SDK v6)
+  → POST /api/v1/payments/paypal/capture-order/  (server captures, checks amount/currency/custom_id)
+  → mark_payment_verified → fulfill_order
+```
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET  /api/v1/payments/paypal/config/` | Public client id, SDK URL, charge currency |
+| `POST /api/v1/payments/paypal/create-order/` | Create or reuse the PayPal order |
+| `POST /api/v1/payments/paypal/capture-order/` | Capture after buyer approval |
+| `POST /api/v1/payments/paypal/webhook/` | Signature-verified, de-duplicated reconciliation |
+
+Code: `commerce/services/paypal.py` (logic), `commerce/services/paypal_client.py` (HTTP), `commerce/paypal_views.py`, tests in `commerce/tests_paypal.py`. Frontend: `components/checkout/paypal-checkout.tsx`.
+
+**Currency.** Orders are JOD (fils). `PAYPAL_CURRENCY` is what PayPal charges. When it is not JOD, `PAYPAL_FX_RATE` (PayPal units per 1 JOD) converts on the server. The default is USD at the peg, 1 USD = 0.709 JOD. A JOD-capable account sets `PAYPAL_CURRENCY=JOD` and clears `PAYPAL_FX_RATE`.
+
+**Webhook.** Needs a public HTTPS URL. Subscribe to `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.CAPTURE.REVERSED` (optionally `CHECKOUT.ORDER.COMPLETED`). Put the webhook id in `PAYPAL_WEBHOOK_ID`.
+
+**Reconciliation (webhook fallback).** `python manage.py reconcile_paypal` captures PayPal orders the buyer approved but the browser never captured (tab closed, network drop), and records captures completed elsewhere. Run it on a schedule, for example every 10 minutes. It is idempotent and safe alongside webhooks.
+
+**Refunds.** Admin order transition to `REFUNDED` / `PARTIALLY_REFUNDED` (with `refund_amount_fils`) refunds through PayPal. Partial refunds that add up to the captured amount mark the order `REFUNDED`.
+
+**Go-live checklist**
+
+1. One sandbox payment completed end to end (order PAID only after server capture).
+2. Webhook registered against the production API URL; `PAYPAL_WEBHOOK_ID` set.
+3. `reconcile_paypal` scheduled.
+4. `PAYPAL_ENV=live` with live client id and secret; `ALLOW_DEMO_AUTO_PAYMENT=false`.
+5. Fulfillment: production `fulfill_order` stops at `PROCESSING`. Code delivery is not automatic yet (see Fulfillment contract below).
 
 ---
 

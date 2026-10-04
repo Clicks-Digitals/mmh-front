@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 from decimal import Decimal
+from io import StringIO
 from unittest.mock import patch
 
 from django.conf import settings
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -432,6 +435,117 @@ class PayPalCheckoutTests(TestCase):
         )
         self.assertEqual(again.status_code, 200, again.content)
         self.assertEqual(len(self.fake.refund_calls), 2)
+
+
+    def _age_payment(self, order_number, minutes=30):
+        Payment.objects.filter(order__order_number=order_number).update(
+            updated_at=timezone.now() - timedelta(minutes=minutes)
+        )
+
+    def test_reconcile_captures_approved_order_the_browser_abandoned(self):
+        created = self._checkout(idempotency_key="paypal-abandoned").json()
+        paypal = self._create_paypal(created).json()
+        self.fake.orders[paypal["paypal_order_id"]]["status"] = "APPROVED"
+        self._age_payment(created["order_number"])
+
+        out = StringIO()
+        call_command("reconcile_paypal", stdout=out)
+        self.assertIn("paid=1", out.getvalue())
+        order = Order.objects.get(order_number=created["order_number"])
+        self.assertEqual(order.payment_status, PaymentStatus.PAID)
+        self.assertEqual(len(self.fake.capture_calls), 1)
+
+        call_command("reconcile_paypal", stdout=StringIO())
+        self.assertEqual(len(self.fake.capture_calls), 1)
+
+    def test_reconcile_records_capture_completed_elsewhere_without_recapturing(self):
+        created = self._checkout(idempotency_key="paypal-completed-elsewhere").json()
+        paypal = self._create_paypal(created).json()
+        self.fake.capture_order(paypal["paypal_order_id"], request_id="out-of-band")
+        self._age_payment(created["order_number"])
+
+        call_command("reconcile_paypal", stdout=StringIO())
+        order = Order.objects.get(order_number=created["order_number"])
+        self.assertEqual(order.payment_status, PaymentStatus.PAID)
+        self.assertEqual(len(self.fake.capture_calls), 1)
+
+    def test_reconcile_ignores_recent_and_unapproved_orders(self):
+        recent = self._checkout(idempotency_key="paypal-recent").json()
+        recent_paypal = self._create_paypal(recent).json()
+        self.fake.orders[recent_paypal["paypal_order_id"]]["status"] = "APPROVED"
+        unapproved = self._checkout(idempotency_key="paypal-unapproved", email="other@example.com").json()
+        self._create_paypal(unapproved)
+        self._age_payment(unapproved["order_number"])
+
+        out = StringIO()
+        call_command("reconcile_paypal", stdout=out)
+        self.assertIn("checked=1", out.getvalue())
+        self.assertIn("skipped=1", out.getvalue())
+        self.assertEqual(self.fake.capture_calls, [])
+        self.assertEqual(
+            Order.objects.filter(payment_status=PaymentStatus.PENDING).count(),
+            2,
+        )
+
+    def test_partial_refunds_that_cover_the_total_mark_order_refunded(self):
+        admin = make_admin("paypal-partials@mmh.test", AdminRole.SUPER_ADMIN)
+        client = auth_client(admin)
+        created = self._checkout(idempotency_key="paypal-partials").json()
+        paypal = self._create_paypal(created).json()
+        self.client.post(
+            "/api/v1/payments/paypal/capture-order/",
+            {"paypal_order_id": paypal["paypal_order_id"]},
+            content_type="application/json",
+        )
+        order = Order.objects.get(order_number=created["order_number"])
+        for expected in ("PARTIALLY_REFUNDED", "REFUNDED"):
+            response = client.post(
+                f"/api/v1/admin/orders/{order.id}/transition/",
+                {"payment_status": "PARTIALLY_REFUNDED", "refund_amount_fils": 5000},
+                content_type="application/json",
+            )
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertEqual(response.json()["payment_status"], expected)
+        self.assertEqual([call["value"] for call in self.fake.refund_calls], ["7.05", "7.05"])
+
+    def test_refund_webhooks_add_up_partial_refunds(self):
+        created = self._checkout(idempotency_key="paypal-refund-webhooks").json()
+        paypal = self._create_paypal(created).json()
+        capture = self.client.post(
+            "/api/v1/payments/paypal/capture-order/",
+            {"paypal_order_id": paypal["paypal_order_id"]},
+            content_type="application/json",
+        ).json()
+        headers = {
+            "HTTP_PAYPAL_AUTH_ALGO": "SHA256withRSA",
+            "HTTP_PAYPAL_CERT_URL": "https://api.sandbox.paypal.com/v1/notifications/certs/CERT",
+            "HTTP_PAYPAL_TRANSMISSION_ID": "tx-refund",
+            "HTTP_PAYPAL_TRANSMISSION_SIG": "sig",
+            "HTTP_PAYPAL_TRANSMISSION_TIME": timezone.now().isoformat(),
+        }
+        order = Order.objects.get(order_number=created["order_number"])
+        for index, expected in ((1, PaymentStatus.PARTIALLY_REFUNDED), (2, PaymentStatus.REFUNDED)):
+            event = {
+                "id": f"WH-REFUND-{index}",
+                "event_type": "PAYMENT.CAPTURE.REFUNDED",
+                "resource": {
+                    "id": f"REFUNDHOOK{index}",
+                    "status": "COMPLETED",
+                    "amount": {"currency_code": "USD", "value": "7.05"},
+                    "links": [
+                        {
+                            "rel": "up",
+                            "href": f"https://api.sandbox.paypal.com/v2/payments/captures/{capture['paypal_capture_id']}",
+                        }
+                    ],
+                },
+            }
+            response = self.client.post(
+                "/api/v1/payments/paypal/webhook/", event, content_type="application/json", **headers
+            )
+            self.assertEqual(response.status_code, 200, response.content)
+            order.refresh_from_db()
+            self.assertEqual(order.payment_status, expected)
 
 
 class PayPalSandboxIntegrationTests(TestCase):

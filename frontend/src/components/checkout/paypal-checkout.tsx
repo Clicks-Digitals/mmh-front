@@ -3,7 +3,7 @@
 import { useLanguage } from "@/context/language-context";
 import { ApiError } from "@/lib/api/client";
 import { capturePayPalOrder, getPayPalConfig, type PayPalConfig } from "@/lib/api/paypal";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 type PayPalSdk = {
   findEligibleMethods: (options: { currencyCode: string }) => Promise<{
@@ -89,10 +89,12 @@ export function PayPalCheckout({
   const onPaidRef = useRef(onPaid);
   const onCancelRef = useRef(onCancel);
   const onErrorRef = useRef(onError);
-  createOrderRef.current = createOrder;
-  onPaidRef.current = onPaid;
-  onCancelRef.current = onCancel;
-  onErrorRef.current = onError;
+  useLayoutEffect(() => {
+    createOrderRef.current = createOrder;
+    onPaidRef.current = onPaid;
+    onCancelRef.current = onCancel;
+    onErrorRef.current = onError;
+  });
   const [config, setConfig] = useState<PayPalConfig | null>(null);
   const [configError, setConfigError] = useState("");
   const [ready, setReady] = useState(false);

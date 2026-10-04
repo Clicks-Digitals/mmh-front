@@ -11,6 +11,7 @@ import logging
 import re
 import secrets
 import urllib.parse
+from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -249,6 +250,73 @@ def persist_captured_order(payment_id: int, remote: dict[str, Any]) -> Payment:
     return Payment.objects.select_related("order").get(pk=payment_id)
 
 
+def reconcile_pending_payments(
+    *,
+    min_age_minutes: int = 10,
+    max_age_hours: int = 72,
+    limit: int = 200,
+) -> dict[str, int]:
+    """Webhook fallback: settle PayPal orders the browser approved but never captured.
+
+    APPROVED remote orders are captured; COMPLETED ones are persisted. Everything
+    else is left alone. Safe to run on a schedule and alongside webhooks.
+    """
+    assert_paypal_ready()
+    now = timezone.now()
+    candidates = (
+        Payment.objects.select_related("order")
+        .filter(
+            provider="paypal",
+            status__in=[PaymentStatus.PENDING, PaymentStatus.AUTHORIZED],
+            provider_order_id__isnull=False,
+            order__payment_status__in=[PaymentStatus.PENDING, PaymentStatus.AUTHORIZED],
+            updated_at__lte=now - timedelta(minutes=min_age_minutes),
+            updated_at__gte=now - timedelta(hours=max_age_hours),
+        )
+        .order_by("updated_at")[:limit]
+    )
+    counts = {"checked": 0, "paid": 0, "failed": 0, "skipped": 0, "errors": 0}
+    client = get_client()
+    for payment in candidates:
+        counts["checked"] += 1
+        try:
+            remote = client.get_order(payment.provider_order_id)
+        except PayPalApiError as exc:
+            if exc.http_status == 404:
+                counts["skipped"] += 1
+            else:
+                counts["errors"] += 1
+                logger.warning(
+                    "PayPal reconcile lookup failed order=%s issue=%s debug_id=%s",
+                    payment.order.order_number,
+                    exc.issue,
+                    exc.debug_id,
+                )
+            continue
+        remote_status = str(remote.get("status") or "")
+        try:
+            if remote_status == "APPROVED":
+                capture_paypal_order(paypal_order_id=payment.provider_order_id)
+                updated = Payment.objects.get(pk=payment.pk)
+            elif remote_status == "COMPLETED":
+                updated = persist_captured_order(payment.id, remote)
+            else:
+                counts["skipped"] += 1
+                continue
+        except PaymentError as exc:
+            counts["failed" if exc.code in {"capture_failed", "amount_mismatch"} else "errors"] += 1
+            logger.info("PayPal reconcile order=%s code=%s", payment.order.order_number, exc.code)
+            continue
+        if updated.status == PaymentStatus.PAID:
+            counts["paid"] += 1
+            logger.info("PayPal reconcile settled order=%s", payment.order.order_number)
+        elif updated.status == PaymentStatus.FAILED:
+            counts["failed"] += 1
+        else:
+            counts["skipped"] += 1
+    return counts
+
+
 def refund_paypal_payment(
     payment: Payment,
     *,
@@ -298,6 +366,7 @@ def refund_paypal_payment(
         payment.raw_refund_response = _redact(body)
         refund_status = str(body.get("status") or "")
         if refund_status == "COMPLETED":
+            full = full or _fully_refunded(payment)
             payment.status = PaymentStatus.REFUNDED if full else PaymentStatus.PARTIALLY_REFUNDED
             payment.save(update_fields=["status", "refunds", "raw_refund_response", "updated_at"])
             if order.payment_status != payment.status:
@@ -417,13 +486,7 @@ def _apply_refund_resource(resource: dict[str, Any], *, reversed_payment: bool) 
             return
         _append_refund(payment, resource)
         payment.raw_refund_response = _redact(resource)
-        amount = (resource.get("amount") or {}) if isinstance(resource, dict) else {}
-        try:
-            refunded_value = Decimal(str(amount.get("value") or "0"))
-            full_value = Decimal(payment.provider_amount or "0")
-            full = reversed_payment or (full_value > 0 and refunded_value >= full_value)
-        except Exception:
-            full = reversed_payment
+        full = reversed_payment or _fully_refunded(payment)
         if payment.status in {PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.AUTHORIZED}:
             payment.status = PaymentStatus.REFUNDED if full else PaymentStatus.PARTIALLY_REFUNDED
             payment.save(update_fields=["status", "refunds", "raw_refund_response", "updated_at"])
@@ -558,9 +621,13 @@ def _refund_mismatched_capture(payment_id: int, capture_id: str) -> None:
 def _append_refund(payment: Payment, body: dict[str, Any]) -> None:
     refund_id = str(body.get("id") or "")
     refunds = list(payment.refunds or [])
-    if refund_id and any(str(item.get("id") or "") == refund_id for item in refunds if isinstance(item, dict)):
-        payment.refunds = refunds
-        return
+    if refund_id:
+        for item in refunds:
+            if isinstance(item, dict) and str(item.get("id") or "") == refund_id:
+                if body.get("status"):
+                    item["status"] = body["status"]
+                payment.refunds = refunds
+                return
     amount = body.get("amount") or {}
     refunds.append(
         {
@@ -571,6 +638,23 @@ def _append_refund(payment: Payment, body: dict[str, Any]) -> None:
         }
     )
     payment.refunds = refunds
+
+
+def _fully_refunded(payment: Payment) -> bool:
+    """True when completed refunds add up to the captured PayPal amount."""
+    try:
+        full_value = Decimal(payment.provider_amount or "0")
+        refunded = sum(
+            (
+                Decimal(str(item.get("amount") or "0"))
+                for item in payment.refunds or []
+                if isinstance(item, dict) and item.get("status") == "COMPLETED"
+            ),
+            Decimal(0),
+        )
+    except Exception:
+        return False
+    return full_value > 0 and refunded >= full_value
 
 
 def _payment_for_capture_resource(resource: dict[str, Any]) -> Payment | None:

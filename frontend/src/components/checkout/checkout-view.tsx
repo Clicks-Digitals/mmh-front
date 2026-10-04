@@ -14,7 +14,7 @@ import { isValidDemoPhone, isValidEmail } from "@/lib/validation";
 import { STORAGE_KEYS, writeJson } from "@/lib/storage";
 import type { CheckoutDraft } from "@/types";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 
 function errorCode(error: ApiError) {
@@ -41,7 +41,8 @@ export function CheckoutView() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [preparing, setPreparing] = useState(false);
   const [placeError, setPlaceError] = useState("");
-  const [prepared, setPrepared] = useState<{
+  const [preparedState, setPrepared] = useState<{
+    key: string;
     id: string;
     orderNumber: string;
     checkoutToken: string;
@@ -57,9 +58,8 @@ export function CheckoutView() {
     [items, draft.customer.email],
   );
 
-  useEffect(() => {
-    setPrepared(null);
-  }, [idempotencyKey]);
+  // A prepared PayPal order only belongs to the cart and email it was created for.
+  const prepared = preparedState?.key === idempotencyKey ? preparedState : null;
 
   const patch = (next: Partial<CheckoutDraft>) => setDraft((current) => ({ ...current, ...next }));
 
@@ -121,6 +121,7 @@ export function CheckoutView() {
         return;
       }
       setPrepared({
+        key: idempotencyKey,
         id: result.id,
         orderNumber: result.orderNumber,
         checkoutToken: result.checkoutToken,

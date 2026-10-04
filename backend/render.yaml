@@ -19,6 +19,20 @@ services:
         value: "false"
       - key: SUPPLIER_MODE
         value: mock
+      # PayPal: set the secrets in the Render dashboard. PAYPAL_ENV=live only after sandbox sign-off.
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: PAYPAL_CURRENCY
+        value: USD
+      # 1 JOD = 1/0.709 USD (Jordanian peg). Clear it if PAYPAL_CURRENCY=JOD.
+      - key: PAYPAL_FX_RATE
+        value: "1.4104372355429464"
       - key: SECRET_KEY
         generateValue: true
       - key: CODE_ENCRYPTION_KEY
