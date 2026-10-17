@@ -7,10 +7,11 @@ import { useToast } from "@/context/toast-context";
 import { isValidEmail } from "@/lib/validation";
 import { Logo } from "@/components/ui/logo";
 import { Button } from "@/components/ui/button";
+import { socialLinks, type SiteContact } from "@/lib/site-contact";
 import Link from "next/link";
 import { useState } from "react";
 
-export function Footer() {
+export function Footer({ contact }: { contact: SiteContact }) {
   const { t } = useLanguage();
   const { push } = useToast();
   const [email, setEmail] = useState("");
@@ -26,7 +27,16 @@ export function Footer() {
           </p>
           <p className="mt-5 text-sm text-muted">{SITE.contact.city}</p>
           {SITE.contact.address ? <p className="text-sm text-muted">{SITE.contact.address}</p> : null}
-          {SITE.contact.phone ? <p className="text-sm text-muted">{SITE.contact.phone}</p> : null}
+          {contact.support_phone ? (
+            <a href={`tel:${contact.support_phone.replace(/s/g, "")}`} className="block text-sm text-muted hover:text-fg" dir="ltr">
+              {contact.support_phone}
+            </a>
+          ) : null}
+          {contact.support_email ? (
+            <a href={`mailto:${contact.support_email}`} className="block text-sm text-muted hover:text-fg">
+              {contact.support_email}
+            </a>
+          ) : null}
           <form
             className="mt-6 flex max-w-md flex-col gap-2 sm:flex-row"
             onSubmit={(event) => {
@@ -71,15 +81,10 @@ export function Footer() {
         <div className="container-mmh flex flex-col gap-2 text-xs text-muted sm:flex-row sm:justify-between">
           <p>{t("footer.rights")}</p>
           <div className="flex gap-4">
-            {(["Instagram", "TikTok", "YouTube"] as const).map((label) => (
-              <button
-                key={label}
-                type="button"
-                className="hover:text-fg"
-                onClick={() => push({ title: t("footer.socialSoon"), tone: "info" })}
-              >
-                {label}
-              </button>
+            {socialLinks(contact).map((link) => (
+              <a key={link.label} href={link.href} target="_blank" rel="noopener noreferrer" className="hover:text-fg">
+                {link.label}
+              </a>
             ))}
           </div>
         </div>

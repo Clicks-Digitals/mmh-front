@@ -32,12 +32,44 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
             "store_name",
             "support_email",
             "support_phone",
+            "business_hours",
+            "whatsapp_number",
+            "telegram_url",
+            "instagram_url",
+            "facebook_url",
+            "tiktok_url",
+            "youtube_url",
             "currency_display",
             "low_stock_threshold",
             "maintenance_mode",
             "updated_at",
         )
         read_only_fields = ("updated_at",)
+
+
+PUBLIC_SETTINGS_FIELDS = (
+    "store_name",
+    "support_email",
+    "support_phone",
+    "business_hours",
+    "whatsapp_number",
+    "telegram_url",
+    "instagram_url",
+    "facebook_url",
+    "tiktok_url",
+    "youtube_url",
+)
+
+
+class PublicSiteSettingsView(APIView):
+    """Contact details for the storefront. Never add internal settings here."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        data = SiteSettingsSerializer(SiteSettings.load()).data
+        return Response({key: data[key] for key in PUBLIC_SETTINGS_FIELDS})
 
 
 class BannerListView(generics.ListAPIView):

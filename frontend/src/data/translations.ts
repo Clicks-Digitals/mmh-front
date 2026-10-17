@@ -273,7 +273,7 @@ export const translations = {
     "product.fulfillmentCode": "Redeemable code",
     "product.emailDeliveryHint": "We send the code to this email after payment is confirmed.",
     "product.smsDeliveryHint": "We send the code to this mobile number after payment is confirmed.",
-    "product.accountDeliveryHint": "The code stays in your MMH orders. Live PIN delivery is not enabled here.",
+    "product.accountDeliveryHint": "Your code is saved in your MMH orders once payment is confirmed.",
     "product.confirmTitle": "Before adding to cart",
     "product.confirmCombined":
       "I confirm the product, region, and account details are correct, and I understand digital sales are final once the code is delivered or the top-up is submitted.",
@@ -729,7 +729,7 @@ export const translations = {
     "product.fulfillmentCode": "كود قابل للاسترداد",
     "product.emailDeliveryHint": "نرسل الكود إلى هذا البريد بعد تأكيد الدفع.",
     "product.smsDeliveryHint": "نرسل الكود إلى هذا الرقم بعد تأكيد الدفع.",
-    "product.accountDeliveryHint": "يبقى الكود في طلبات إم إم إتش. تسليم الأرقام الحية غير مفعّل هنا.",
+    "product.accountDeliveryHint": "يُحفظ الكود في طلباتك على إم إم إتش بعد تأكيد الدفع.",
     "product.confirmTitle": "قبل الإضافة إلى السلة",
     "product.confirmCombined":
       "أؤكد صحة المنتج والمنطقة وبيانات الحساب، وأفهم أن المبيعات الرقمية نهائية بعد تسليم الكود أو إرسال الشحن.",

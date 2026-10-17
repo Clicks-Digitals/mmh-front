@@ -12,11 +12,15 @@ import { PageCurtain } from "@/components/layout/page-curtain";
 import { Providers } from "@/context/providers";
 import { CatalogBoot } from "@/components/storefront/catalog-boot";
 import { hydrateCatalogFromDb } from "@/server/catalog/map";
+import { loadSiteContact } from "@/server/site-contact";
 
 export const dynamic = "force-dynamic";
 
 export default async function StorefrontLayout({ children }: { children: React.ReactNode }) {
-  const catalog = await hydrateCatalogFromDb().catch(() => ({ products: [], categories: [] }));
+  const [catalog, contact] = await Promise.all([
+    hydrateCatalogFromDb().catch(() => ({ products: [], categories: [] })),
+    loadSiteContact(),
+  ]);
   return (
     <div className="flex min-h-full flex-col bg-deep text-fg">
       <Providers>
@@ -26,8 +30,8 @@ export default async function StorefrontLayout({ children }: { children: React.R
           <AnnouncementBar />
           <Header />
           <main className="flex-1">{children}</main>
-          <Footer />
-          <FloatingContactButtons />
+          <Footer contact={contact} />
+          <FloatingContactButtons contact={contact} />
           <CartDrawer />
           <MobileMenu />
           <SearchOverlay />

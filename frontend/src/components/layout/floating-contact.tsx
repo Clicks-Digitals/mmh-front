@@ -1,9 +1,9 @@
 "use client";
 
-import { SITE } from "@/config/site";
 import { useLanguage } from "@/context/language-context";
 import { cn } from "@/lib/cn";
 import { FOCUS_RING } from "@/components/ui/control";
+import { whatsappHref, type SiteContact } from "@/lib/site-contact";
 
 function TelegramIcon({ className }: { className?: string }) {
   return (
@@ -21,10 +21,10 @@ function WhatsAppIcon({ className }: { className?: string }) {
   );
 }
 
-export function FloatingContactButtons() {
+export function FloatingContactButtons({ contact }: { contact: SiteContact }) {
   const { t } = useLanguage();
-  const telegram = SITE.contact.telegram;
-  const whatsapp = SITE.contact.whatsapp;
+  const telegram = contact.telegram_url;
+  const whatsapp = whatsappHref(contact.whatsapp_number);
 
   if (!telegram && !whatsapp) return null;
 

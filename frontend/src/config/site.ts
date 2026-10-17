@@ -19,18 +19,11 @@ export const SITE = {
     address: "",
     city: "Amman, Jordan",
     hours: "",
-    instagram: "#",
-    facebook: "#",
-    tiktok: "#",
-    youtube: "#",
-    /** Opens Telegram chat / channel */
-    telegram: "https://t.me/mmhstore",
-    /** Opens WhatsApp chat */
-    whatsapp: "https://wa.me/962790000000",
+    // Phone, email, hours, chat buttons and social links are managed in Admin → Settings.
   },
   delivery: {
-    estimate: "Issued after payment is confirmed. Live PIN delivery is not enabled in this environment.",
-    estimateAr: "يُصدر بعد تأكيد الدفع. تسليم الأرقام الحية غير مفعّل في هذه البيئة.",
+    estimate: "Issued after your payment is confirmed.",
+    estimateAr: "يُصدر بعد تأكيد الدفع.",
     topupEstimate: "Submitted for processing after checkout",
     topupEstimateAr: "يُرسل للمعالجة بعد إتمام الطلب",
   },

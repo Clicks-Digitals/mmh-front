@@ -504,6 +504,13 @@ export type SiteSettings = {
   store_name: string;
   support_email?: string;
   support_phone?: string;
+  business_hours?: string;
+  whatsapp_number?: string;
+  telegram_url?: string;
+  instagram_url?: string;
+  facebook_url?: string;
+  tiktok_url?: string;
+  youtube_url?: string;
   currency_display?: string;
   low_stock_threshold?: number;
   maintenance_mode?: boolean;

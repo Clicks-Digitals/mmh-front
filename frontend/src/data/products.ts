@@ -95,11 +95,11 @@ function codeOptions(input: {
     denominations: input.denominations.map((item) => ({
       ...item,
       inStock: item.inStock ?? true,
-      deliveryEstimate: item.deliveryEstimate ?? "Issued after payment is confirmed. Live PIN delivery is not enabled in this environment.",
+      deliveryEstimate: item.deliveryEstimate ?? "Issued after your payment is confirmed.",
     })),
     deliveryMethods: ["account", "email", "sms"],
-    deliveryEstimate: "Issued after payment is confirmed. Live PIN delivery is not enabled in this environment.",
-    deliveryEstimateAr: "يُصدر بعد تأكيد الدفع. تسليم الأرقام الحية غير مفعّل في هذه البيئة.",
+    deliveryEstimate: "Issued after your payment is confirmed.",
+    deliveryEstimateAr: "يُصدر بعد تأكيد الدفع.",
     instructions:
       input.instructions ??
       "Redeem the PIN in the official store of the selected platform. Match the region and currency to the receiving account. MMH does not generate a live code in this environment.",
