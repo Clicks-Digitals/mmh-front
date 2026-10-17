@@ -46,7 +46,6 @@ const SECTIONS = [
   { id: "media", label: "Media" },
   { id: "variants", label: "Variants" },
   { id: "fields", label: "Required fields" },
-  { id: "inventory", label: "Inventory" },
   { id: "supplier", label: "Supplier mapping" },
 ] as const;
 
@@ -534,13 +533,13 @@ export function ProductDetailClient({ id }: { id: string }) {
           </section>
         ) : null}
 
-        {section === "variants" || section === "inventory" ? (
+        {section === "variants" ? (
           <section className="admin-card p-4">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">
-                {section === "inventory" ? "Inventory by variant" : "Variants"}
+                Variants
               </h2>
-              {canWrite && section === "variants" ? (
+              {canWrite ? (
                 <button
                   type="button"
                   className="h-9 rounded-lg border border-[var(--clicks-border)] px-3 text-sm font-medium"
