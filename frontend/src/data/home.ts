@@ -107,7 +107,7 @@ export const HOME_CATEGORY_SWIPER = [
     artworkKey: "deal",
     children: [
       { labelKey: "home.cat.child.allDeals", href: "/deals", image: "/catalog/razer-gold.webp", artworkKey: "deal" },
-      { labelKey: "home.cat.child.bestsellers", href: "/shop?sort=rating", image: "/catalog/psn-store.webp", artworkKey: "deal" },
+      { labelKey: "home.cat.child.bestsellers", href: "/category/best-sellers", image: "/catalog/psn-store.webp", artworkKey: "deal" },
     ],
   },
 ] as const;
@@ -120,7 +120,7 @@ export const HOME_SERVICE_TILES = [
   { id: "deals", href: "/deals", image: "/catalog/razer-gold.webp", artworkKey: "deal", labelKey: "home.service.deals" },
   { id: "mobile", href: "/category/mobile-games", image: "/catalog/free-fire.webp", artworkKey: "card-ff", labelKey: "home.service.mobile" },
   { id: "entertainment", href: "/category/entertainment", image: "/catalog/apple-gift.webp", artworkKey: "card-apple", labelKey: "home.service.entertainment" },
-  { id: "best-sellers", href: "/shop?sort=rating", image: "/catalog/psn-store.webp", artworkKey: "deal", labelKey: "home.service.bestsellers" },
+  { id: "best-sellers", href: "/category/best-sellers", image: "/catalog/psn-store.webp", artworkKey: "deal", labelKey: "home.service.bestsellers" },
 ] as const;
 
 export const HOME_SUGGEST_TILES = [

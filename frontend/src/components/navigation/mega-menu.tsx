@@ -1,7 +1,7 @@
 "use client";
 
 import { CATEGORIES } from "@/data/categories";
-import { PRODUCTS } from "@/data/products";
+import { PRODUCTS, matchesCategoryGroup } from "@/data/products";
 import { getSnapshotCategories, getSnapshotProducts } from "@/lib/catalog-snapshot";
 import { useLanguage } from "@/context/language-context";
 import { ProductArtwork } from "@/components/product/product-artwork";
@@ -49,7 +49,16 @@ export function MegaMenu({ type, onNavigate }: { type: MegaKey; onNavigate?: () 
   const categorySource = getSnapshotCategories();
   const productSource = getSnapshotProducts();
   const cats = (categorySource.length ? categorySource : CATEGORIES).filter((category) => config.slugs.includes(category.slug));
-  const featured = (productSource.length ? productSource : PRODUCTS).find((product) => product.id === config.featured);
+  const products = productSource.length ? productSource : PRODUCTS;
+  // A product ticked "Featured" in the panel wins; the configured product is the fallback.
+  const featured =
+    products.find(
+      (product) =>
+        product.featured &&
+        config.slugs.some(
+          (slug) => product.category === slug || product.platform === slug || matchesCategoryGroup(slug, product),
+        ),
+    ) ?? products.find((product) => product.id === config.featured);
 
   return (
     <div className="container-mmh grid gap-6 py-6 lg:grid-cols-[1fr_260px]" role="navigation" aria-label={t("nav.shop")}>

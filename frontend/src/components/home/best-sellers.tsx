@@ -12,7 +12,7 @@ export function BestSellers() {
   const products = (catalog.length ? catalog : PRODUCTS).filter((product) => product.bestseller).slice(0, 8);
   return (
     <section className="container-mmh py-6">
-      <SectionHeading title={t("home.bestSellers")} actionHref="/shop?sort=rating" actionLabel={t("common.viewAll")} />
+      <SectionHeading title={t("home.bestSellers")} actionHref="/category/best-sellers" actionLabel={t("common.viewAll")} />
       <ProductGrid products={products} />
     </section>
   );

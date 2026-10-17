@@ -16,7 +16,7 @@ export function LatestProducts() {
   return (
     <section className="container-mmh py-6 sm:py-8">
       <div className="mb-4 flex items-end justify-between gap-3">
-        <h2 className="text-xl font-bold tracking-tight sm:text-2xl">{t("home.latest")}</h2>
+        <h2 className="text-xl font-bold tracking-tight sm:text-2xl">{t("home.trending")}</h2>
         <Link href="/shop?sort=newest" className="text-sm font-semibold text-brand-deep hover:text-fg">
           {t("common.viewAll")}
         </Link>

@@ -170,7 +170,7 @@ export function mapApiProduct(row: ApiProduct): Product {
     compareAtPriceJod: firstCompareAt,
     rating: Number(row.rating) || 0,
     reviewCount: row.review_count || 0,
-    badges: (row.badges || []) as ProductBadge[],
+    badges: [...new Set([...(row.badges || []), ...(row.bestseller ? ["bestseller"] : [])])] as ProductBadge[],
     inStock: variants.some((variant) => variant.stock_status === "IN_STOCK") || variants.length === 0,
     featured: row.featured,
     bestseller: row.bestseller,

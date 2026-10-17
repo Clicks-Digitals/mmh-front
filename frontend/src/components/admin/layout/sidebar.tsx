@@ -113,9 +113,18 @@ function isGroup(entry: AdminNavItem | AdminNavGroup): entry is AdminNavGroup {
   return "items" in entry;
 }
 
-function isActive(pathname: string, href: string) {
+function matches(pathname: string, href: string) {
   if (href === "/admin") return pathname === "/admin";
   return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+const NAV_HREFS = ADMIN_NAV.flatMap((entry) => (isGroup(entry) ? entry.items.map((item) => item.href) : [entry.href]));
+
+// Only the most specific match is active, so /admin/integrations/1epin/logs
+// highlights "OneEpin logs" and not "OneEpin" as well.
+function isActive(pathname: string, href: string) {
+  if (!matches(pathname, href)) return false;
+  return !NAV_HREFS.some((other) => other.length > href.length && matches(pathname, other));
 }
 
 function NavLink({
