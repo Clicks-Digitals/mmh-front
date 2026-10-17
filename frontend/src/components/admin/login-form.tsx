@@ -75,7 +75,7 @@ export function AdminLoginForm() {
               type={passwordVisible ? "text" : "password"}
               required
               autoComplete="current-password"
-              className="admin-input pe-14"
+              className="admin-input admin-input--trail-action"
             />
             <button
               type="button"

@@ -28,7 +28,7 @@ export function Footer({ contact }: { contact: SiteContact }) {
           <p className="mt-5 text-sm text-muted">{SITE.contact.city}</p>
           {SITE.contact.address ? <p className="text-sm text-muted">{SITE.contact.address}</p> : null}
           {contact.support_phone ? (
-            <a href={`tel:${contact.support_phone.replace(/s/g, "")}`} className="block text-sm text-muted hover:text-fg" dir="ltr">
+            <a href={`tel:${contact.support_phone.replace(/\s/g, "")}`} className="block text-sm text-muted hover:text-fg" dir="ltr">
               {contact.support_phone}
             </a>
           ) : null}

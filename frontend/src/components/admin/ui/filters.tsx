@@ -43,7 +43,7 @@ export function Filters({
             value={search ?? ""}
             onChange={(e) => onSearchChange(e.target.value)}
             placeholder={searchPlaceholder}
-            className="admin-input ps-8"
+            className="admin-input admin-input--lead-icon"
           />
         </label>
       ) : null}

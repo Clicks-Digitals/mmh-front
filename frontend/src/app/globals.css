@@ -390,6 +390,16 @@ nextjs-portal {
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
+/* Room for a leading icon (search) or a trailing button (show password).
+   Utilities like ps-8 lose to the padding above, so these modifiers carry it. */
+.clicks-shell .admin-input.admin-input--lead-icon {
+  padding-inline-start: 2rem;
+}
+
+.clicks-shell .admin-input.admin-input--trail-action {
+  padding-inline-end: 3.5rem;
+}
+
 .clicks-shell .admin-input:hover {
   border-color: var(--clicks-border-strong);
 }
