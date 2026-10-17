@@ -8,7 +8,6 @@ import {
   FolderTree,
   Globe2,
   HelpCircle,
-  ImageIcon,
   KeyRound,
   LayoutDashboard,
   Link2,
@@ -90,9 +89,7 @@ export const ADMIN_NAV: Array<AdminNavItem | AdminNavGroup> = [
     permissionAny: ["content.read", "content.write", "orders.write", "orders.read"],
     items: [
       { href: "/admin/coupons", label: "Coupons", icon: Percent, permission: "orders.write" },
-      { href: "/admin/banners", label: "Banners", icon: ImageIcon, permission: "content.read" },
       { href: "/admin/faqs", label: "FAQs", icon: HelpCircle, permission: "content.read" },
-      { href: "/admin/pages", label: "Pages", icon: FileText, permission: "content.read" },
     ],
   },
   {
