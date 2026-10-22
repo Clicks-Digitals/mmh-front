@@ -229,7 +229,7 @@ class AdminQaTests(TestCase):
         client = auth_client(self.order_mgr)
         res = client.post(
             f"/api/v1/admin/orders/{order.id}/transition/",
-            {"payment_status": "PAID"},
+            {"payment_status": "PAID", "reason": "Bank transfer confirmed"},
             format="json",
         )
         self.assertEqual(res.status_code, 200)

@@ -8,6 +8,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from accounts.models import AdminProfile, AdminRole, CustomerProfile, Permission, RolePermission, UserKind
+from accounts.permissions import DEFAULT_ROLE_PERMISSIONS, PERMISSION_DEFINITIONS
 from catalog.models import (
     Category,
     FulfillmentType,
@@ -26,59 +27,8 @@ from suppliers.provider import ensure_mock_supplier
 
 User = get_user_model()
 
-PERMISSIONS = [
-    ("catalog.read", "Read catalog"),
-    ("catalog.write", "Write catalog"),
-    ("orders.read", "Read orders"),
-    ("orders.write", "Write orders"),
-    ("orders.fulfill", "Fulfill orders"),
-    ("codes.read", "List digital codes"),
-    ("codes.manage", "Manage digital code inventory"),
-    ("codes.reveal", "Reveal digital codes"),
-    ("customers.read", "Read customers"),
-    ("customers.write", "Write customers"),
-    ("content.read", "Read CMS"),
-    ("content.write", "Write CMS"),
-    ("suppliers.read", "Read suppliers"),
-    ("suppliers.write", "Write suppliers"),
-    ("audit.read", "Read audit"),
-    ("admins.read", "Read administrators"),
-    ("admins.write", "Manage administrators"),
-    ("settings.manage", "Manage site settings"),
-]
-
-ROLE_MAP = {
-    AdminRole.SUPER_ADMIN: [p[0] for p in PERMISSIONS],
-    AdminRole.ADMIN: [p[0] for p in PERMISSIONS],
-    AdminRole.CATALOG_MANAGER: [
-        "catalog.read",
-        "catalog.write",
-        "content.read",
-        "content.write",
-        "suppliers.read",
-        "codes.read",
-    ],
-    AdminRole.ORDER_MANAGER: [
-        "orders.read",
-        "orders.write",
-        "orders.fulfill",
-        "codes.read",
-        "codes.manage",
-        "codes.reveal",
-        "customers.read",
-    ],
-    AdminRole.CONTENT_MANAGER: ["content.read", "content.write", "catalog.read"],
-    AdminRole.SUPPORT_AGENT: ["orders.read", "customers.read", "codes.read"],
-    AdminRole.VIEWER: [
-        "catalog.read",
-        "orders.read",
-        "customers.read",
-        "content.read",
-        "suppliers.read",
-        "audit.read",
-        "codes.read",
-    ],
-}
+# Permission keys/defaults live in accounts.permissions (seeded by migration as well).
+PERMISSIONS = PERMISSION_DEFINITIONS
 
 
 def fils(jod: float) -> int:
@@ -352,10 +302,13 @@ class Command(BaseCommand):
 
         for key, desc in PERMISSIONS:
             Permission.objects.update_or_create(key=key, defaults={"description": desc})
-        for role, keys in ROLE_MAP.items():
-            for key in keys:
-                perm = Permission.objects.get(key=key)
-                RolePermission.objects.get_or_create(role=role, permission=perm)
+        # Only seed roles that have no rows yet: the DB is the source of truth and admins may
+        # have customised permissions. SUPER_ADMIN is hard-coded to "*" and needs no rows.
+        for role, keys in DEFAULT_ROLE_PERMISSIONS.items():
+            if role == AdminRole.SUPER_ADMIN or RolePermission.objects.filter(role=role).exists():
+                continue
+            for key in sorted(keys):
+                RolePermission.objects.get_or_create(role=role, permission=Permission.objects.get(key=key))
 
         categories = {
             "gift-cards": ("Gift cards", "بطاقات الهدايا", "/gift-cards"),
@@ -438,8 +391,9 @@ class Command(BaseCommand):
                     "refund_policy_ar": "المنتجات الرقمية غير قابلة للاسترجاع عادة بعد التسليم.",
                     "delivery_estimate_en": "Instant after payment confirmation",
                     "delivery_estimate_ar": "فوري بعد تأكيد الدفع",
-                    "rating": Decimal("4.70"),
-                    "review_count": 12,
+                    # No real reviews exist; never ship fake ratings.
+                    "rating": Decimal("0"),
+                    "review_count": 0,
                     "badges": ["digital", "instant"],
                     "how_to_use_en": ["Complete checkout", "Receive your code or top-up confirmation", "Redeem on the official store"],
                     "how_to_use_ar": ["أكمل الدفع", "استلم الكود أو تأكيد الشحن", "فعّله على المتجر الرسمي"],
@@ -517,7 +471,8 @@ class Command(BaseCommand):
                 user=admin, defaults={"role": AdminRole.SUPER_ADMIN, "title": "Owner"}
             )
 
-        if getattr(settings, "SEED_DEMO_CUSTOMER", True):
+        is_development = bool(getattr(settings, "IS_DEVELOPMENT", False))
+        if is_development and getattr(settings, "SEED_DEMO_CUSTOMER", True):
             demo, created = User.objects.get_or_create(
                 email="demo@mmh.local",
                 defaults={"first_name": "Demo Customer", "kind": UserKind.CUSTOMER},
@@ -531,12 +486,15 @@ class Command(BaseCommand):
                 demo.save(update_fields=["password"])
             CustomerProfile.objects.get_or_create(user=demo, defaults={"phone": "+962700000000"})
         else:
-            self.stdout.write("Skipping demo customer (SEED_DEMO_CUSTOMER=false)")
+            self.stdout.write("Skipping demo customer (development only; SEED_DEMO_CUSTOMER)")
 
-        Coupon.objects.update_or_create(
-            code="MMH10",
-            defaults={"description": "10% off demo", "percent_off": Decimal("10.00"), "active": True},
-        )
+        if is_development:
+            Coupon.objects.update_or_create(
+                code="MMH10",
+                defaults={"description": "10% off demo", "percent_off": Decimal("10.00"), "active": True},
+            )
+        else:
+            self.stdout.write("Skipping demo coupon MMH10 (development only)")
         Banner.objects.update_or_create(
             href="/shop",
             title_en="Shop digital codes",

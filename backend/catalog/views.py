@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 
 from accounts.drf_permissions import HasAdminPermission, IsAdminUser
 from audit.models import AuditLog
+from audit.services import AuditedModelViewSetMixin, record_audit
 from catalog.models import (
     Category,
     MediaAsset,
@@ -35,11 +36,16 @@ from catalog.serializers import (
     ProductDetailSerializer,
     ProductListSerializer,
     ProductWriteSerializer,
+    PublicCategorySerializer,
+    PublicPlatformSerializer,
     PublicProductSerializer,
+    PublicRegionSerializer,
     RegionSerializer,
     VariantSerializer,
     VariantWriteSerializer,
 )
+from catalog.stock import annotate_stock
+from config.pagination import LargePageNumberPagination
 from catalog.services.media import (
     MediaUploadError,
     absolute_media_url,
@@ -75,20 +81,80 @@ class ConflictError(APIException):
 
 
 class ProtectedDestroyMixin:
+    protected_detail = "Cannot delete because related products or records still reference it."
+
     def perform_destroy(self, instance):
         try:
             instance.delete()
         except ProtectedError as exc:
-            raise ConflictError(
-                detail="Cannot delete because related products or records still reference it."
-            ) from exc
+            raise ConflictError(detail=self.protected_detail) from exc
+
+
+def _has_order_or_code_history(*, product=None, variant=None) -> bool:
+    from commerce.models import OrderItem
+
+    if variant is not None:
+        return (
+            OrderItem.objects.filter(variant=variant).exists()
+            or DigitalCode.objects.filter(variant=variant).exists()
+        )
+    return (
+        OrderItem.objects.filter(Q(product=product) | Q(variant__product=product)).exists()
+        or DigitalCode.objects.filter(variant__product=product).exists()
+    )
+
+
+class PublicProductFilter(filters.FilterSet):
+    """Storefront filters. No supplier/stock/status filters (internal data)."""
+
+    category = filters.CharFilter(method="filter_category")
+    platform = filters.CharFilter(method="filter_platform")
+    region = filters.CharFilter(method="filter_region")
+    kind = filters.CharFilter(field_name="kind")
+    featured = filters.BooleanFilter()
+    bestseller = filters.BooleanFilter()
+    trending = filters.BooleanFilter()
+    q = filters.CharFilter(method="filter_q")
+
+    class Meta:
+        model = Product
+        fields = ["category", "platform", "kind", "featured", "bestseller", "trending", "region"]
+
+    def filter_category(self, queryset, name, value):
+        if not value:
+            return queryset
+        if str(value).isdigit():
+            return queryset.filter(category_id=int(value))
+        return queryset.filter(category__slug=value)
+
+    def filter_platform(self, queryset, name, value):
+        if not value:
+            return queryset
+        if str(value).isdigit():
+            return queryset.filter(platform_id=int(value))
+        return queryset.filter(platform__slug=value)
+
+    def filter_region(self, queryset, name, value):
+        if not value:
+            return queryset
+        return queryset.filter(variants__region__slug=value, variants__published=True).distinct()
+
+    def filter_q(self, queryset, name, value):
+        return queryset.filter(
+            Q(name_en__icontains=value)
+            | Q(name_ar__icontains=value)
+            | Q(slug__icontains=value)
+            | Q(brand__icontains=value)
+        ).distinct()
 
 
 class ProductFilter(filters.FilterSet):
+    """Admin product filters (includes supplier and stock)."""
+
     category = filters.CharFilter(method="filter_category")
     platform = filters.CharFilter(method="filter_platform")
-    region = filters.CharFilter(field_name="variants__region__slug")
-    supplier = filters.CharFilter(field_name="supplier_mappings__supplier__slug")
+    region = filters.CharFilter(method="filter_region")
+    supplier = filters.CharFilter(method="filter_supplier")
     kind = filters.CharFilter(field_name="kind")
     status = filters.CharFilter(field_name="status")
     stock = filters.CharFilter(method="filter_stock")
@@ -114,6 +180,16 @@ class ProductFilter(filters.FilterSet):
         if str(value).isdigit():
             return queryset.filter(platform_id=int(value))
         return queryset.filter(platform__slug=value)
+
+    def filter_region(self, queryset, name, value):
+        if not value:
+            return queryset
+        return queryset.filter(variants__region__slug=value).distinct()
+
+    def filter_supplier(self, queryset, name, value):
+        if not value:
+            return queryset
+        return queryset.filter(supplier_mappings__supplier__slug=value).distinct()
 
     def filter_stock(self, queryset, name, value):
         threshold = SiteSettings.load().low_stock_threshold
@@ -146,39 +222,52 @@ class ProductFilter(filters.FilterSet):
 
 class CategoryListView(generics.ListAPIView):
     permission_classes = [AllowAny]
-    serializer_class = CategorySerializer
-    queryset = Category.objects.filter(status=PublishStatus.PUBLISHED)
+    serializer_class = PublicCategorySerializer
+    queryset = Category.objects.filter(status=PublishStatus.PUBLISHED).select_related("parent").order_by(
+        "sort_order", "slug"
+    )
     pagination_class = None
+    filter_backends: list = []
 
 
 class PlatformListView(generics.ListAPIView):
     permission_classes = [AllowAny]
-    serializer_class = PlatformSerializer
-    queryset = Platform.objects.filter(status=PublishStatus.PUBLISHED)
+    serializer_class = PublicPlatformSerializer
+    queryset = Platform.objects.filter(status=PublishStatus.PUBLISHED).order_by("sort_order", "slug")
     pagination_class = None
+    filter_backends: list = []
 
 
 class RegionListView(generics.ListAPIView):
     permission_classes = [AllowAny]
-    serializer_class = RegionSerializer
-    queryset = Region.objects.all()
+    serializer_class = PublicRegionSerializer
+    queryset = Region.objects.all().order_by("slug")
     pagination_class = None
+    filter_backends: list = []
 
 
 def _public_product_queryset():
+    """Published products whose category AND platform are also published."""
+    variants = annotate_stock(ProductVariant.objects.select_related("region"))
     return (
-        Product.objects.filter(status=PublishStatus.PUBLISHED)
-        .select_related("category", "platform")
-        .prefetch_related("variants__region", "fields", "media")
+        Product.objects.filter(
+            status=PublishStatus.PUBLISHED,
+            category__status=PublishStatus.PUBLISHED,
+            platform__status=PublishStatus.PUBLISHED,
+        )
+        .select_related("category", "category__parent", "platform")
+        .prefetch_related(Prefetch("variants", queryset=variants), "fields", "media")
+        .order_by("sort_order", "slug")
     )
 
 
 class ProductListView(generics.ListAPIView):
     permission_classes = [AllowAny]
     serializer_class = PublicProductSerializer
-    filterset_class = ProductFilter
+    filterset_class = PublicProductFilter
+    pagination_class = LargePageNumberPagination
     search_fields = ["name_en", "name_ar", "slug", "brand"]
-    ordering_fields = ["sort_order", "rating", "created_at", "name_en"]
+    ordering_fields = ["sort_order", "created_at", "name_en"]
 
     def get_queryset(self):
         return _public_product_queryset()
@@ -193,10 +282,11 @@ class ProductDetailView(generics.RetrieveAPIView):
         return _public_product_queryset()
 
 
-class AdminCategoryViewSet(ProtectedDestroyMixin, viewsets.ModelViewSet):
+class AdminCategoryViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, viewsets.ModelViewSet):
+    audit_prefix = "catalog.category"
     permission_classes = [IsAdminUser, HasAdminPermission]
     serializer_class = CategorySerializer
-    queryset = Category.objects.annotate(products_count=Count("products")).all()
+    queryset = Category.objects.select_related("parent").annotate(products_count=Count("products")).all()
     search_fields = ["slug", "name_en", "name_ar"]
     ordering_fields = ["sort_order", "slug", "created_at"]
     filterset_fields = ["status"]
@@ -206,7 +296,8 @@ class AdminCategoryViewSet(ProtectedDestroyMixin, viewsets.ModelViewSet):
         return super().get_permissions()
 
 
-class AdminPlatformViewSet(ProtectedDestroyMixin, viewsets.ModelViewSet):
+class AdminPlatformViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, viewsets.ModelViewSet):
+    audit_prefix = "catalog.platform"
     permission_classes = [IsAdminUser, HasAdminPermission]
     serializer_class = PlatformSerializer
     queryset = Platform.objects.annotate(products_count=Count("products")).all()
@@ -219,7 +310,8 @@ class AdminPlatformViewSet(ProtectedDestroyMixin, viewsets.ModelViewSet):
         return super().get_permissions()
 
 
-class AdminRegionViewSet(ProtectedDestroyMixin, viewsets.ModelViewSet):
+class AdminRegionViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, viewsets.ModelViewSet):
+    audit_prefix = "catalog.region"
     permission_classes = [IsAdminUser, HasAdminPermission]
     serializer_class = RegionSerializer
     queryset = Region.objects.annotate(variants_count=Count("variants")).all()
@@ -234,7 +326,7 @@ def _product_admin_queryset():
     return (
         Product.objects.select_related("category", "platform")
         .prefetch_related(
-            Prefetch("variants", queryset=_variant_code_queryset()),
+            Prefetch("variants", queryset=annotate_stock(_variant_code_queryset())),
             "fields",
             "media",
             "supplier_mappings__supplier",
@@ -256,6 +348,7 @@ def _product_admin_queryset():
 class AdminProductViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminUser, HasAdminPermission]
     queryset = _product_admin_queryset()
+    pagination_class = LargePageNumberPagination
     lookup_field = "slug"
     search_fields = ["name_en", "name_ar", "slug", "brand", "id", "variants__sku"]
     filterset_class = ProductFilter
@@ -283,53 +376,72 @@ class AdminProductViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         product = serializer.save()
-        AuditLog.objects.create(
-            actor=self.request.user,
-            action="product.created",
+        record_audit(
+            self.request.user,
+            "product.created",
             entity_type="Product",
-            entity_id=str(product.id),
+            entity_id=product.id,
             meta={"slug": product.slug, "status": product.status},
         )
 
     def perform_update(self, serializer):
+        before_status = serializer.instance.status if serializer.instance is not None else None
+        fields = sorted(k for k in serializer.validated_data.keys())
         product = serializer.save()
-        AuditLog.objects.create(
-            actor=self.request.user,
-            action="product.updated",
+        record_audit(
+            self.request.user,
+            "product.updated",
             entity_type="Product",
-            entity_id=str(product.id),
-            meta={"slug": product.slug, "status": product.status},
+            entity_id=product.id,
+            meta={"slug": product.slug, "status": product.status, "previous_status": before_status, "fields": fields},
         )
 
     def destroy(self, request, *args, **kwargs):
         product = self.get_object()
-        from commerce.models import OrderItem
-
-        if OrderItem.objects.filter(product=product).exists() or DigitalCode.objects.filter(
-            variant__product=product
-        ).exists():
-            product.status = PublishStatus.ARCHIVED
-            product.save(update_fields=["status", "updated_at"])
-            AuditLog.objects.create(
-                actor=request.user,
-                action="product.archived",
-                entity_type="Product",
-                entity_id=str(product.id),
-                meta={"slug": product.slug, "reason": "has_orders_or_codes"},
-            )
+        if _has_order_or_code_history(product=product):
             return Response(
                 {
-                    "detail": "Product has order or code history and was archived instead of deleted.",
-                    "status": product.status,
+                    "detail": "This product has order or code history and cannot be deleted. Archive it instead.",
+                    "code": "conflict",
                     "slug": product.slug,
-                }
+                    "status": product.status,
+                },
+                status=status.HTTP_409_CONFLICT,
             )
+        product_id, slug = product.id, product.slug
         try:
-            return super().destroy(request, *args, **kwargs)
+            with transaction.atomic():
+                product.delete()
         except ProtectedError as exc:
             raise ConflictError(
                 detail="Cannot delete this product because related records still reference it. Archive it instead."
             ) from exc
+        record_audit(request.user, "product.deleted", entity_type="Product", entity_id=product_id, meta={"slug": slug})
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _set_status(self, request, new_status: str, action_name: str):
+        product = self.get_object()
+        previous = product.status
+        if previous != new_status:
+            product.status = new_status
+            product.save(update_fields=["status", "updated_at"])
+        record_audit(
+            request.user,
+            action_name,
+            entity_type="Product",
+            entity_id=product.id,
+            meta={"slug": product.slug, "previous_status": previous, "status": new_status},
+        )
+        product = _product_admin_queryset().get(pk=product.pk)
+        return Response(ProductDetailSerializer(product, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"], url_path="archive")
+    def archive(self, request, slug=None):
+        return self._set_status(request, PublishStatus.ARCHIVED, "product.archived")
+
+    @action(detail=True, methods=["post"], url_path="unarchive")
+    def unarchive(self, request, slug=None):
+        return self._set_status(request, PublishStatus.DRAFT, "product.unarchived")
 
     @action(detail=True, methods=["post"], url_path="duplicate")
     def duplicate(self, request, slug=None):
@@ -452,6 +564,13 @@ class AdminProductViewSet(viewsets.ModelViewSet):
             )
         except MediaUploadError as exc:
             return Response({"detail": exc.message}, status=exc.status)
+        record_audit(
+            request.user,
+            "media.uploaded",
+            entity_type="MediaAsset",
+            entity_id=asset.id,
+            meta={"product_id": product.id, "path": asset.storage_path, "is_primary": asset.is_primary},
+        )
         return Response(MediaAssetSerializer(asset, context={"request": request}).data, status=201)
 
     @action(detail=True, methods=["post"], url_path="media/reorder")
@@ -540,13 +659,22 @@ class AdminMediaAssetView(APIView):
             asset.sort_order = int(request.data["sort_order"])
             asset.save(update_fields=["sort_order"])
         asset.refresh_from_db()
+        record_audit(
+            request.user,
+            "media.updated",
+            entity_type="MediaAsset",
+            entity_id=asset.id,
+            meta={"product_id": asset.product_id, "fields": sorted(k for k in ("alt", "is_primary", "sort_order") if k in request.data)},
+        )
         return Response(MediaAssetSerializer(asset, context={"request": request}).data)
 
     def delete(self, request, media_id: int):
         asset = MediaAsset.objects.filter(pk=media_id).select_related("product").first()
         if not asset:
             return Response({"detail": "Not found"}, status=404)
+        meta = {"product_id": asset.product_id, "path": asset.storage_path}
         delete_media(asset)
+        record_audit(request.user, "media.deleted", entity_type="MediaAsset", entity_id=media_id, meta=meta)
         return Response(status=204)
 
 
@@ -617,12 +745,16 @@ class AdminSupplierMappingDetailView(APIView):
         return Response(status=204)
 
 
-class AdminVariantViewSet(viewsets.ModelViewSet):
+class AdminVariantViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, viewsets.ModelViewSet):
+    audit_prefix = "catalog.variant"
+    protected_detail = "This variant has order or code history and cannot be deleted. Unpublish it instead."
     permission_classes = [IsAdminUser, HasAdminPermission]
     serializer_class = VariantSerializer
-    queryset = _variant_code_queryset()
     search_fields = ["sku", "name_en", "product__id", "product__slug"]
     filterset_fields = ["stock_status", "published", "product"]
+
+    def get_queryset(self):
+        return annotate_stock(_variant_code_queryset())
 
     def get_permissions(self):
         self.admin_permission = "catalog.read" if self.action in {"list", "retrieve"} else "catalog.write"
@@ -632,6 +764,26 @@ class AdminVariantViewSet(viewsets.ModelViewSet):
         if self.action in {"create", "update", "partial_update"}:
             return VariantWriteSerializer
         return VariantSerializer
+
+    def _audit_label(self, instance) -> dict:
+        return {"sku": instance.sku, "product_id": instance.product_id}
+
+    def perform_create(self, serializer):
+        if not serializer.validated_data.get("product"):
+            raise ValidationError({"product": ["This field is required."]})
+        serializer.validated_data.pop("delete", None)
+        serializer.validated_data.pop("id", None)
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        serializer.validated_data.pop("delete", None)
+        serializer.validated_data.pop("id", None)
+        super().perform_update(serializer)
+
+    def perform_destroy(self, instance):
+        if _has_order_or_code_history(variant=instance):
+            raise ConflictError(detail=self.protected_detail)
+        super().perform_destroy(instance)
 
 
 class AdminInventoryView(APIView):
@@ -681,6 +833,13 @@ class AdminMediaUploadView(APIView):
             path, url, mime = save_upload(upload, getattr(upload, "name", "") or "")
         except MediaUploadError as exc:
             return Response({"detail": exc.message}, status=exc.status)
+        record_audit(
+            request.user,
+            "media.uploaded",
+            entity_type="Media",
+            entity_id=path[-64:],
+            meta={"path": path, "mime_type": mime, "purpose": str(request.data.get("purpose") or "")[:32]},
+        )
         return Response(
             {"url": absolute_media_url(request, url), "path": path, "mime_type": mime},
             status=status.HTTP_201_CREATED,

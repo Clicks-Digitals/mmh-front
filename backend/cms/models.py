@@ -71,7 +71,6 @@ class SiteSettings(models.Model):
     facebook_url = models.URLField(blank=True)
     tiktok_url = models.URLField(blank=True)
     youtube_url = models.URLField(blank=True)
-    currency_display = models.CharField(max_length=8, default="JOD")
     low_stock_threshold = models.IntegerField(default=5)
     maintenance_mode = models.BooleanField(default=False)
     updated_at = models.DateTimeField(auto_now=True)

@@ -76,6 +76,7 @@ class SupplierWebhookEvent(models.Model):
     supplier_ref = models.CharField(max_length=120, blank=True)
     payload = models.JSONField(default=dict)
     processed = models.BooleanField(default=False)
+    reason = models.CharField(max_length=255, blank=True, help_text="Why the event was not processed")
     created_at = models.DateTimeField(auto_now_add=True)
 
 

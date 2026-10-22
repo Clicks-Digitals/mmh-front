@@ -197,7 +197,7 @@ class AdminApiTests(TestCase):
 
         ok = client.post(
             f"/api/v1/admin/orders/{self.order.id}/transition/",
-            {"payment_status": "PAID"},
+            {"payment_status": "PAID", "reason": "Bank transfer confirmed"},
             format="json",
         )
         self.assertEqual(ok.status_code, 200)

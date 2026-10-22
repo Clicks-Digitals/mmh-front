@@ -48,6 +48,20 @@ class ProductionSafetyTests(TestCase):
             name_en="10",
             external_id="10",
         )
+        # Non-demo checkout requires inventory for CODE products.
+        from commerce.crypto import encrypt_code, fingerprint_code
+        from commerce.models import DigitalCode, DigitalCodeStatus
+
+        for value in ("SAFE-STOCK-0001", "SAFE-STOCK-0002"):
+            ct, nonce, masked = encrypt_code(value)
+            DigitalCode.objects.create(
+                variant=self.variant,
+                status=DigitalCodeStatus.AVAILABLE,
+                code_fingerprint=fingerprint_code(value),
+                ciphertext=ct,
+                nonce=nonce,
+                masked=masked,
+            )
 
     def _order_payload(self, coupon=None):
         data = {
@@ -86,6 +100,9 @@ class ProductionSafetyTests(TestCase):
         mark_payment_verified(payment, external_ref="psp-1")
         coupon.refresh_from_db()
         self.assertEqual(coupon.used_count, 1)
+        order.refresh_from_db()
+        self.assertEqual(order.fulfillment_status, FulfillmentStatus.COMPLETED)
+        self.assertEqual(order.items.first().codes.count(), 1)
         # Idempotent replay
         mark_payment_verified(payment, external_ref="psp-1")
         coupon.refresh_from_db()

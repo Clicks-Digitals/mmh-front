@@ -14,10 +14,23 @@ from catalog.models import (
     Region,
     StockStatus,
 )
+from catalog.stock import variant_stock
+
+
+def media_absolute_url(request, url: str) -> str:
+    """Absolute URL for uploaded media (MEDIA_URL paths); other values are returned unchanged."""
+    url = url or ""
+    if request and url.startswith(settings.MEDIA_URL):
+        return request.build_absolute_uri(url)
+    return url
 
 
 class CategorySerializer(serializers.ModelSerializer):
+    """Admin category serializer (all storefront fields writable)."""
+
     products_count = serializers.IntegerField(read_only=True, required=False)
+    parent = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all(), required=False, allow_null=True)
+    parent_slug = serializers.CharField(source="parent.slug", read_only=True, allow_null=True, default=None)
 
     class Meta:
         model = Category
@@ -26,6 +39,7 @@ class CategorySerializer(serializers.ModelSerializer):
             "slug",
             "href",
             "parent",
+            "parent_slug",
             "artwork_key",
             "artwork_url",
             "status",
@@ -39,6 +53,57 @@ class CategorySerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = ("created_at", "updated_at")
+
+    def validate_parent(self, parent):
+        if parent is None or self.instance is None:
+            return parent
+        node, seen = parent, set()
+        while node is not None and node.pk not in seen:
+            if node.pk == self.instance.pk:
+                raise serializers.ValidationError("A category cannot be its own parent or descendant")
+            seen.add(node.pk)
+            node = node.parent
+        return parent
+
+
+class PublicCategorySerializer(serializers.ModelSerializer):
+    parent = serializers.CharField(source="parent.slug", read_only=True, allow_null=True, default=None)
+    artwork_url = serializers.SerializerMethodField()
+    href = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Category
+        fields = (
+            "id",
+            "slug",
+            "href",
+            "parent",
+            "artwork_key",
+            "artwork_url",
+            "sort_order",
+            "name_en",
+            "name_ar",
+            "description_en",
+            "description_ar",
+        )
+
+    def get_artwork_url(self, obj) -> str:
+        return media_absolute_url(self.context.get("request"), obj.artwork_url)
+
+    def get_href(self, obj) -> str:
+        return obj.href or f"/category/{obj.slug}"
+
+
+class PublicPlatformSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Platform
+        fields = ("id", "slug", "artwork_key", "sort_order", "name_en", "name_ar")
+
+
+class PublicRegionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Region
+        fields = ("id", "slug", "currency", "locked", "name_en", "name_ar")
 
 
 class PlatformSerializer(serializers.ModelSerializer):
@@ -79,6 +144,9 @@ class VariantSerializer(serializers.ModelSerializer):
     codes_reserved = serializers.SerializerMethodField()
     codes_delivered = serializers.SerializerMethodField()
     low_stock = serializers.SerializerMethodField()
+    available_codes = serializers.SerializerMethodField()
+    effective_stock_status = serializers.SerializerMethodField()
+    available = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductVariant
@@ -108,7 +176,26 @@ class VariantSerializer(serializers.ModelSerializer):
             "codes_reserved",
             "codes_delivered",
             "low_stock",
+            "available_codes",
+            "effective_stock_status",
+            "available",
         )
+
+    def _stock(self, obj) -> tuple[str, int]:
+        cache = getattr(obj, "_stock_cache", None)
+        if cache is None:
+            cache = variant_stock(obj)
+            obj._stock_cache = cache
+        return cache
+
+    def get_available_codes(self, obj) -> int:
+        return self._stock(obj)[1]
+
+    def get_effective_stock_status(self, obj) -> str:
+        return self._stock(obj)[0]
+
+    def get_available(self, obj) -> bool:
+        return self._stock(obj)[0] == StockStatus.IN_STOCK
 
     def get_codes_available(self, obj) -> int:
         return int(getattr(obj, "codes_available", 0) or 0)
@@ -120,14 +207,20 @@ class VariantSerializer(serializers.ModelSerializer):
         return int(getattr(obj, "codes_delivered", 0) or 0)
 
     def get_low_stock(self, obj) -> bool:
-        from cms.models import SiteSettings
+        threshold = self.context.get("low_stock_threshold")
+        if threshold is None:
+            from cms.models import SiteSettings
 
-        threshold = SiteSettings.load().low_stock_threshold
+            threshold = SiteSettings.load().low_stock_threshold
+            self.context["low_stock_threshold"] = threshold
         return self.get_codes_available(obj) < threshold
 
 
 class VariantWriteSerializer(serializers.ModelSerializer):
+    """Writable variant fields. ``stock_status`` is the manual override (OUT_OF_STOCK always wins)."""
+
     id = serializers.IntegerField(required=False)
+    product = serializers.PrimaryKeyRelatedField(queryset=Product.objects.all(), required=False)
     region = serializers.PrimaryKeyRelatedField(
         queryset=Region.objects.all(), required=False, allow_null=True
     )
@@ -137,6 +230,7 @@ class VariantWriteSerializer(serializers.ModelSerializer):
         model = ProductVariant
         fields = (
             "id",
+            "product",
             "sku",
             "external_id",
             "denomination",
@@ -167,16 +261,39 @@ class VariantWriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Cost cannot be negative")
         return value
 
+    def validate_compare_at_price_fils(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("Compare-at price cannot be negative")
+        return value
+
     def validate(self, attrs):
         sku = attrs.get("sku")
-        vid = attrs.get("id")
+        vid = attrs.get("id") or (self.instance.pk if self.instance is not None else None)
         if sku:
             qs = ProductVariant.objects.filter(sku=sku)
             if vid:
                 qs = qs.exclude(pk=vid)
             if qs.exists():
                 raise serializers.ValidationError({"sku": "SKU already exists"})
+        existing = self.instance
+        if existing is None and attrs.get("id"):
+            existing = ProductVariant.objects.filter(pk=attrs["id"]).first()
+        min_q = attrs.get("min_quantity", getattr(existing, "min_quantity", 1))
+        max_q = attrs.get("max_quantity", getattr(existing, "max_quantity", 5))
+        if min_q is not None and min_q < 1:
+            raise serializers.ValidationError({"min_quantity": "Minimum quantity must be at least 1"})
+        if min_q is not None and max_q is not None and min_q > max_q:
+            raise serializers.ValidationError({"max_quantity": "Maximum quantity must be >= minimum quantity"})
         return attrs
+
+    def to_representation(self, instance):
+        if self.parent is not None:
+            return super().to_representation(instance)
+        from catalog.stock import annotate_stock
+        from catalog.views import _variant_code_queryset
+
+        fresh = annotate_stock(_variant_code_queryset()).filter(pk=instance.pk).first() or instance
+        return VariantSerializer(fresh, context=self.context).data
 
 
 class FieldSerializer(serializers.ModelSerializer):
@@ -310,20 +427,17 @@ class ProductListSerializer(serializers.ModelSerializer):
         )
 
     def get_primary_image_url(self, obj) -> str:
+        """Primary uploaded media, else ``image_url``, else "" (never a guessed path)."""
         request = self.context.get("request")
-        url = obj.image_url or ""
-        primary = next((m for m in getattr(obj, "_prefetched_objects_cache", {}).get("media", []) if m.is_primary), None)
-        if primary is None and hasattr(obj, "media"):
-            try:
-                primary = obj.media.filter(is_primary=True).first()
-            except Exception:
-                primary = None
-        if primary:
-            url = primary.url
+        prefetched = getattr(obj, "_prefetched_objects_cache", {})
+        if "media" in prefetched:
+            media = list(prefetched["media"])
+        else:
+            media = list(obj.media.all()) if obj.pk else []
+        primary = next((m for m in media if m.is_primary), None)
+        url = (primary.url if primary and primary.url else "") or (obj.image_url or "")
         # Only uploaded media lives on the API host; other relative paths are storefront assets.
-        if request and url and url.startswith(settings.MEDIA_URL):
-            return request.build_absolute_uri(url)
-        return url
+        return media_absolute_url(request, url)
 
 
 class MediaAssetSerializer(serializers.ModelSerializer):
@@ -345,11 +459,7 @@ class MediaAssetSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "key", "mime_type", "product", "created_at")
 
     def get_url(self, obj) -> str:
-        request = self.context.get("request")
-        url = obj.url or ""
-        if request and url.startswith("/"):
-            return request.build_absolute_uri(url)
-        return url
+        return media_absolute_url(self.context.get("request"), obj.url)
 
 
 class ProductDetailSerializer(ProductListSerializer):
@@ -417,6 +527,9 @@ class PublicVariantSerializer(serializers.ModelSerializer):
     region_name_en = serializers.CharField(source="region.name_en", read_only=True, allow_null=True)
     region_name_ar = serializers.CharField(source="region.name_ar", read_only=True, allow_null=True)
     region_locked = serializers.BooleanField(source="region.locked", read_only=True, allow_null=True)
+    region = serializers.SerializerMethodField()
+    stock_status = serializers.SerializerMethodField()
+    available = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductVariant
@@ -438,7 +551,29 @@ class PublicVariantSerializer(serializers.ModelSerializer):
             "region_name_en",
             "region_name_ar",
             "region_locked",
+            "region",
+            "available",
         )
+
+    def _status(self, obj) -> str:
+        cache = getattr(obj, "_stock_cache", None)
+        if cache is None:
+            cache = variant_stock(obj, fulfillment_type=self.context.get("fulfillment_type"))
+            obj._stock_cache = cache
+        return cache[0]
+
+    def get_stock_status(self, obj) -> str:
+        """Effective status: manual override + available codes / supplier mapping."""
+        return self._status(obj)
+
+    def get_available(self, obj) -> bool:
+        return self._status(obj) == StockStatus.IN_STOCK
+
+    def get_region(self, obj) -> dict | None:
+        if not obj.region_id:
+            return None
+        r = obj.region
+        return {"slug": r.slug, "name_en": r.name_en, "name_ar": r.name_ar, "currency": r.currency}
 
 
 _PUBLIC_EXCLUDED = {"supplier_names", "codes_available", "variants_count", "price_min_fils", "price_max_fils"}
@@ -448,13 +583,15 @@ class PublicProductSerializer(ProductListSerializer):
     """Storefront-facing product: no cost, stock counts, or supplier data."""
 
     variants = serializers.SerializerMethodField()
+    in_stock = serializers.SerializerMethodField()
     fields = FieldSerializer(many=True, read_only=True)
     media = MediaAssetSerializer(many=True, read_only=True)
-    category = CategorySerializer(read_only=True)
-    platform = PlatformSerializer(read_only=True)
+    category = PublicCategorySerializer(read_only=True)
+    platform = PublicPlatformSerializer(read_only=True)
 
     class Meta(ProductListSerializer.Meta):
         fields = tuple(f for f in ProductListSerializer.Meta.fields if f not in _PUBLIC_EXCLUDED) + (
+            "in_stock",
             "description_en",
             "description_ar",
             "instructions_en",
@@ -479,9 +616,20 @@ class PublicProductSerializer(ProductListSerializer):
             "platform",
         )
 
+    def _published_variants(self, obj) -> list[ProductVariant]:
+        return [v for v in obj.variants.all() if v.published]
+
     def get_variants(self, obj) -> list[dict]:
-        published = [v for v in obj.variants.all() if v.published]
-        return PublicVariantSerializer(published, many=True, context=self.context).data
+        context = {**self.context, "fulfillment_type": obj.fulfillment_type}
+        return PublicVariantSerializer(self._published_variants(obj), many=True, context=context).data
+
+    def get_in_stock(self, obj) -> bool:
+        for v in self._published_variants(obj):
+            if getattr(v, "_stock_cache", None) is None:
+                v._stock_cache = variant_stock(v, fulfillment_type=obj.fulfillment_type)
+            if v._stock_cache[0] == StockStatus.IN_STOCK:
+                return True
+        return False
 
     def get_region_labels(self, obj) -> list[str]:
         return sorted({v.region.name_en for v in obj.variants.all() if v.published and v.region_id})
@@ -586,6 +734,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             item = dict(item)
             delete = item.pop("delete", False)
             vid = item.pop("id", None)
+            item.pop("product", None)
             if delete:
                 if not vid:
                     continue

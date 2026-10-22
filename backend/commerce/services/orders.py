@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 from django.db import transaction
 
 from audit.models import AuditLog
-from commerce.models import FulfillmentStatus, Order, PaymentStatus
+from commerce.models import DigitalCode, DigitalCodeStatus, FulfillmentStatus, Order, PaymentStatus
+
+logger = logging.getLogger("commerce")
 
 
 class OrderTransitionError(Exception):
@@ -91,6 +95,49 @@ def _validate_fulfillment_transition(current: str, next_status: str) -> None:
         )
 
 
+PAID_UNREFUNDED = {PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED}
+
+
+def allowed_payment_transitions(order: Order) -> list[str]:
+    return sorted(PAYMENT_TRANSITIONS.get(order.payment_status, set()))
+
+
+def allowed_fulfillment_transitions(order: Order) -> list[str]:
+    if order.fulfillment_status in TERMINAL_FULFILLMENT:
+        return []
+    allowed = set(FULFILLMENT_TRANSITIONS.get(order.fulfillment_status, set()))
+    if order.payment_status in PAID_UNREFUNDED:
+        allowed.discard(FulfillmentStatus.CANCELLED)
+    return sorted(allowed)
+
+
+def can_cancel(order: Order) -> bool:
+    """Cancel = payment CANCELLED and/or fulfillment CANCELLED. Never for paid, unrefunded orders."""
+    if order.payment_status in PAID_UNREFUNDED:
+        return False
+    return FulfillmentStatus.CANCELLED in FULFILLMENT_TRANSITIONS.get(
+        order.fulfillment_status, set()
+    ) or PaymentStatus.CANCELLED in PAYMENT_TRANSITIONS.get(order.payment_status, set())
+
+
+def retire_refunded_codes(order: Order, *, actor=None) -> int:
+    """Refunded orders: their delivered codes must never be resold or revealed again."""
+    qs = DigitalCode.objects.filter(order_item__order=order).exclude(status=DigitalCodeStatus.UNAVAILABLE)
+    ids = list(qs.values_list("id", flat=True))
+    if not ids:
+        return 0
+    DigitalCode.objects.filter(id__in=ids).update(status=DigitalCodeStatus.UNAVAILABLE)
+    AuditLog.objects.create(
+        actor=actor,
+        action="codes.refund_retired",
+        entity_type="Order",
+        entity_id=str(order.id),
+        meta={"order_number": order.order_number, "code_ids": ids},
+    )
+    logger.info("Order %s refunded; %s code(s) marked UNAVAILABLE", order.order_number, len(ids))
+    return len(ids)
+
+
 @transaction.atomic
 def transition_order(
     order: Order,
@@ -98,6 +145,7 @@ def transition_order(
     payment_status: str | None = None,
     fulfillment_status: str | None = None,
     actor=None,
+    reason: str = "",
 ) -> Order:
     if payment_status is None and fulfillment_status is None:
         raise OrderTransitionError("Provide payment_status and/or fulfillment_status")
@@ -125,11 +173,16 @@ def transition_order(
 
     if changes:
         order.save(update_fields=update_fields)
+        meta = {"order_number": order.order_number, "changes": changes}
+        if reason:
+            meta["reason"] = reason[:500]
         AuditLog.objects.create(
             actor=actor,
             action="orders.transition",
             entity_type="Order",
             entity_id=str(order.id),
-            meta={"order_number": order.order_number, "changes": changes},
+            meta=meta,
         )
+        if "payment_status" in changes and order.payment_status == PaymentStatus.REFUNDED:
+            retire_refunded_codes(order, actor=actor)
     return order

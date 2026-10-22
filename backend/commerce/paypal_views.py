@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 
 from commerce.services.payment import PaymentError
 from commerce.services.paypal import capture_paypal_order, create_checkout_order, handle_webhook, public_config
+from commerce.throttling import COMMERCE_THROTTLE_CLASSES
 
 
 class PayPalCreateOrderSerializer(serializers.Serializer):
@@ -28,6 +29,8 @@ class PayPalConfigView(APIView):
 
 class PayPalCreateOrderView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = COMMERCE_THROTTLE_CLASSES
+    throttle_scope = "paypal"
 
     def post(self, request):
         serializer = PayPalCreateOrderSerializer(data=request.data)
@@ -45,6 +48,8 @@ class PayPalCreateOrderView(APIView):
 
 class PayPalCaptureOrderView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = COMMERCE_THROTTLE_CLASSES
+    throttle_scope = "paypal"
 
     def post(self, request):
         serializer = PayPalCaptureSerializer(data=request.data)

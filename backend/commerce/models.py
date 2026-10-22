@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import secrets
+
 from django.conf import settings
 from django.db import models
 
 from catalog.models import Product, ProductVariant
+
+
+def generate_access_token() -> str:
+    """Random 32-char URL-safe secret that lets a guest open their order/codes."""
+    return secrets.token_urlsafe(24)
 
 
 class PaymentStatus(models.TextChoices):
@@ -35,6 +42,7 @@ class Coupon(models.Model):
     starts_at = models.DateTimeField(null=True, blank=True)
     ends_at = models.DateTimeField(null=True, blank=True)
     max_uses = models.IntegerField(null=True, blank=True)
+    max_uses_per_customer = models.IntegerField(null=True, blank=True)
     used_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -91,6 +99,7 @@ class Order(models.Model):
         max_length=32, choices=FulfillmentStatus.choices, default=FulfillmentStatus.NOT_STARTED
     )
     idempotency_key = models.CharField(max_length=255, blank=True, db_index=True)
+    access_token = models.CharField(max_length=64, default=generate_access_token, editable=False)
     region_confirmed = models.BooleanField(default=False)
     refund_confirmed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -126,6 +135,8 @@ class OrderItem(models.Model):
     delivery_contact = models.CharField(max_length=255, blank=True)
     region_name = models.CharField(max_length=120, blank=True)
     platform_name = models.CharField(max_length=120, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    delivery_note = models.TextField(blank=True)
 
     def __str__(self) -> str:
         return f"{self.product_name} x{self.quantity}"
@@ -210,6 +221,9 @@ class CodeImportBatch(models.Model):
     error_report = models.JSONField(default=list, blank=True)
     preview_rows = models.JSONField(default=list, blank=True)
     pending_file_path = models.CharField(max_length=512, blank=True)
+    # AES-GCM ciphertext (base64) of the normalized rows awaiting confirmation; cleared afterwards.
+    pending_payload = models.TextField(blank=True)
+    pending_payload_nonce = models.CharField(max_length=64, blank=True)
     file_sha256 = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -252,6 +266,7 @@ class DigitalCode(models.Model):
     ciphertext = models.TextField()
     nonce = models.CharField(max_length=64)
     masked = models.CharField(max_length=64)
+    delivered_at = models.DateTimeField(null=True, blank=True)
     revealed_at = models.DateTimeField(null=True, blank=True)
     revealed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="revealed_codes"

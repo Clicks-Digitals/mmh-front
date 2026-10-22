@@ -1,3 +1,184 @@
-from django.test import TestCase
+from __future__ import annotations
 
-# Create your tests here.
+from unittest import mock
+
+from django.test import TestCase, override_settings
+
+from accounts.models import AdminRole
+from accounts.tests_admin import auth_client, make_admin, seed_permissions
+from audit.models import AuditLog
+from suppliers.models import Supplier, SupplierConnection, SupplierOrder, SupplierWebhookEvent
+from suppliers.provider import BalanceResult, SupplierError
+
+STATUS_KEYS = {
+    "supplier",
+    "mode",
+    "environment",
+    "email_configured",
+    "password_configured",
+    "callback_configured",
+    "last_balance",
+    "last_balance_currency",
+    "last_checked_at",
+    "live_locked",
+}
+
+
+@override_settings(ONEEPIN_CALLBACK_TOKEN="cb-secret-token", ONEEPIN_RECONCILE_TOKEN="rc-token")
+class CallbackTests(TestCase):
+    def test_url_token_accepted(self):
+        res = self.client.post(
+            "/api/v1/suppliers/1epin/callback/cb-secret-token/",
+            {"OrderNumber": "ON-1", "ResultCode": "00"},
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertFalse(body["processed"])
+        self.assertEqual(body["reason"], "no_matching_supplier_order")
+        event = SupplierWebhookEvent.objects.get(pk=body["id"])
+        self.assertFalse(event.processed)
+        self.assertEqual(event.reason, "no_matching_supplier_order")
+
+    def test_header_token_accepted(self):
+        supplier = Supplier.objects.create(slug="1epin", name="1Epin")
+        SupplierOrder.objects.create(supplier=supplier, order_item_id=1, supplier_ref="ON-2")
+        res = self.client.post(
+            "/api/v1/suppliers/1epin/callback/",
+            {"OrderNumber": "ON-2", "ResultCode": "00"},
+            content_type="application/json",
+            HTTP_X_CALLBACK_TOKEN="cb-secret-token",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["reason"], "recorded_for_manual_processing")
+        self.assertFalse(res.json()["processed"])
+
+    def test_wrong_or_missing_token_rejected(self):
+        for url, headers in (
+            ("/api/v1/suppliers/1epin/callback/wrong/", {}),
+            ("/api/v1/suppliers/1epin/callback/", {}),
+            ("/api/v1/suppliers/1epin/callback/", {"HTTP_X_CALLBACK_TOKEN": "cb-secret-tokeN"}),
+        ):
+            res = self.client.post(url, {"OrderNumber": "X"}, content_type="application/json", **headers)
+            self.assertEqual(res.status_code, 401, url)
+        self.assertFalse(SupplierWebhookEvent.objects.exists())
+
+    def test_missing_order_number_reason(self):
+        res = self.client.post(
+            "/api/v1/suppliers/1epin/callback/", {}, content_type="application/json", HTTP_X_CALLBACK_TOKEN="cb-secret-token"
+        )
+        self.assertEqual(res.json()["reason"], "missing_order_number")
+
+    @override_settings(ONEEPIN_CALLBACK_TOKEN="")
+    def test_unconfigured_token_rejects_everything(self):
+        res = self.client.post("/api/v1/suppliers/1epin/callback/", {}, content_type="application/json", HTTP_X_CALLBACK_TOKEN="")
+        self.assertEqual(res.status_code, 401)
+
+    def test_compare_digest_used(self):
+        with mock.patch("suppliers.views.secrets.compare_digest", return_value=False) as cd:
+            res = self.client.post(
+                "/api/v1/suppliers/1epin/callback/cb-secret-token/", {}, content_type="application/json"
+            )
+        self.assertEqual(res.status_code, 401)
+        cd.assert_called_once()
+
+    def test_reconcile_token(self):
+        self.assertEqual(self.client.post("/api/v1/suppliers/1epin/reconcile/").status_code, 401)
+        res = self.client.post("/api/v1/suppliers/1epin/reconcile/", HTTP_AUTHORIZATION="Bearer rc-token")
+        self.assertEqual(res.status_code, 200)
+
+
+class AdminSupplierEndpointTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        seed_permissions()
+        cls.admin = make_admin("sup-admin@mmh.test", AdminRole.ADMIN)
+        cls.viewer = make_admin("sup-viewer@mmh.test", AdminRole.VIEWER)
+
+    def test_status_shape(self):
+        res = auth_client(self.viewer).get("/api/v1/admin/1epin/status/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(set(res.data), STATUS_KEYS)
+
+    def test_ping_returns_status_shape_plus_message(self):
+        res = auth_client(self.admin).post("/api/v1/admin/1epin/ping/")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(STATUS_KEYS <= set(res.data))
+        self.assertIn("message", res.data)
+        self.assertTrue(res.data["ok"])
+        self.assertIsNotNone(res.data["last_checked_at"])
+        with mock.patch("suppliers.views.get_supplier_provider", side_effect=SupplierError("down")):
+            res = auth_client(self.admin).post("/api/v1/admin/1epin/ping/")
+        self.assertEqual(res.status_code, 502)
+        self.assertFalse(res.data["ok"])
+        self.assertTrue(STATUS_KEYS <= set(res.data))
+
+    def test_balance_get_is_read_only(self):
+        with mock.patch("suppliers.views.get_supplier_provider", side_effect=AssertionError("must not call")):
+            res = auth_client(self.viewer).get("/api/v1/admin/1epin/balance/")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["cached"])
+        self.assertIsNone(res.data["balance"])
+        self.assertFalse(res.data["ok"])
+        connection = Supplier.objects.get(slug="1epin").connection
+        self.assertIsNone(connection.last_checked_at)
+
+    def test_balance_refresh_stores_and_get_returns_cache(self):
+        self.assertEqual(auth_client(self.viewer).post("/api/v1/admin/1epin/balance/refresh/").status_code, 403)
+        provider = mock.Mock()
+        provider.get_balance.return_value = BalanceResult(amount="42.50", currency="USD", message="ok", ok=True)
+        with mock.patch("suppliers.views.get_supplier_provider", return_value=provider):
+            res = auth_client(self.admin).post("/api/v1/admin/1epin/balance/refresh/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["balance"], "42.50")
+        self.assertEqual(res.data["amount"], "42.50")
+        self.assertEqual(res.data["currency"], "USD")
+        self.assertFalse(res.data["cached"])
+        cached = auth_client(self.viewer).get("/api/v1/admin/1epin/balance/")
+        self.assertEqual(cached.data["balance"], "42.50")
+        self.assertTrue(cached.data["ok"])
+        self.assertTrue(cached.data["cached"])
+
+    def test_balance_refresh_failure_502(self):
+        with mock.patch("suppliers.views.get_supplier_provider", side_effect=SupplierError("1Epin HTTP 500")):
+            res = auth_client(self.admin).post("/api/v1/admin/1epin/balance/refresh/")
+        self.assertEqual(res.status_code, 502)
+        self.assertFalse(res.data["ok"])
+        self.assertIn("detail", res.data)
+        provider = mock.Mock()
+        provider.get_balance.return_value = BalanceResult(amount="0", currency="USD", message="bad creds", ok=False)
+        with mock.patch("suppliers.views.get_supplier_provider", return_value=provider):
+            res = auth_client(self.admin).post("/api/v1/admin/1epin/balance/refresh/")
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.data["detail"], "bad creds")
+
+    def test_sync_noop_is_409_and_failure_502(self):
+        res = auth_client(self.admin).post("/api/v1/admin/1epin/sync/")
+        self.assertEqual(res.status_code, 409)
+        self.assertFalse(res.data["ok"])
+        self.assertTrue(res.data["detail"])
+        with mock.patch("suppliers.views.get_supplier_provider", side_effect=SupplierError("timeout")):
+            res = auth_client(self.admin).post("/api/v1/admin/1epin/sync/")
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.data, {"ok": False, "detail": "timeout", "message": "timeout"})
+        provider = mock.Mock()
+        provider.sync_catalog.return_value = {"ok": False, "imported": 0, "message": "remote error"}
+        with mock.patch("suppliers.views.get_supplier_provider", return_value=provider):
+            res = auth_client(self.admin).post("/api/v1/admin/1epin/sync/")
+        self.assertEqual(res.status_code, 502)
+        provider.sync_catalog.return_value = {"ok": True, "imported": 3, "message": "done"}
+        with mock.patch("suppliers.views.get_supplier_provider", return_value=provider):
+            res = auth_client(self.admin).post("/api/v1/admin/1epin/sync/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["imported"], 3)
+
+    def test_supplier_crud_audited(self):
+        client = auth_client(self.admin)
+        res = client.post("/api/v1/admin/suppliers/", {"slug": "acme", "name": "Acme"}, format="json")
+        self.assertEqual(res.status_code, 201)
+        supplier = Supplier.objects.get(slug="acme")
+        self.assertTrue(SupplierConnection.objects.filter(supplier=supplier).exists())
+        client.patch(f"/api/v1/admin/suppliers/{supplier.pk}/", {"active": False}, format="json")
+        client.delete(f"/api/v1/admin/suppliers/{supplier.pk}/")
+        actions = set(AuditLog.objects.filter(entity_type="Supplier").values_list("action", flat=True))
+        self.assertEqual(actions, {"supplier.created", "supplier.updated", "supplier.deleted"})

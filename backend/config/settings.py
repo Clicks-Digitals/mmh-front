@@ -2,37 +2,43 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from config.env import (
+    email_settings,
+    env_bool,
+    normalize_env,
+    resolve_code_encryption_key,
+    resolve_secret_key,
+)
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
-DJANGO_ENV = os.getenv("DJANGO_ENV", "development").lower().strip()
-IS_PRODUCTION = DJANGO_ENV in {"prod", "production"}
-IS_STAGING = DJANGO_ENV in {"staging", "stage"}
+DJANGO_ENV = normalize_env(os.getenv("DJANGO_ENV"))
+IS_PRODUCTION = DJANGO_ENV == "production"
+IS_STAGING = DJANGO_ENV == "staging"
 IS_DEVELOPMENT = not IS_PRODUCTION and not IS_STAGING
+IS_DEPLOYED = IS_PRODUCTION or IS_STAGING
+TESTING = len(sys.argv) > 1 and sys.argv[1] == "test"
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.lower() in {"1", "true", "yes", "on"}
+    return env_bool(os.environ, name, default)
 
 
 # ---------------------------------------------------------------------------
 # Core secrets / debug
 # ---------------------------------------------------------------------------
 
-SECRET_KEY = os.getenv("SECRET_KEY") or os.getenv("DJANGO_SECRET_KEY") or ""
-if not SECRET_KEY:
-    if IS_PRODUCTION:
-        raise RuntimeError("SECRET_KEY (or DJANGO_SECRET_KEY) must be set when DJANGO_ENV=production")
-    SECRET_KEY = "dev-only-change-me-mmh-backend"
+# Required in staging and production (raises at startup when missing).
+SECRET_KEY = resolve_secret_key(DJANGO_ENV, os.environ)
 
 DEBUG = _env_bool("DEBUG", default=IS_DEVELOPMENT)
 if IS_PRODUCTION and DEBUG:
@@ -62,6 +68,7 @@ INSTALLED_APPS = [
     "django_filters",
     "rest_framework",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
     "accounts",
     "catalog",
     "commerce",
@@ -139,7 +146,22 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
+# Point at a persistent volume in deployed environments, e.g. MEDIA_ROOT=/data/media on Railway.
+MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT") or (BASE_DIR / "media"))
+# Uploaded media is served by Django in every environment (config.media.serve_media).
+MEDIA_CACHE_SECONDS = int(os.getenv("MEDIA_CACHE_SECONDS", str(60 * 60 * 24 * 30)))
+
+# Public storefront origin used in emails (password reset links, etc.).
+SITE_URL = (os.getenv("SITE_URL") or "https://www.mmhcard.com").strip().rstrip("/")
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "").strip()
+
+# Email: SMTP when EMAIL_HOST is set, otherwise console output.
+_email = email_settings(os.environ)
+EMAIL_CONFIGURED = _email.pop("EMAIL_CONFIGURED")
+globals().update(_email)
+
+# /django-admin/ is only mounted when enabled (default: development only).
+DJANGO_ADMIN_ENABLED = _env_bool("DJANGO_ADMIN_ENABLED", default=IS_DEVELOPMENT)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -164,24 +186,84 @@ CSRF_TRUSTED_ORIGINS = [
     if o.strip()
 ]
 
-# HTTPS / cookies — enabled for production & staging; local HTTP remains usable in development
-if IS_PRODUCTION or IS_STAGING:
+# HTTPS / cookies — staging is hardened exactly like production; local HTTP stays usable in development.
+if IS_DEPLOYED:
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     CSRF_COOKIE_HTTPONLY = False
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-    SECURE_SSL_REDIRECT = _env_bool("SECURE_SSL_REDIRECT", default=IS_PRODUCTION)
-    SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000" if IS_PRODUCTION else "0"))
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = IS_PRODUCTION
-    SECURE_HSTS_PRELOAD = IS_PRODUCTION
+    SECURE_SSL_REDIRECT = _env_bool("SECURE_SSL_REDIRECT", default=True)
+    # Platform health checks hit the container over plain HTTP.
+    SECURE_REDIRECT_EXEMPT = [r"^health/$", r"^api/health/$", r"^api/ready/$"]
+    SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = _env_bool("SECURE_HSTS_PRELOAD", default=False)
     SECURE_CONTENT_TYPE_NOSNIFF = True
     SECURE_REFERRER_POLICY = "same-origin"
 
+# Shared cache so throttle counters hold across gunicorn workers/containers.
+# The entrypoint runs `manage.py createcachetable` before starting.
+if TESTING:
+    CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "mmh-tests"}}
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "django_cache",
+            "TIMEOUT": 300,
+            "OPTIONS": {"MAX_ENTRIES": 20000},
+        }
+    }
+
+
+def _rate(name: str, default: str | None) -> str | None:
+    """Throttle rate from env THROTTLE_<NAME>_RATE; an empty value disables that limit."""
+    raw = os.getenv(f"THROTTLE_{name.upper()}_RATE")
+    value = default if raw is None else (raw.strip() or None)
+    if TESTING and value is not None:
+        # The suite sends many requests from one client; throttle tests patch tiny rates explicitly.
+        return "100000/min"
+    return value
+
+
+THROTTLE_RATES = {
+    # Anonymous writes (POST/PUT/PATCH/DELETE) per client IP.
+    "anon": _rate("anon", "120/min"),
+    # Anonymous reads. Off by default: the storefront renders server-side from shared
+    # Vercel egress IPs, so a per-IP read cap would throttle every visitor at once.
+    "anon_read": _rate("anon_read", None),
+    "user": _rate("user", "300/min"),
+    "login": _rate("login", "10/min"),
+    "register": _rate("register", "5/hour"),
+    "password_reset": _rate("password_reset", "5/hour"),
+    "password_reset_confirm": _rate("password_reset_confirm", "20/hour"),
+    "token_refresh": _rate("token_refresh", "60/min"),
+    "logout": _rate("logout", "30/min"),
+    "coupon": _rate("coupon", "20/min"),
+    "checkout": _rate("checkout", "30/hour"),
+    "order_lookup": _rate("order_lookup", "30/min"),
+    "code_reveal": _rate("code_reveal", "20/hour"),
+    "paypal": _rate("paypal", "60/hour"),
+    "contact": _rate("contact", "10/hour"),
+    "supplier_callback": _rate("supplier_callback", "120/min"),
+}
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # Rejects disabled/inactive users on every request, not only at login.
+        "accounts.authentication.ActiveUserJWTAuthentication",
     ),
+    "DEFAULT_THROTTLE_CLASSES": (
+        "config.throttling.AnonWriteRateThrottle",
+        "config.throttling.AnonReadRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+        "rest_framework.throttling.ScopedRateThrottle",
+    ),
+    "DEFAULT_THROTTLE_RATES": THROTTLE_RATES,
+    # Trusted reverse proxies in front of gunicorn (Railway edge = 1) so the client IP
+    # comes from X-Forwarded-For instead of the proxy address.
+    "NUM_PROXIES": int(os.environ["DRF_NUM_PROXIES"]) if os.getenv("DRF_NUM_PROXIES") else (1 if IS_DEPLOYED else None),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.AllowAny",),
     "DEFAULT_FILTER_BACKENDS": (
         "django_filters.rest_framework.DjangoFilterBackend",
@@ -208,17 +290,15 @@ STORAGES = {
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=int(os.getenv("JWT_ACCESS_HOURS", "8"))),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.getenv("JWT_REFRESH_DAYS", "7"))),
-    "ROTATE_REFRESH_TOKENS": False,
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
     "AUTH_HEADER_TYPES": ("Bearer",),
+    "USER_AUTHENTICATION_RULE": "accounts.authentication.user_can_authenticate",
 }
 
-CODE_ENCRYPTION_KEY = os.getenv("CODE_ENCRYPTION_KEY", "").strip()
-if IS_PRODUCTION:
-    if len(CODE_ENCRYPTION_KEY) != 64:
-        raise RuntimeError(
-            "CODE_ENCRYPTION_KEY must be a 64-character hex string in production "
-            "(generate with: openssl rand -hex 32). Losing this key makes stored codes undecryptable."
-        )
+# Required (64 hex chars) in staging and production.
+CODE_ENCRYPTION_KEY = resolve_code_encryption_key(DJANGO_ENV, os.environ)
 
 SUPPLIER_MODE = os.getenv("SUPPLIER_MODE", "mock").lower()
 ONEEPIN_MODE = os.getenv("ONEEPIN_MODE", "test").lower()
@@ -285,8 +365,31 @@ LOGGING = {
         "django.request": {"handlers": ["console"], "level": "WARNING", "propagate": False},
         "commerce": {"handlers": ["console"], "level": "INFO", "propagate": False},
         "suppliers": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "accounts": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "config": {"handlers": ["console"], "level": "INFO", "propagate": False},
     },
 }
+
+# Sentry error reporting — only when SENTRY_DSN is set.
+SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
+if SENTRY_DSN and not TESTING:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[DjangoIntegration()],
+        environment=DJANGO_ENV,
+        send_default_pii=False,
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0") or 0),
+    )
+
+if IS_DEPLOYED and not EMAIL_CONFIGURED and not TESTING:
+    logging.getLogger("config").warning(
+        "EMAIL_HOST is not configured (DJANGO_ENV=%s): transactional email such as password "
+        "resets is only written to the console.",
+        DJANGO_ENV,
+    )
 
 # Load Django system checks (production launch guards).
 import config.checks  # noqa: E402, F401

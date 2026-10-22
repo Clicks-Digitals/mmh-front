@@ -10,6 +10,7 @@ from commerce.views import (
     CouponValidateView,
     CreateOrderView,
     MyOrdersView,
+    OrderCodesView,
     OrderDetailView,
 )
 
@@ -21,5 +22,6 @@ urlpatterns = [
     path("payments/paypal/capture-order/", PayPalCaptureOrderView.as_view()),
     path("payments/paypal/webhook/", PayPalWebhookView.as_view()),
     path("orders/mine/", MyOrdersView.as_view()),
+    path("orders/<str:order_number>/codes/", OrderCodesView.as_view()),
     path("orders/<str:order_number>/", OrderDetailView.as_view()),
 ]

@@ -9,8 +9,9 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 
-from commerce.models import Coupon, Order, Payment, PaymentStatus
-from commerce.services.orders import transition_order
+from audit.models import AuditLog
+from commerce.models import Coupon, FulfillmentStatus, Order, Payment, PaymentStatus
+from commerce.services.orders import OrderTransitionError, transition_order
 
 logger = logging.getLogger("commerce")
 
@@ -34,6 +35,48 @@ def create_pending_payment(*, order: Order, provider: str = "pending") -> Paymen
     )
 
 
+def _set_order_paid(order: Order, *, actor=None, reason: str = "") -> None:
+    """PAID via the transition table; money that arrives for a non-payable order is still recorded."""
+    try:
+        transition_order(order, payment_status=PaymentStatus.PAID, actor=actor, reason=reason)
+    except OrderTransitionError as exc:
+        previous = order.payment_status
+        order.payment_status = PaymentStatus.PAID
+        order.save(update_fields=["payment_status", "updated_at"])
+        AuditLog.objects.create(
+            actor=actor,
+            action="orders.payment_forced_paid",
+            entity_type="Order",
+            entity_id=str(order.id),
+            meta={
+                "order_number": order.order_number,
+                "from": previous,
+                "reason": reason or exc.message,
+            },
+        )
+        logger.error(
+            "Order %s received a verified payment while %s; recorded as PAID", order.order_number, previous
+        )
+
+
+def _safe_fulfill(order: Order, *, actor=None) -> None:
+    """Run fulfillment without ever propagating errors into the payment transaction."""
+    from commerce.services.fulfillment import FulfillmentError, flag_manual_review, fulfill_order
+
+    order.refresh_from_db()
+    if order.fulfillment_status == FulfillmentStatus.CANCELLED:
+        flag_manual_review(order, reason="Payment received for a cancelled order", actor=actor)
+        return
+    try:
+        with transaction.atomic():
+            fulfill_order(order, actor=actor)
+    except (FulfillmentError, OrderTransitionError) as exc:
+        flag_manual_review(order, reason=f"Fulfillment failed: {exc.message}", actor=actor)
+    except Exception as exc:  # pragma: no cover - defensive: a paid order must never 500
+        logger.exception("Unexpected fulfillment error for order %s", order.order_number)
+        flag_manual_review(order, reason=f"Unexpected fulfillment error: {exc.__class__.__name__}", actor=actor)
+
+
 @transaction.atomic
 def mark_payment_verified(
     payment: Payment,
@@ -41,22 +84,24 @@ def mark_payment_verified(
     external_ref: str = "",
     provider_payload: dict[str, Any] | None = None,
     actor=None,
+    reason: str = "",
 ) -> Payment:
     """
     Authoritative entry point after a payment provider has been verified server-side.
 
     Idempotent: if payment is already PAID, re-enters fulfillment safely (no double coupon).
+    Fulfillment problems never propagate: the order goes to MANUAL_REVIEW instead.
     Payment developer must call this only after signature/amount/currency/order checks.
     """
+    from commerce.notifications import queue_order_paid
+
     payment = Payment.objects.select_for_update().select_related("order").get(pk=payment.pk)
     order = Order.objects.select_for_update().get(pk=payment.order_id)
 
     if payment.status == PaymentStatus.PAID:
-        from commerce.services.fulfillment import fulfill_order
-
         if order.payment_status != PaymentStatus.PAID:
-            transition_order(order, payment_status=PaymentStatus.PAID, actor=actor)
-        fulfill_order(order, actor=actor)
+            _set_order_paid(order, actor=actor, reason=reason)
+        _safe_fulfill(order, actor=actor)
         return payment
 
     if payment.amount_fils != order.total_fils:
@@ -80,14 +125,51 @@ def mark_payment_verified(
 
     was_unpaid = order.payment_status != PaymentStatus.PAID
     if was_unpaid:
-        transition_order(order, payment_status=PaymentStatus.PAID, actor=actor)
+        _set_order_paid(order, actor=actor, reason=reason)
         if order.coupon_id:
             Coupon.objects.filter(pk=order.coupon_id).update(used_count=F("used_count") + 1)
+        queue_order_paid(order.id)
 
-    from commerce.services.fulfillment import fulfill_order
-
-    fulfill_order(order, actor=actor)
+    _safe_fulfill(order, actor=actor)
     logger.info("Payment verified for order %s (payment_id=%s)", order.order_number, payment.id)
+    return payment
+
+
+@transaction.atomic
+def mark_order_paid_manually(order: Order, *, actor, reason: str) -> Payment:
+    """Admin "-> PAID": goes through mark_payment_verified so coupon, Payment row and delivery run."""
+    reason = (reason or "").strip()
+    if not reason:
+        raise PaymentError("A reason is required to mark an order paid manually", status=400, code="reason_required")
+    order = Order.objects.select_for_update().get(pk=order.pk)
+    if order.payment_status == PaymentStatus.PAID:
+        raise PaymentError("Order is already paid", status=409, code="already_paid")
+    if order.payment_status not in {PaymentStatus.PENDING, PaymentStatus.AUTHORIZED}:
+        raise PaymentError(
+            f"Invalid payment transition {order.payment_status} → PAID", status=400, code="invalid_transition"
+        )
+    payment = Payment.objects.create(
+        order=order,
+        provider="manual",
+        status=PaymentStatus.PENDING,
+        amount_fils=order.total_fils,
+        currency=order.currency,
+        raw={"manual_reason": reason[:500]},
+    )
+    payment = mark_payment_verified(
+        payment,
+        external_ref=f"manual-{secrets.token_hex(4)}",
+        provider_payload={"reason": reason},
+        actor=actor,
+        reason=reason,
+    )
+    AuditLog.objects.create(
+        actor=actor,
+        action="orders.manual_paid",
+        entity_type="Order",
+        entity_id=str(order.id),
+        meta={"order_number": order.order_number, "payment_id": payment.id, "reason": reason[:500]},
+    )
     return payment
 
 

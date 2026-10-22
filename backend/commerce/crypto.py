@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import re
 from hashlib import sha256
@@ -61,13 +62,52 @@ def decrypt_code(ciphertext_b64: str, nonce_b64: str) -> str:
     return plaintext.decode("utf-8")
 
 
+MASK_PREFIX = "••••••••"
+
+
 def mask_code(value: str) -> str:
+    """Only the last 4 characters stay visible, e.g. ``••••••••AB12``."""
     cleaned = (value or "").strip()
     if len(cleaned) <= 4:
-        return "****"
-    if len(cleaned) <= 8:
-        return f"{cleaned[:2]}{'•' * (len(cleaned) - 4)}{cleaned[-2:]}"
-    return f"{cleaned[:4]}{'•' * min(8, len(cleaned) - 8)}{cleaned[-4:]}"
+        return "••••"
+    return f"{MASK_PREFIX}{cleaned[-4:]}"
+
+
+def encrypt_blob(plaintext: str) -> tuple[str, str]:
+    """AES-GCM encrypt arbitrary text (e.g. a pending import payload). Returns (ciphertext_b64, nonce_b64)."""
+    key = _key_bytes()
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    return base64.b64encode(ciphertext).decode("ascii"), base64.b64encode(nonce).decode("ascii")
+
+
+def decrypt_blob(ciphertext_b64: str, nonce_b64: str) -> str:
+    return decrypt_code(ciphertext_b64, nonce_b64)
+
+
+def encode_code_payload(code: str, pin: str | None) -> str:
+    """Stored plaintext layout: bare code, or JSON {code, pin} when a PIN exists."""
+    if pin:
+        return json.dumps({"code": code, "pin": pin}, separators=(",", ":"), ensure_ascii=False)
+    return code
+
+
+def decode_code_payload(plaintext: str) -> tuple[str, str]:
+    """Inverse of encode_code_payload. Returns (code, pin) with pin '' when absent."""
+    text = plaintext or ""
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return text, ""
+        if isinstance(data, dict) and "code" in data:
+            return str(data.get("code") or ""), str(data.get("pin") or "")
+    return text, ""
+
+
+def reveal_code(code_obj) -> tuple[str, str]:
+    """Decrypt a DigitalCode row into (code, pin)."""
+    return decode_code_payload(decrypt_code(code_obj.ciphertext, code_obj.nonce))
 
 
 # Back-compat alias

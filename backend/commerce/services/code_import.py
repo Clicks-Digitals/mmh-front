@@ -5,7 +5,6 @@ import hashlib
 import io
 import json
 import os
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,7 +14,15 @@ from django.db import transaction
 from django.utils import timezone
 
 from catalog.models import ProductVariant, StockStatus
-from commerce.crypto import encrypt_code, fingerprint_code, mask_code
+from commerce.crypto import (
+    CodeCryptoError,
+    decrypt_blob,
+    encode_code_payload,
+    encrypt_blob,
+    encrypt_code,
+    fingerprint_code,
+    mask_code,
+)
 from commerce.models import (
     CodeImportBatch,
     CodeImportBatchStatus,
@@ -63,10 +70,26 @@ class ValidationResult:
     preview_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _imports_dir() -> Path:
-    path = Path(settings.MEDIA_ROOT) / "code_imports"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+PENDING_PAYLOAD_TTL_HOURS = 24
+
+
+def legacy_imports_dir() -> Path:
+    """Where old builds wrote raw uploads. Nothing is written here any more; cleanup deletes it."""
+    return Path(settings.MEDIA_ROOT) / "code_imports"
+
+
+def _seal_rows(raw_rows: list[dict[str, str]]) -> tuple[str, str]:
+    return encrypt_blob(json.dumps(raw_rows, separators=(",", ":"), ensure_ascii=False))
+
+
+def _open_rows(batch: CodeImportBatch) -> list[dict[str, str]]:
+    try:
+        data = json.loads(decrypt_blob(batch.pending_payload, batch.pending_payload_nonce))
+    except (CodeCryptoError, ValueError, Exception) as exc:
+        raise CodeImportError("Pending upload could not be read; re-upload for preview") from exc
+    if not isinstance(data, list):
+        raise CodeImportError("Pending upload could not be read; re-upload for preview")
+    return [{str(k): str(v) for k, v in row.items()} for row in data if isinstance(row, dict)]
 
 
 def _ext(filename: str) -> str:
@@ -78,9 +101,7 @@ def _normalize_header(value: str) -> str:
 
 
 def _encode_payload(code: str, pin: str | None) -> str:
-    if pin:
-        return json.dumps({"code": code, "pin": pin}, separators=(",", ":"), ensure_ascii=False)
-    return code
+    return encode_code_payload(code, pin)
 
 
 def sync_variant_stock(variant_ids: set[int] | list[int]) -> None:
@@ -315,11 +336,9 @@ def preview_import(
     raw_rows = parse_upload_bytes(filename, raw)
     validation = validate_rows(mode=mode, raw_rows=raw_rows, variant=variant)
 
-    token = uuid.uuid4().hex
-    ext = _ext(filename) or ".csv"
-    rel_path = f"code_imports/{token}{ext}"
-    abs_path = _imports_dir() / f"{token}{ext}"
-    abs_path.write_bytes(raw)
+    # Raw uploads are never written to disk: the normalized rows are kept AES-GCM encrypted
+    # in the database until confirm (or expiry cleanup) clears them.
+    sealed, sealed_nonce = _seal_rows(raw_rows) if validation.valid_rows else ("", "")
 
     batch = CodeImportBatch.objects.create(
         filename=os.path.basename(filename)[:255],
@@ -334,7 +353,8 @@ def preview_import(
         failed_rows=validation.failed_rows,
         error_report=validation.error_report,
         preview_rows=validation.preview_rows,
-        pending_file_path=rel_path,
+        pending_payload=sealed,
+        pending_payload_nonce=sealed_nonce,
         file_sha256=hashlib.sha256(raw).hexdigest(),
     )
     return batch
@@ -353,18 +373,10 @@ def confirm_import(*, batch_id: int, actor) -> CodeImportBatch:
         if batch.status == CodeImportBatchStatus.FAILED and batch.valid_rows == 0:
             raise CodeImportError("No valid rows to import")
         raise CodeImportError(f"Batch cannot be confirmed (status={batch.status})")
-    if not batch.pending_file_path:
-        raise CodeImportError("Pending upload file is missing; re-upload for preview")
+    if not batch.pending_payload or not batch.pending_payload_nonce:
+        raise CodeImportError("Pending upload expired; re-upload for preview")
 
-    abs_path = Path(settings.MEDIA_ROOT) / batch.pending_file_path
-    if not abs_path.is_file():
-        raise CodeImportError("Pending upload file expired; re-upload for preview")
-
-    raw = abs_path.read_bytes()
-    if hashlib.sha256(raw).hexdigest() != batch.file_sha256:
-        raise CodeImportError("Uploaded file changed; re-run preview")
-
-    raw_rows = parse_upload_bytes(batch.filename, raw)
+    raw_rows = _open_rows(batch)
     validation = validate_rows(mode=batch.mode, raw_rows=raw_rows, variant=batch.variant)
 
     batch.status = CodeImportBatchStatus.PROCESSING
@@ -416,6 +428,8 @@ def confirm_import(*, batch_id: int, actor) -> CodeImportBatch:
         batch.preview_rows = validation.preview_rows
         batch.completed_at = timezone.now()
         batch.pending_file_path = ""
+        batch.pending_payload = ""
+        batch.pending_payload_nonce = ""
         batch.save(
             update_fields=[
                 "status",
@@ -427,13 +441,10 @@ def confirm_import(*, batch_id: int, actor) -> CodeImportBatch:
                 "preview_rows",
                 "completed_at",
                 "pending_file_path",
+                "pending_payload",
+                "pending_payload_nonce",
             ]
         )
-
-    try:
-        abs_path.unlink(missing_ok=True)
-    except OSError:
-        pass
 
     sync_variant_stock(variant_ids)
     return batch
@@ -486,3 +497,48 @@ def template_csv(mode: str) -> str:
     if mode == CodeImportMode.ADVANCED:
         return "sku,code,pin\nPSN-10-US,SAMPLE-CODE-001,1234\nPSN-20-US,SAMPLE-CODE-002,\n"
     return "code,pin\nSAMPLE-CODE-001,1234\nSAMPLE-CODE-002,\n"
+
+
+def cleanup_pending_imports(*, older_than_hours: int = PENDING_PAYLOAD_TTL_HOURS, dry_run: bool = False) -> dict[str, int]:
+    """Expire encrypted pending payloads and delete legacy plaintext upload files.
+
+    * Finished batches (COMPLETED/PARTIAL/FAILED) never keep a payload.
+    * PENDING/VALIDATED batches older than ``older_than_hours`` lose their payload and are
+      marked FAILED (the admin must re-upload). PROCESSING batches are left alone.
+    * Every file under MEDIA_ROOT/code_imports (written by older builds) is deleted.
+    Never logs plaintext.
+    """
+    from datetime import timedelta
+
+    cutoff = timezone.now() - timedelta(hours=older_than_hours)
+    terminal = [CodeImportBatchStatus.COMPLETED, CodeImportBatchStatus.PARTIAL, CodeImportBatchStatus.FAILED]
+    stale = [CodeImportBatchStatus.PENDING, CodeImportBatchStatus.VALIDATED]
+    counts = {"payloads_cleared": 0, "batches_expired": 0, "legacy_files_deleted": 0}
+
+    finished = CodeImportBatch.objects.filter(status__in=terminal).exclude(pending_payload="", pending_file_path="")
+    expired = CodeImportBatch.objects.filter(status__in=stale, created_at__lt=cutoff)
+    counts["payloads_cleared"] = finished.count()
+    counts["batches_expired"] = expired.count()
+    if not dry_run:
+        finished.update(pending_payload="", pending_payload_nonce="", pending_file_path="")
+        expired.update(
+            pending_payload="",
+            pending_payload_nonce="",
+            pending_file_path="",
+            status=CodeImportBatchStatus.FAILED,
+        )
+
+    folder = legacy_imports_dir()
+    if folder.is_dir():
+        for path in folder.rglob("*"):
+            if not path.is_file():
+                continue
+            counts["legacy_files_deleted"] += 1
+            if not dry_run:
+                try:
+                    path.unlink()
+                except OSError:
+                    counts["legacy_files_deleted"] -= 1
+        if not dry_run:
+            CodeImportBatch.objects.exclude(pending_file_path="").update(pending_file_path="")
+    return counts

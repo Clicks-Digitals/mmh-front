@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import secrets
+from datetime import timedelta
+
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import Coalesce
-from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django_filters import rest_framework as filters
 from rest_framework import generics, serializers, status, viewsets
+from rest_framework.exceptions import NotFound
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -14,8 +17,8 @@ from rest_framework.views import APIView
 from accounts.drf_permissions import HasAdminPermission, IsAdminUser, IsCustomer
 from accounts.models import CustomerProfile
 from audit.models import AuditLog
-from catalog.models import Product, ProductVariant, PublishStatus, StockStatus
-from commerce.crypto import decrypt_code
+from catalog.models import FulfillmentType, Product, ProductVariant, PublishStatus, StockStatus
+from commerce.crypto import decrypt_code, reveal_code
 from commerce.models import (
     CodeImportBatch,
     CodeImportBatchStatus,
@@ -29,7 +32,15 @@ from commerce.models import (
     Payment,
     PaymentStatus,
 )
-from commerce.services.checkout import CheckoutError, create_storefront_order, validate_coupon
+from commerce.services.checkout import (
+    DELIVERY_METHODS,
+    MAX_LINES,
+    MAX_QTY_PER_LINE,
+    MAX_UNITS_PER_ORDER,
+    CheckoutError,
+    create_storefront_order,
+    validate_coupon,
+)
 from commerce.services.code_import import (
     CodeImportError,
     MAX_ROWS,
@@ -39,39 +50,68 @@ from commerce.services.code_import import (
     preview_import,
     template_csv,
 )
-from commerce.services.orders import OrderTransitionError, transition_order
+from commerce.services.inventory import (
+    InventoryError,
+    allocate_codes,
+    attach_manual_code,
+    available_code_counts,
+    mark_item_delivered,
+)
+from commerce.services.orders import (
+    PAID_UNREFUNDED,
+    OrderTransitionError,
+    allowed_fulfillment_transitions,
+    allowed_payment_transitions,
+    can_cancel,
+    transition_order,
+)
+from commerce.services.payment import PaymentError, mark_order_paid_manually
+from commerce.throttling import COMMERCE_THROTTLE_CLASSES
 from suppliers.models import Supplier
 
 
-# --- Storefront serializers / views (unchanged contract) ---
+# --- Storefront serializers / views ---
 
 
 class CouponValidateSerializer(serializers.Serializer):
-    code = serializers.CharField()
-    subtotal_jod = serializers.FloatField(required=False, default=0)
+    code = serializers.CharField(max_length=40)
+    subtotal_jod = serializers.DecimalField(max_digits=12, decimal_places=3, required=False, min_value=0)
+    subtotal_fils = serializers.IntegerField(required=False, min_value=0)
+    email = serializers.EmailField(required=False, allow_blank=True)
+
+
+def _validate_delivery_method_value(value: str) -> str:
+    value = (value or "").strip().lower()
+    if value and value not in DELIVERY_METHODS:
+        raise serializers.ValidationError('Must be "account" or "email"')
+    return value
 
 
 class CheckoutItemSerializer(serializers.Serializer):
-    product_id = serializers.CharField()
-    variant_id = serializers.IntegerField(required=False)
-    denomination_id = serializers.CharField(required=False, allow_blank=True)
-    quantity = serializers.IntegerField(min_value=1, max_value=5, default=1)
-    fields = serializers.DictField(child=serializers.CharField(allow_blank=True), required=False)
-    delivery_method = serializers.CharField(required=False, allow_blank=True)
-    delivery_contact = serializers.CharField(required=False, allow_blank=True)
+    product_id = serializers.CharField(max_length=64)
+    variant_id = serializers.IntegerField(required=False, allow_null=True)
+    denomination_id = serializers.CharField(required=False, allow_blank=True, max_length=64)
+    quantity = serializers.IntegerField(min_value=1, max_value=MAX_QTY_PER_LINE, default=1)
+    fields = serializers.DictField(child=serializers.CharField(allow_blank=True, max_length=255), required=False)
+    delivery_method = serializers.CharField(required=False, allow_blank=True, max_length=32)
+    delivery_contact = serializers.CharField(required=False, allow_blank=True, max_length=255)  # ignored
+
+    def validate_delivery_method(self, value: str) -> str:
+        return _validate_delivery_method_value(value)
 
 
 class CheckoutSerializer(serializers.Serializer):
     email = serializers.EmailField()
     full_name = serializers.CharField(max_length=160)
     phone = serializers.CharField(max_length=40, required=False, allow_blank=True)
-    notes = serializers.CharField(required=False, allow_blank=True)
-    coupon_code = serializers.CharField(required=False, allow_blank=True)
-    idempotency_key = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+    coupon_code = serializers.CharField(required=False, allow_blank=True, max_length=40)
+    idempotency_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
     region_confirmed = serializers.BooleanField(default=False)
     refund_confirmed = serializers.BooleanField(default=False)
     payment_provider = serializers.CharField(required=False, allow_blank=True)
-    items = CheckoutItemSerializer(many=True)
+    delivery_method = serializers.CharField(required=False, allow_blank=True, max_length=32)
+    items = CheckoutItemSerializer(many=True, allow_empty=False, max_length=MAX_LINES)
 
     def validate_payment_provider(self, value: str) -> str:
         value = (value or "").strip().lower()
@@ -79,8 +119,30 @@ class CheckoutSerializer(serializers.Serializer):
             raise serializers.ValidationError("Unsupported payment provider")
         return value
 
+    def validate_delivery_method(self, value: str) -> str:
+        return _validate_delivery_method_value(value)
+
+    def validate_items(self, items):
+        if sum(int(item.get("quantity") or 1) for item in items) > MAX_UNITS_PER_ORDER:
+            raise serializers.ValidationError(f"An order can contain at most {MAX_UNITS_PER_ORDER} items")
+        return items
+
+
+def _live_codes(item: OrderItem) -> list[DigitalCode]:
+    return [code for code in item.codes.all() if code.status != DigitalCodeStatus.UNAVAILABLE]
+
+
+def _item_delivered(item: OrderItem) -> bool:
+    if item.product.fulfillment_type == FulfillmentType.CODE:
+        return len(_live_codes(item)) >= item.quantity
+    return item.delivered_at is not None
+
 
 class OrderItemSerializer(serializers.ModelSerializer):
+    fulfillment_type = serializers.CharField(source="product.fulfillment_type", read_only=True)
+    delivered = serializers.SerializerMethodField()
+    codes = serializers.SerializerMethodField()
+
     class Meta:
         model = OrderItem
         fields = (
@@ -92,12 +154,24 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "line_total_fils",
             "product_name",
             "variant_name",
+            "fulfillment_type",
             "customer_fields",
             "delivery_method",
             "delivery_contact",
             "region_name",
             "platform_name",
+            "delivered",
+            "delivered_at",
+            "codes",
         )
+
+    def get_delivered(self, obj: OrderItem) -> bool:
+        return _item_delivered(obj)
+
+    def get_codes(self, obj: OrderItem):
+        """Customer view: masked only, delivered codes only. Plaintext needs POST .../codes/."""
+        codes = sorted((c for c in obj.codes.all() if c.status == DigitalCodeStatus.DELIVERED), key=lambda c: c.id)
+        return [{"id": code.id, "masked": code.masked} for code in codes]
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -133,24 +207,56 @@ class OrderSerializer(serializers.ModelSerializer):
         return max(payments, key=lambda payment: payment.id).provider
 
 
+def _customer_order_qs():
+    return Order.objects.prefetch_related("items", "items__product", "items__codes", "payments")
+
+
+def _token_matches(order: Order, provided: str | None) -> bool:
+    provided = (provided or "").strip()
+    stored = order.access_token or ""
+    if not provided or not stored or len(provided) != len(stored):
+        return False
+    return secrets.compare_digest(provided.encode(), stored.encode())
+
+
+def _is_owner(order: Order, user) -> bool:
+    return bool(
+        order.user_id
+        and user is not None
+        and getattr(user, "is_authenticated", False)
+        and order.user_id == user.id
+    )
+
+
+def _not_found() -> Response:
+    return Response({"detail": "Not found.", "code": "not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+
 class CouponValidateView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = COMMERCE_THROTTLE_CLASSES
+    throttle_scope = "coupon"
 
     def post(self, request):
         serializer = CouponValidateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
         try:
             payload = validate_coupon(
-                serializer.validated_data["code"],
-                serializer.validated_data.get("subtotal_jod") or 0,
+                data["code"],
+                data.get("subtotal_jod") or 0,
+                subtotal_fils=data.get("subtotal_fils"),
+                email=(data.get("email") or "").strip().lower() or None,
             )
             return Response(payload)
         except CheckoutError as exc:
-            return Response({"valid": False, "detail": exc.message}, status=exc.status)
+            return Response({"valid": False, "detail": exc.message, "code": exc.code}, status=exc.status)
 
 
 def _new_order_payload(order: Order) -> dict:
+    order = _customer_order_qs().get(pk=order.pk)
     data = OrderSerializer(order).data
+    data["access_token"] = order.access_token
     payments = list(order.payments.all())
     payment = max(payments, key=lambda item: item.id) if payments else None
     if (
@@ -167,6 +273,8 @@ def _new_order_payload(order: Order) -> dict:
 
 class CreateOrderView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = COMMERCE_THROTTLE_CLASSES
+    throttle_scope = "checkout"
 
     def post(self, request):
         serializer = CheckoutSerializer(data=request.data)
@@ -174,7 +282,10 @@ class CreateOrderView(APIView):
         try:
             order = create_storefront_order(data=serializer.validated_data, user=request.user)
         except CheckoutError as exc:
-            return Response({"detail": exc.message, "code": "checkout_error"}, status=exc.status)
+            body = {"detail": exc.message, "code": exc.code}
+            if exc.field:
+                body["field"] = exc.field
+            return Response(body, status=exc.status)
         return Response(_new_order_payload(order), status=status.HTTP_201_CREATED)
 
 
@@ -183,28 +294,104 @@ class MyOrdersView(generics.ListAPIView):
     serializer_class = OrderSerializer
 
     def get_queryset(self):
-        return Order.objects.filter(user=self.request.user).prefetch_related("items", "payments")
+        return _customer_order_qs().filter(user=self.request.user)
 
 
-class OrderDetailView(generics.RetrieveAPIView):
-    """Order lookup for its owner, or a guest who supplies the order email."""
+class OrderDetailView(APIView):
+    """Order lookup.
+
+    * Order of a registered customer: only that customer (JWT).
+    * Guest order: ``?email=`` matching the order e-mail, or ``?access_token=`` (alias ``?token=``).
+    Everything else is a 404 so order numbers cannot be probed.
+    """
 
     permission_classes = [AllowAny]
-    serializer_class = OrderSerializer
-    lookup_field = "order_number"
+    throttle_classes = COMMERCE_THROTTLE_CLASSES
+    throttle_scope = "order_lookup"
 
-    def get_queryset(self):
-        qs = Order.objects.prefetch_related("items", "payments")
-        user = self.request.user
-        email = (self.request.query_params.get("email") or "").strip()
-        access = Q()
-        if getattr(user, "is_authenticated", False):
-            access |= Q(user=user)
-        if email:
-            access |= Q(email__iexact=email)
-        if not access:
-            return qs.none()
-        return qs.filter(access)
+    def get(self, request, order_number: str):
+        order = _customer_order_qs().filter(order_number=order_number).first()
+        if order is None or not self._allowed(request, order):
+            return _not_found()
+        return Response(OrderSerializer(order).data)
+
+    @staticmethod
+    def _allowed(request, order: Order) -> bool:
+        if _is_owner(order, request.user):
+            return True
+        if order.user_id:
+            return False
+        params = request.query_params
+        if _token_matches(order, params.get("access_token") or params.get("token")):
+            return True
+        email = (params.get("email") or "").strip().lower()
+        return bool(email) and email == (order.email or "").lower()
+
+
+class OrderCodesRevealSerializer(serializers.Serializer):
+    access_token = serializers.CharField(required=False, allow_blank=True, max_length=128)
+
+
+class OrderCodesView(APIView):
+    """POST orders/<order_number>/codes/ -> plaintext codes for the owner or the access-token holder."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = COMMERCE_THROTTLE_CLASSES
+    throttle_scope = "code_reveal"
+
+    def post(self, request, order_number: str):
+        serializer = OrderCodesRevealSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        order = _customer_order_qs().filter(order_number=order_number).first()
+        via = ""
+        if order is not None:
+            if _is_owner(order, request.user):
+                via = "owner"
+            elif _token_matches(order, serializer.validated_data.get("access_token")):
+                via = "access_token"
+        if not via:
+            return _not_found()
+        if order.payment_status != PaymentStatus.PAID:
+            return Response(
+                {"detail": "Codes are available once the order is paid.", "code": "not_paid"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        items = []
+        code_ids: list[int] = []
+        for item in order.items.all():
+            if item.product.fulfillment_type != FulfillmentType.CODE:
+                continue
+            revealed = []
+            delivered = sorted(
+                (c for c in item.codes.all() if c.status == DigitalCodeStatus.DELIVERED), key=lambda c: c.id
+            )
+            for code in delivered:
+                plain, pin = reveal_code(code)
+                revealed.append({"id": code.id, "code": plain, "pin": pin})
+                code_ids.append(code.id)
+            items.append(
+                {
+                    "item_id": item.id,
+                    "product_name": item.product_name,
+                    "variant_name": item.variant_name,
+                    "quantity": item.quantity,
+                    "codes": revealed,
+                }
+            )
+        user = request.user if getattr(request.user, "is_authenticated", False) else None
+        AuditLog.objects.create(
+            actor=user,
+            action="codes.customer_reveal",
+            entity_type="Order",
+            entity_id=str(order.id),
+            meta={
+                "order_number": order.order_number,
+                "via": via,
+                "code_ids": code_ids,
+                "ip": (request.META.get("REMOTE_ADDR") or "")[:64],
+            },
+        )
+        return Response({"order_number": order.order_number, "items": items})
 
 
 # --- Admin serializers ---
@@ -230,6 +417,7 @@ class AdminMaskedCodeSerializer(serializers.ModelSerializer):
             "order_item",
             "order_number",
             "created_at",
+            "delivered_at",
             "revealed_at",
         )
 
@@ -258,16 +446,42 @@ class AdminPaymentSerializer(serializers.ModelSerializer):
 
 
 class AdminOrderItemSerializer(OrderItemSerializer):
-    codes = AdminMaskedCodeSerializer(many=True, read_only=True)
+    available_codes_for_variant = serializers.SerializerMethodField()
 
     class Meta(OrderItemSerializer.Meta):
-        fields = OrderItemSerializer.Meta.fields + ("codes",)
+        fields = OrderItemSerializer.Meta.fields + ("delivery_note", "available_codes_for_variant")
+
+    def get_codes(self, obj: OrderItem):
+        codes = sorted(obj.codes.all(), key=lambda c: c.id)
+        return [
+            {
+                "id": code.id,
+                "masked": code.masked,
+                "status": code.status,
+                "source": code.source,
+                "delivered_at": code.delivered_at,
+            }
+            for code in codes
+        ]
+
+    def get_available_codes_for_variant(self, obj: OrderItem):
+        if obj.product.fulfillment_type != FulfillmentType.CODE:
+            return None
+        counts = self.context.get("available_counts")
+        if counts is None:
+            counts = available_code_counts([obj.variant_id])
+        return counts.get(obj.variant_id, 0)
 
 
 class AdminOrderSerializer(serializers.ModelSerializer):
     items = AdminOrderItemSerializer(many=True, read_only=True)
     payments = AdminPaymentSerializer(many=True, read_only=True)
     total_jod = serializers.FloatField(read_only=True)
+    coupon_code = serializers.CharField(source="coupon.code", read_only=True, allow_null=True)
+    refunds = serializers.SerializerMethodField()
+    can_cancel = serializers.SerializerMethodField()
+    allowed_payment_transitions = serializers.SerializerMethodField()
+    allowed_fulfillment_transitions = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -280,6 +494,7 @@ class AdminOrderSerializer(serializers.ModelSerializer):
             "phone",
             "notes",
             "coupon",
+            "coupon_code",
             "subtotal_fils",
             "discount_fils",
             "total_fils",
@@ -293,7 +508,48 @@ class AdminOrderSerializer(serializers.ModelSerializer):
             "updated_at",
             "items",
             "payments",
+            "refunds",
+            "can_cancel",
+            "allowed_payment_transitions",
+            "allowed_fulfillment_transitions",
         )
+
+    def get_refunds(self, obj: Order):
+        rows = []
+        for payment in sorted(obj.payments.all(), key=lambda p: p.id):
+            for refund in payment.refunds or []:
+                if isinstance(refund, dict):
+                    rows.append(
+                        {
+                            "payment_id": payment.id,
+                            "provider": payment.provider,
+                            "id": refund.get("id", ""),
+                            "status": refund.get("status", ""),
+                            "amount": refund.get("amount", ""),
+                            "currency": refund.get("currency", ""),
+                        }
+                    )
+        return rows
+
+    def get_can_cancel(self, obj: Order) -> bool:
+        return can_cancel(obj)
+
+    def get_allowed_payment_transitions(self, obj: Order) -> list[str]:
+        return allowed_payment_transitions(obj)
+
+    def get_allowed_fulfillment_transitions(self, obj: Order) -> list[str]:
+        return allowed_fulfillment_transitions(obj)
+
+
+def admin_order_payload(order: Order) -> dict:
+    order = (
+        Order.objects.select_related("coupon", "user")
+        .prefetch_related("items", "items__product", "items__codes", "payments")
+        .get(pk=order.pk)
+    )
+    code_variants = [i.variant_id for i in order.items.all() if i.product.fulfillment_type == FulfillmentType.CODE]
+    counts = available_code_counts(code_variants)
+    return AdminOrderSerializer(order, context={"available_counts": counts}).data
 
 
 class AdminOrderListSerializer(serializers.ModelSerializer):
@@ -324,6 +580,7 @@ class OrderTransitionSerializer(serializers.Serializer):
     payment_status = serializers.ChoiceField(choices=PaymentStatus.choices, required=False)
     fulfillment_status = serializers.ChoiceField(choices=FulfillmentStatus.choices, required=False)
     refund_amount_fils = serializers.IntegerField(required=False, min_value=1)
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
 
     def validate(self, attrs):
         if "payment_status" not in attrs and "fulfillment_status" not in attrs:
@@ -344,10 +601,47 @@ class CouponSerializer(serializers.ModelSerializer):
             "starts_at",
             "ends_at",
             "max_uses",
+            "max_uses_per_customer",
             "used_count",
             "created_at",
         )
         read_only_fields = ("used_count", "created_at")
+
+    def _current(self, attrs, name):
+        if name in attrs:
+            return attrs[name]
+        return getattr(self.instance, name, None) if self.instance is not None else None
+
+    def validate_code(self, value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("Code is required")
+        qs = Coupon.objects.filter(code__iexact=value)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("A coupon with this code already exists")
+        return value
+
+    def validate(self, attrs):
+        percent = self._current(attrs, "percent_off")
+        amount = self._current(attrs, "amount_off_fils")
+        if (percent is None) == (amount is None):
+            raise serializers.ValidationError(
+                {"percent_off": "Set exactly one of percent_off or amount_off_fils."}
+            )
+        if percent is not None and not (0 < percent <= 100):
+            raise serializers.ValidationError({"percent_off": "Must be greater than 0 and at most 100."})
+        if amount is not None and amount <= 0:
+            raise serializers.ValidationError({"amount_off_fils": "Must be greater than 0."})
+        for name in ("max_uses", "max_uses_per_customer"):
+            value = self._current(attrs, name)
+            if value is not None and value < 1:
+                raise serializers.ValidationError({name: "Must be at least 1 (or empty for unlimited)."})
+        starts, ends = self._current(attrs, "starts_at"), self._current(attrs, "ends_at")
+        if starts and ends and ends <= starts:
+            raise serializers.ValidationError({"ends_at": "Must be after starts_at."})
+        return attrs
 
 
 class OrderFilter(filters.FilterSet):
@@ -380,11 +674,27 @@ class DigitalCodeFilter(filters.FilterSet):
 # --- Admin views ---
 
 
+def _low_stock_variant_count(threshold: int) -> int:
+    """CODE variants whose AVAILABLE codes are below the threshold (Inventory page rule)."""
+    return (
+        ProductVariant.objects.filter(product__fulfillment_type=FulfillmentType.CODE)
+        .annotate(
+            codes_available=Count("digital_codes", filter=Q(digital_codes__status=DigitalCodeStatus.AVAILABLE))
+        )
+        .filter(codes_available__lt=threshold)
+        .count()
+    )
+
+
 class AdminDashboardView(APIView):
     permission_classes = [IsAdminUser, HasAdminPermission]
     admin_permission = "orders.read"
 
     def get(self, request):
+        from cms.models import SiteSettings
+
+        threshold = SiteSettings.load().low_stock_threshold
+        now = timezone.now()
         paid = Order.objects.filter(payment_status=PaymentStatus.PAID)
         revenue = paid.aggregate(total=Coalesce(Sum("total_fils"), 0))["total"] or 0
         status_breakdown = list(
@@ -412,8 +722,15 @@ class AdminDashboardView(APIView):
                 "products_count": Product.objects.count(),
                 "active_products": Product.objects.filter(status=PublishStatus.PUBLISHED).count(),
                 "codes_available": DigitalCode.objects.filter(status=DigitalCodeStatus.AVAILABLE).count(),
-                "low_stock_variants": ProductVariant.objects.filter(stock_status=StockStatus.OUT_OF_STOCK).count(),
+                "low_stock_variants": _low_stock_variant_count(threshold),
+                "low_stock_threshold": threshold,
+                "out_of_stock_variants": ProductVariant.objects.filter(stock_status=StockStatus.OUT_OF_STOCK).count(),
                 "pending_orders": Order.objects.filter(payment_status=PaymentStatus.PENDING).count(),
+                "pending_payment_24h": Order.objects.filter(
+                    payment_status=PaymentStatus.PENDING, created_at__gte=now - timedelta(hours=24)
+                ).count(),
+                "awaiting_delivery": paid.exclude(fulfillment_status=FulfillmentStatus.COMPLETED).count(),
+                "manual_review": Order.objects.filter(fulfillment_status=FulfillmentStatus.MANUAL_REVIEW).count(),
                 "failed_fulfillment": Order.objects.filter(fulfillment_status=FulfillmentStatus.FAILED).count(),
                 "active_suppliers": Supplier.objects.filter(active=True).count(),
                 "order_status_breakdown": status_breakdown,
@@ -422,6 +739,19 @@ class AdminDashboardView(APIView):
                 "recent_audit": recent_audit,
             }
         )
+
+
+def get_admin_order(pk) -> Order:
+    """Resolve an admin order by numeric id or order number."""
+    value = str(pk)
+    order = None
+    if value.isdigit() and len(value) <= 9:
+        order = Order.objects.filter(pk=int(value)).first()
+    if order is None:
+        order = Order.objects.filter(order_number=value).first()
+    if order is None:
+        raise NotFound()
+    return order
 
 
 class AdminOrderViewSet(viewsets.ReadOnlyModelViewSet):
@@ -442,27 +772,58 @@ class AdminOrderViewSet(viewsets.ReadOnlyModelViewSet):
         lookup = self.kwargs.get(self.lookup_field or "pk")
         qs = self.filter_queryset(self.get_queryset())
         if str(lookup).isdigit():
-            obj = qs.filter(Q(pk=lookup) | Q(order_number=lookup)).first()
+            obj = qs.filter(Q(pk=lookup) | Q(order_number=lookup)).first() if len(str(lookup)) <= 9 else None
+            obj = obj or qs.filter(order_number=lookup).first()
         else:
             obj = qs.filter(order_number=lookup).first()
         if not obj:
-            from rest_framework.exceptions import NotFound
-
             raise NotFound()
         self.check_object_permissions(self.request, obj)
         return obj
 
+    def retrieve(self, request, *args, **kwargs):
+        return Response(admin_order_payload(self.get_object()))
+
+
+REFUND_FIRST = "This order is paid. Refund it first, then cancel."
+
 
 class AdminOrderTransitionView(APIView):
+    """POST admin/orders/<id>/transition/ {payment_status?, fulfillment_status?, reason?, refund_amount_fils?}."""
+
     permission_classes = [IsAdminUser, HasAdminPermission]
     admin_permission = "orders.write"
 
     def post(self, request, pk):
-        order = get_object_or_404(Order, pk=pk) if str(pk).isdigit() else get_object_or_404(Order, order_number=pk)
+        order = get_admin_order(pk)
         serializer = OrderTransitionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payment_status = serializer.validated_data.get("payment_status")
         fulfillment_status = serializer.validated_data.get("fulfillment_status")
+        reason = (serializer.validated_data.get("reason") or "").strip()
+
+        cancelling = payment_status == PaymentStatus.CANCELLED or fulfillment_status == FulfillmentStatus.CANCELLED
+        if cancelling and order.payment_status in PAID_UNREFUNDED:
+            return Response({"detail": REFUND_FIRST, "code": "refund_first"}, status=status.HTTP_409_CONFLICT)
+
+        if payment_status == PaymentStatus.PAID:
+            if order.payment_status != PaymentStatus.PAID:
+                if not reason:
+                    return Response(
+                        {
+                            "detail": "A reason is required to mark an order paid manually.",
+                            "code": "reason_required",
+                            "field": "reason",
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                try:
+                    mark_order_paid_manually(order, actor=request.user, reason=reason)
+                except PaymentError as exc:
+                    return Response({"detail": exc.message, "code": exc.code}, status=exc.status)
+                order.refresh_from_db()
+            payment_status = None
+
         if payment_status in {PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED}:
             paypal_statuses = [PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED]
             paypal_payment = (
@@ -476,7 +837,6 @@ class AdminOrderTransitionView(APIView):
                         {"detail": "Provide refund_amount_fils for a partial PayPal refund"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                from commerce.services.payment import PaymentError
                 from commerce.services.paypal import refund_paypal_payment
 
                 try:
@@ -492,6 +852,14 @@ class AdminOrderTransitionView(APIView):
                 except PaymentError as exc:
                     return Response({"detail": exc.message, "code": exc.code}, status=exc.status)
                 order.refresh_from_db()
+                if reason:
+                    AuditLog.objects.create(
+                        actor=request.user,
+                        action="orders.refund",
+                        entity_type="Order",
+                        entity_id=str(order.id),
+                        meta={"order_number": order.order_number, "reason": reason, "status": order.payment_status},
+                    )
                 payment_status = None
         try:
             if payment_status or fulfillment_status:
@@ -500,10 +868,143 @@ class AdminOrderTransitionView(APIView):
                     payment_status=payment_status,
                     fulfillment_status=fulfillment_status,
                     actor=request.user,
+                    reason=reason,
                 )
         except OrderTransitionError as exc:
-            return Response({"detail": exc.message}, status=exc.status)
-        return Response(AdminOrderSerializer(order).data)
+            return Response({"detail": exc.message, "code": "invalid_transition"}, status=exc.status)
+        if payment_status in {PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED}:
+            # Non-PayPal (e.g. manual) payments follow the order's refund state.
+            order.payments.exclude(provider="paypal").filter(status__in=list(PAID_UNREFUNDED)).update(
+                status=payment_status
+            )
+        return Response(admin_order_payload(order))
+
+
+class _AdminFulfillBase(APIView):
+    permission_classes = [IsAdminUser, HasAdminPermission]
+    admin_permission = "orders.fulfill"
+
+    @staticmethod
+    def _error(exc) -> Response:
+        return Response({"detail": exc.message, "code": "fulfillment_error"}, status=exc.status)
+
+
+class AdminOrderFulfillView(_AdminFulfillBase):
+    """POST admin/orders/<id>/fulfill/ -> re-run inventory allocation (e.g. after importing stock)."""
+
+    def post(self, request, pk):
+        order = get_admin_order(pk)
+        try:
+            result = allocate_codes(order, actor=request.user)
+        except InventoryError as exc:
+            return self._error(exc)
+        AuditLog.objects.create(
+            actor=request.user,
+            action="orders.fulfill",
+            entity_type="Order",
+            entity_id=str(order.id),
+            meta={
+                "order_number": order.order_number,
+                "assigned": len(result.assigned_code_ids),
+                "short_item_ids": result.short_items,
+                "fulfillment_status": result.fulfillment_status,
+            },
+        )
+        return Response(admin_order_payload(order))
+
+
+class AdminAttachCodeSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=512, trim_whitespace=True)
+    pin = serializers.CharField(max_length=64, required=False, allow_blank=True, allow_null=True)
+
+
+class AdminOrderItemCodeView(_AdminFulfillBase):
+    """POST admin/orders/<id>/items/<item_id>/codes/ {code, pin?} -> attach a code typed in by staff."""
+
+    def post(self, request, pk, item_id: int):
+        order = get_admin_order(pk)
+        serializer = AdminAttachCodeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            attach_manual_code(
+                order,
+                item_id,
+                code=serializer.validated_data["code"],
+                pin=serializer.validated_data.get("pin") or None,
+                actor=request.user,
+            )
+        except InventoryError as exc:
+            return self._error(exc)
+        return Response(admin_order_payload(order), status=status.HTTP_201_CREATED)
+
+
+class AdminMarkDeliveredSerializer(serializers.Serializer):
+    note = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+
+
+class AdminOrderItemDeliveredView(_AdminFulfillBase):
+    """POST admin/orders/<id>/items/<item_id>/mark-delivered/ {note?} -> DIRECT_TOPUP item done."""
+
+    def post(self, request, pk, item_id: int):
+        order = get_admin_order(pk)
+        serializer = AdminMarkDeliveredSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            mark_item_delivered(order, item_id, note=serializer.validated_data.get("note") or "", actor=request.user)
+        except InventoryError as exc:
+            return self._error(exc)
+        return Response(admin_order_payload(order))
+
+
+class AdminOrderResendEmailView(_AdminFulfillBase):
+    """POST admin/orders/<id>/resend-email/ -> resend the delivery e-mail(s) to the order e-mail."""
+
+    def post(self, request, pk):
+        from commerce.notifications import (
+            send_codes_delivered_email,
+            send_order_paid_email,
+            send_topup_delivered_email,
+        )
+
+        order = get_admin_order(pk)
+        if order.payment_status != PaymentStatus.PAID:
+            return Response(
+                {"detail": "Only paid orders have delivery e-mails.", "code": "not_paid"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        items = list(order.items.select_related("product"))
+        has_codes = DigitalCode.objects.filter(order_item__order=order, status=DigitalCodeStatus.DELIVERED).exists()
+        topups = [
+            i for i in items if i.product.fulfillment_type == FulfillmentType.DIRECT_TOPUP and i.delivered_at
+        ]
+        attempted: list[str] = []
+        sent: list[str] = []
+        if has_codes:
+            attempted.append("codes_delivered")
+            if send_codes_delivered_email(order.id):
+                sent.append("codes_delivered")
+        for item in topups:
+            kind = f"topup_delivered:{item.id}"
+            attempted.append(kind)
+            if send_topup_delivered_email(order.id, item.id):
+                sent.append(kind)
+        if not attempted:
+            attempted.append("order_paid")
+            if send_order_paid_email(order.id):
+                sent.append("order_paid")
+        AuditLog.objects.create(
+            actor=request.user,
+            action="orders.resend_email",
+            entity_type="Order",
+            entity_id=str(order.id),
+            meta={"order_number": order.order_number, "attempted": attempted, "sent": sent},
+        )
+        if not sent:
+            return Response(
+                {"detail": "The e-mail could not be sent. Check the mail settings.", "code": "email_failed", "sent": []},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response({"detail": "E-mail sent.", "sent": sent, "to": order.email})
 
 
 class AdminDigitalCodeListView(generics.ListAPIView):
@@ -554,6 +1055,17 @@ class AdminPaymentListView(generics.ListAPIView):
     queryset = Payment.objects.select_related("order").order_by("-created_at")
 
 
+def _coupon_audit_meta(coupon: Coupon) -> dict:
+    return {
+        "code": coupon.code,
+        "percent_off": str(coupon.percent_off) if coupon.percent_off is not None else None,
+        "amount_off_fils": coupon.amount_off_fils,
+        "active": coupon.active,
+        "max_uses": coupon.max_uses,
+        "max_uses_per_customer": coupon.max_uses_per_customer,
+    }
+
+
 class AdminCouponViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminUser, HasAdminPermission]
     serializer_class = CouponSerializer
@@ -564,6 +1076,38 @@ class AdminCouponViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         self.admin_permission = "orders.read" if self.action in {"list", "retrieve"} else "orders.write"
         return super().get_permissions()
+
+    def _audit(self, action: str, coupon: Coupon, **extra) -> None:
+        AuditLog.objects.create(
+            actor=self.request.user,
+            action=action,
+            entity_type="Coupon",
+            entity_id=str(coupon.pk),
+            meta={**_coupon_audit_meta(coupon), **extra},
+        )
+
+    def perform_create(self, serializer):
+        coupon = serializer.save()
+        self._audit("coupons.create", coupon)
+
+    def perform_update(self, serializer):
+        changed = sorted(serializer.validated_data.keys())
+        coupon = serializer.save()
+        self._audit("coupons.update", coupon, changed=changed)
+
+    def destroy(self, request, *args, **kwargs):
+        coupon = self.get_object()
+        if Order.objects.filter(coupon=coupon).exists():
+            return Response(
+                {
+                    "detail": "This coupon has been used on orders and cannot be deleted. Deactivate it instead.",
+                    "code": "coupon_in_use",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        self._audit("coupons.delete", coupon)
+        coupon.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # --- Bulk digital-code import ---

@@ -21,5 +21,6 @@ class PublicSiteSettingsTests(TestCase):
         self.assertEqual(body["whatsapp_number"], "962791234567")
         self.assertEqual(body["instagram_url"], "https://instagram.com/mmhcard")
         self.assertNotIn("low_stock_threshold", body)
-        self.assertNotIn("maintenance_mode", body)
+        self.assertIs(body["maintenance_mode"], True)
+        self.assertEqual(body["store_name"], "MMH")
         self.assertNotIn("currency_display", body)

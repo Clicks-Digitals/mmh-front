@@ -19,7 +19,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from commerce.models import Order, PayPalWebhookEvent, Payment, PaymentStatus
+from commerce.models import FulfillmentStatus, Order, PayPalWebhookEvent, Payment, PaymentStatus
 from commerce.services.orders import transition_order
 from commerce.services.payment import PaymentError, mark_payment_verified
 from commerce.services.paypal_client import PayPalApiError, PayPalClient, sdk_url
@@ -110,16 +110,32 @@ def prepare_paypal_checkout(order: Order) -> Payment:
     return payment
 
 
+PAYABLE_PAYMENT_STATUSES = {PaymentStatus.PENDING, PaymentStatus.AUTHORIZED}
+PAYABLE_FULFILLMENT_STATUSES = {FulfillmentStatus.NOT_STARTED, FulfillmentStatus.QUEUED}
+
+
+def assert_order_payable(order: Order) -> None:
+    """Refuse PayPal create/capture for orders that can no longer take money (409, before any charge)."""
+    if order.payment_status == PaymentStatus.PAID:
+        raise PaymentError("Order is already paid", status=409, code="already_paid")
+    if (
+        order.payment_status not in PAYABLE_PAYMENT_STATUSES
+        or order.fulfillment_status not in PAYABLE_FULFILLMENT_STATUSES
+    ):
+        raise PaymentError(
+            "This order can no longer be paid. Please place a new order.",
+            status=409,
+            code="order_not_payable",
+        )
+
+
 def create_checkout_order(*, order_number: str, checkout_token: str, user=None) -> dict[str, Any]:
     assert_paypal_ready()
     order = Order.objects.filter(order_number=order_number).first()
     if not order:
         raise PaymentError("Order not found", status=404, code="not_found")
     _assert_access(order, user)
-    if order.payment_status == PaymentStatus.PAID:
-        raise PaymentError("Order is already paid", status=409, code="already_paid")
-    if order.payment_status not in {PaymentStatus.PENDING, PaymentStatus.AUTHORIZED}:
-        raise PaymentError("Order cannot be paid", status=409, code="order_not_payable")
+    assert_order_payable(order)
 
     with transaction.atomic():
         payment = (
@@ -165,6 +181,8 @@ def capture_paypal_order(*, paypal_order_id: str, user=None) -> dict[str, Any]:
     _assert_access(payment.order, user)
     if payment.status == PaymentStatus.PAID and payment.order.payment_status == PaymentStatus.PAID:
         return _result(payment)
+    if payment.status != PaymentStatus.PAID:
+        assert_order_payable(payment.order)
     assert_paypal_ready()
     client = get_client()
     request_id = f"mmh-capture-{payment.order.order_number}-{paypal_order_id}"
@@ -200,14 +218,18 @@ def capture_paypal_order(*, paypal_order_id: str, user=None) -> dict[str, Any]:
 
 
 def persist_captured_order(payment_id: int, remote: dict[str, Any]) -> Payment:
-    """Apply a completed capture exactly once. Safe for the sync capture and webhooks."""
+    """Apply a completed capture exactly once. Safe for the sync capture and webhooks.
+
+    The completed capture is committed first, in its own transaction. Marking the order
+    paid and fulfilling it happen afterwards and can never undo or fail the capture: any
+    problem leaves the money recorded and the order in MANUAL_REVIEW.
+    """
     mismatch_capture_id = ""
+    verify_capture_id = ""
     with transaction.atomic():
         payment = Payment.objects.select_for_update().select_related("order").get(pk=payment_id)
         order = Order.objects.select_for_update().get(pk=payment.order_id)
         if payment.status in {PaymentStatus.PAID, PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED}:
-            return payment
-        if order.payment_status == PaymentStatus.PAID and payment.status == PaymentStatus.PAID:
             return payment
         captures = _extract_captures(remote)
         completed = [item for item in captures if item.get("status") == "COMPLETED"]
@@ -229,7 +251,7 @@ def persist_captured_order(payment_id: int, remote: dict[str, Any]) -> Payment:
             payment.provider_capture_id = capture_id
             payment.external_ref = capture_id
             payment.raw_capture_response = _redact(remote)
-            if payment.status == PaymentStatus.FAILED:
+            if payment.status in {PaymentStatus.FAILED, PaymentStatus.CANCELLED}:
                 payment.status = PaymentStatus.PENDING
             payment.save(
                 update_fields=[
@@ -240,14 +262,51 @@ def persist_captured_order(payment_id: int, remote: dict[str, Any]) -> Payment:
                     "updated_at",
                 ]
             )
-            return mark_payment_verified(
-                payment,
-                external_ref=capture_id,
-                provider_payload={"paypal_order_id": payment.provider_order_id, "paypal_capture_id": capture_id},
-            )
+            verify_capture_id = capture_id
     if mismatch_capture_id:
         _refund_mismatched_capture(payment_id, mismatch_capture_id)
+        return Payment.objects.select_related("order").get(pk=payment_id)
+    if verify_capture_id:
+        try:
+            mark_payment_verified(
+                Payment.objects.get(pk=payment_id),
+                external_ref=verify_capture_id,
+                provider_payload={
+                    "paypal_order_id": payment.provider_order_id,
+                    "paypal_capture_id": verify_capture_id,
+                },
+            )
+        except Exception as exc:
+            logger.exception("PayPal capture stored but verification failed payment_id=%s", payment_id)
+            _record_paid_for_review(payment_id, reason=getattr(exc, "message", exc.__class__.__name__))
     return Payment.objects.select_related("order").get(pk=payment_id)
+
+
+def _record_paid_for_review(payment_id: int, *, reason: str) -> None:
+    """Last resort: money was captured, so record PAID and hand the order to staff."""
+    from audit.models import AuditLog
+
+    with transaction.atomic():
+        payment = Payment.objects.select_for_update().get(pk=payment_id)
+        order = Order.objects.select_for_update().get(pk=payment.order_id)
+        if payment.status != PaymentStatus.PAID:
+            payment.status = PaymentStatus.PAID
+            payment.paid_at = payment.paid_at or timezone.now()
+            payment.save(update_fields=["status", "paid_at", "updated_at"])
+        update_fields = ["updated_at"]
+        if order.payment_status != PaymentStatus.PAID:
+            order.payment_status = PaymentStatus.PAID
+            update_fields.append("payment_status")
+        if order.fulfillment_status != FulfillmentStatus.COMPLETED:
+            order.fulfillment_status = FulfillmentStatus.MANUAL_REVIEW
+            update_fields.append("fulfillment_status")
+        order.save(update_fields=update_fields)
+        AuditLog.objects.create(
+            action="orders.manual_review",
+            entity_type="Order",
+            entity_id=str(order.id),
+            meta={"order_number": order.order_number, "reason": f"Capture stored; verification failed: {reason}"[:500]},
+        )
 
 
 def reconcile_pending_payments(

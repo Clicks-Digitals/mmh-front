@@ -39,7 +39,8 @@ class MockSupplierProvider:
         return BalanceResult(amount="0.00", currency="USD", message="Mock balance", ok=True)
 
     def sync_catalog(self) -> dict:
-        return {"ok": True, "imported": 0, "message": "Mock sync — no remote catalog"}
+        # Nothing is imported in mock mode; report a no-op instead of a false success.
+        return {"ok": False, "noop": True, "imported": 0, "message": "Mock mode: there is no remote catalog to sync"}
 
 
 class OneEpinProvider:
@@ -87,7 +88,12 @@ class OneEpinProvider:
         )
 
     def sync_catalog(self) -> dict:
-        return {"ok": False, "imported": 0, "message": "Catalog sync requires mapped 1Epin endpoints; use admin tools later"}
+        return {
+            "ok": False,
+            "noop": True,
+            "imported": 0,
+            "message": "Catalog sync requires mapped 1Epin endpoints; use admin tools later",
+        }
 
 
 def get_supplier_provider():

@@ -11,8 +11,10 @@ from rest_framework.views import APIView
 
 from accounts.drf_permissions import HasAdminPermission, IsAdminUser
 from accounts.models import AdminProfile, AdminRole, CustomerProfile, Permission, RolePermission, UserKind
-from accounts.permissions import has_permission
-from accounts.serializers import MeSerializer
+from accounts.authentication import revoke_refresh_tokens
+from accounts.permissions import PRIVILEGED_ROLES, is_super_admin, role_permissions, user_permissions, user_role
+from accounts.serializers import run_password_validators
+from audit.services import record_audit
 from commerce.models import Order, PaymentStatus
 
 User = get_user_model()
@@ -107,10 +109,46 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
             return AdminCustomerPatchSerializer
         return AdminCustomerDetailSerializer
 
+    def perform_update(self, serializer):
+        serializer.save()
+        record_audit(
+            self.request.user,
+            "customer.updated",
+            entity_type="CustomerProfile",
+            entity_id=serializer.instance.pk,
+            meta={"fields": sorted(serializer.validated_data.keys())},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Administrators & roles
+#
+# Escalation rules:
+#   * Only a SUPER_ADMIN (role or is_superuser) may create, edit, disable, or reset the
+#     password of an ADMIN / SUPER_ADMIN account, or assign/remove those roles.
+#   * Any actor with ``admins.write`` may manage accounts whose role is below ADMIN and
+#     assign roles below ADMIN.
+#   * Nobody can change their own role or disable themselves.
+#   * The last active SUPER_ADMIN cannot be demoted or disabled.
+#   * Only a SUPER_ADMIN may edit role permissions; SUPER_ADMIN permissions are fixed.
+# ---------------------------------------------------------------------------
+
+
+def _is_privileged_target(user) -> bool:
+    return bool(user.is_superuser or user_role(user) in PRIVILEGED_ROLES)
+
+
+def _other_active_super_admins(user) -> int:
+    return (
+        AdminProfile.objects.filter(role=AdminRole.SUPER_ADMIN, user__disabled=False, user__is_active=True)
+        .exclude(user=user)
+        .count()
+    )
+
 
 class AdminUserSerializer(serializers.ModelSerializer):
-    role = serializers.CharField(source="admin_profile.role")
-    title = serializers.CharField(source="admin_profile.title", allow_blank=True, required=False)
+    role = serializers.SerializerMethodField()
+    title = serializers.SerializerMethodField()
     permissions = serializers.SerializerMethodField()
 
     class Meta:
@@ -126,26 +164,41 @@ class AdminUserSerializer(serializers.ModelSerializer):
             "title",
             "permissions",
             "date_joined",
+            "last_login",
         )
-        read_only_fields = ("kind", "date_joined", "permissions")
+        read_only_fields = fields
+
+    def get_role(self, obj):
+        role = user_role(obj)
+        if role is None and obj.is_superuser:
+            return AdminRole.SUPER_ADMIN
+        return role
+
+    def get_title(self, obj):
+        profile = getattr(obj, "admin_profile", None)
+        return profile.title if profile else ""
 
     def get_permissions(self, obj):
-        from accounts.permissions import user_permissions
-
         return sorted(user_permissions(obj))
 
 
 class CreateAdminSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    password = serializers.CharField(min_length=12, write_only=True)
+    password = serializers.CharField(min_length=12, write_only=True, trim_whitespace=False)
     full_name = serializers.CharField(max_length=160)
     role = serializers.ChoiceField(choices=AdminRole.choices)
     title = serializers.CharField(max_length=120, required=False, allow_blank=True)
 
     def validate_email(self, value):
+        value = value.strip().lower()
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("Email already registered")
-        return value.lower()
+        return value
+
+    def validate(self, attrs):
+        candidate = User(email=attrs.get("email", ""), first_name=attrs.get("full_name", ""))
+        run_password_validators(attrs.get("password", ""), user=candidate)
+        return attrs
 
     @transaction.atomic
     def create(self, validated_data):
@@ -169,32 +222,7 @@ class UpdateAdminSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=120, required=False, allow_blank=True)
     disabled = serializers.BooleanField(required=False)
     full_name = serializers.CharField(max_length=160, required=False)
-
-    def update(self, instance, validated_data):
-        profile = instance.admin_profile
-        if "full_name" in validated_data:
-            instance.first_name = validated_data["full_name"]
-        if "disabled" in validated_data:
-            if validated_data["disabled"] and profile.role == AdminRole.SUPER_ADMIN:
-                remaining = AdminProfile.objects.filter(role=AdminRole.SUPER_ADMIN, user__disabled=False).exclude(
-                    user=instance
-                ).count()
-                if remaining < 1:
-                    raise serializers.ValidationError({"disabled": "Cannot disable the last SUPER_ADMIN"})
-            instance.disabled = validated_data["disabled"]
-        instance.save()
-        if "role" in validated_data:
-            if profile.role == AdminRole.SUPER_ADMIN and validated_data["role"] != AdminRole.SUPER_ADMIN:
-                remaining = AdminProfile.objects.filter(role=AdminRole.SUPER_ADMIN, user__disabled=False).exclude(
-                    user=instance
-                ).count()
-                if remaining < 1:
-                    raise serializers.ValidationError({"role": "Cannot demote the last SUPER_ADMIN"})
-            profile.role = validated_data["role"]
-        if "title" in validated_data:
-            profile.title = validated_data["title"]
-        profile.save()
-        return instance
+    password = serializers.CharField(write_only=True, required=False, trim_whitespace=False, min_length=12)
 
 
 class AdministratorViewSet(viewsets.ViewSet):
@@ -222,41 +250,112 @@ class AdministratorViewSet(viewsets.ViewSet):
         return Response(AdminUserSerializer(user).data)
 
     def create(self, request):
-        if not (
-            request.user.is_superuser
-            or getattr(getattr(request.user, "admin_profile", None), "role", None) == AdminRole.SUPER_ADMIN
-            or has_permission(request.user, "admins.write")
-        ):
-            return Response({"detail": "Only SUPER_ADMIN can create admins"}, status=status.HTTP_403_FORBIDDEN)
         serializer = CreateAdminSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        role = serializer.validated_data["role"]
+        if role in PRIVILEGED_ROLES and not is_super_admin(request.user):
+            return Response(
+                {"detail": "Only a SUPER_ADMIN can create ADMIN or SUPER_ADMIN accounts", "code": "forbidden_role"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         user = serializer.save()
+        record_audit(
+            request.user,
+            "admin.created",
+            entity_type="User",
+            entity_id=user.pk,
+            meta={"email": user.email, "role": role},
+        )
         return Response(AdminUserSerializer(user).data, status=status.HTTP_201_CREATED)
 
+    def update(self, request, pk=None):
+        return self.partial_update(request, pk=pk)
+
     def partial_update(self, request, pk=None):
-        user = get_object_or_404(self.get_queryset(), pk=pk)
-        serializer = UpdateAdminSerializer(user, data=request.data, partial=True)
+        target = get_object_or_404(self.get_queryset(), pk=pk)
+        serializer = UpdateAdminSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(AdminUserSerializer(user).data)
+        data = serializer.validated_data
+        actor = request.user
+        actor_is_super = is_super_admin(actor)
+        is_self = target.pk == actor.pk
+        current_role = user_role(target) or (AdminRole.SUPER_ADMIN if target.is_superuser else None)
 
+        def forbidden(detail: str, code: str = "forbidden"):
+            return Response({"detail": detail, "code": code}, status=status.HTTP_403_FORBIDDEN)
 
-class CreateAdminView(APIView):
-    """Legacy POST /administrators/ create endpoint."""
+        def bad(field: str, message: str):
+            return Response(
+                {"detail": {field: [message]}, "code": "validation_error"}, status=status.HTTP_400_BAD_REQUEST
+            )
 
-    permission_classes = [IsAdminUser, HasAdminPermission]
-    admin_permission = "admins.write"
+        role_change = "role" in data and data["role"] != current_role
+        if is_self and role_change:
+            return bad("role", "You cannot change your own role")
+        if is_self and data.get("disabled") is True and not target.disabled:
+            return bad("disabled", "You cannot disable your own account")
+        if not actor_is_super:
+            if not is_self and _is_privileged_target(target):
+                return forbidden("Only a SUPER_ADMIN can manage ADMIN or SUPER_ADMIN accounts", "forbidden_role")
+            if role_change and data["role"] in PRIVILEGED_ROLES:
+                return forbidden("Only a SUPER_ADMIN can assign the ADMIN or SUPER_ADMIN role", "forbidden_role")
+        if current_role == AdminRole.SUPER_ADMIN and _other_active_super_admins(target) < 1:
+            if role_change:
+                return bad("role", "Cannot demote the last SUPER_ADMIN")
+            if data.get("disabled") is True:
+                return bad("disabled", "Cannot disable the last SUPER_ADMIN")
+        if "password" in data:
+            run_password_validators(data["password"], user=target)
 
-    def post(self, request):
-        if not (
-            request.user.is_superuser
-            or getattr(getattr(request.user, "admin_profile", None), "role", None) == AdminRole.SUPER_ADMIN
-        ):
-            return Response({"detail": "Only SUPER_ADMIN can create admins"}, status=status.HTTP_403_FORBIDDEN)
-        serializer = CreateAdminSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = serializer.save()
-        return Response(MeSerializer(user).data, status=status.HTTP_201_CREATED)
+        changes: dict = {}
+        disabled_changed = "disabled" in data and data["disabled"] != target.disabled
+        with transaction.atomic():
+            profile, _ = AdminProfile.objects.get_or_create(
+                user=target, defaults={"role": current_role or AdminRole.VIEWER}
+            )
+            user_fields: list[str] = []
+            if "full_name" in data and data["full_name"] != target.first_name:
+                target.first_name = data["full_name"]
+                user_fields.append("first_name")
+                changes["full_name"] = True
+            if disabled_changed:
+                target.disabled = data["disabled"]
+                user_fields.append("disabled")
+            if "password" in data:
+                target.set_password(data["password"])
+                user_fields.append("password")
+            if user_fields:
+                target.save(update_fields=user_fields)
+            profile_fields: list[str] = []
+            if role_change:
+                changes["role"] = {"from": current_role, "to": data["role"]}
+                profile.role = data["role"]
+                profile_fields.append("role")
+            if "title" in data and data["title"] != profile.title:
+                profile.title = data["title"]
+                profile_fields.append("title")
+                changes["title"] = True
+            if profile_fields:
+                profile.save(update_fields=profile_fields + ["updated_at"])
+            if (disabled_changed and target.disabled) or "password" in data:
+                revoke_refresh_tokens(target)
+
+        if changes:
+            record_audit(actor, "admin.updated", entity_type="User", entity_id=target.pk, meta=changes)
+        if disabled_changed:
+            record_audit(
+                actor,
+                "admin.disabled" if target.disabled else "admin.enabled",
+                entity_type="User",
+                entity_id=target.pk,
+                meta={"email": target.email},
+            )
+        if "password" in data:
+            record_audit(
+                actor, "admin.password_reset", entity_type="User", entity_id=target.pk, meta={"email": target.email}
+            )
+        target = self.get_queryset().get(pk=target.pk)
+        return Response(AdminUserSerializer(target).data)
 
 
 class RoleListView(APIView):
@@ -264,20 +363,14 @@ class RoleListView(APIView):
     admin_permission = "admins.read"
 
     def get(self, request):
+        rows: dict[str, set[str]] = {}
+        for role, key in RolePermission.objects.values_list("role", "permission__key"):
+            rows.setdefault(role, set()).add(key)
         roles = []
         for role, label in AdminRole.choices:
-            keys = list(
-                RolePermission.objects.filter(role=role).values_list("permission__key", flat=True)
-            )
-            from accounts.permissions import ROLE_PERMISSIONS
-
-            static = sorted(ROLE_PERMISSIONS.get(role, set()) - {"*"})
+            perms = ["*"] if role == AdminRole.SUPER_ADMIN else sorted(rows.get(role, set()))
             roles.append(
-                {
-                    "role": role,
-                    "label": label,
-                    "permissions": sorted(set(keys) | set(static)) if "*" not in ROLE_PERMISSIONS.get(role, set()) else ["*"],
-                }
+                {"role": role, "label": label, "permissions": perms, "editable": role != AdminRole.SUPER_ADMIN}
             )
         return Response(roles)
 
@@ -297,20 +390,42 @@ class RolePermissionsUpdateView(APIView):
 
     def put(self, request, role: str):
         if role not in AdminRole.values:
-            return Response({"detail": "Unknown role"}, status=400)
-        if not (
-            request.user.is_superuser
-            or getattr(getattr(request.user, "admin_profile", None), "role", None) == AdminRole.SUPER_ADMIN
-            or has_permission(request.user, "admins.write")
-        ):
-            return Response({"detail": "Forbidden"}, status=403)
+            return Response({"detail": "Unknown role", "code": "validation_error"}, status=400)
+        if not is_super_admin(request.user):
+            return Response(
+                {"detail": "Only a SUPER_ADMIN can edit role permissions", "code": "forbidden_role"}, status=403
+            )
+        if role == AdminRole.SUPER_ADMIN:
+            return Response(
+                {"detail": "SUPER_ADMIN permissions are fixed and cannot be edited", "code": "validation_error"},
+                status=400,
+            )
         keys = request.data.get("permissions")
-        if not isinstance(keys, list):
-            return Response({"detail": "permissions must be a list of keys"}, status=400)
-        RolePermission.objects.filter(role=role).delete()
-        for key in keys:
-            perm = Permission.objects.filter(key=key).first()
-            if not perm:
-                return Response({"detail": f"Unknown permission: {key}"}, status=400)
-            RolePermission.objects.create(role=role, permission=perm)
-        return Response({"role": role, "permissions": keys})
+        if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+            return Response(
+                {"detail": "permissions must be a list of permission keys", "code": "validation_error"}, status=400
+            )
+        wanted = sorted(set(keys))
+        perms = {p.key: p for p in Permission.objects.filter(key__in=wanted)}
+        unknown = [k for k in wanted if k not in perms]
+        if unknown:
+            return Response(
+                {
+                    "detail": f"Unknown permission(s): {', '.join(unknown)}",
+                    "unknown": unknown,
+                    "code": "validation_error",
+                },
+                status=400,
+            )
+        before = role_permissions(role)
+        with transaction.atomic():
+            RolePermission.objects.filter(role=role).delete()
+            RolePermission.objects.bulk_create([RolePermission(role=role, permission=perms[k]) for k in wanted])
+        record_audit(
+            request.user,
+            "role.permissions_updated",
+            entity_type="Role",
+            entity_id=role,
+            meta={"role": role, "added": sorted(set(wanted) - before), "removed": sorted(before - set(wanted))},
+        )
+        return Response({"role": role, "permissions": wanted})
