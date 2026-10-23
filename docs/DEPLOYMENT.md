@@ -12,7 +12,17 @@ Browser
   → Media: persistent volume OR future S3-compatible storage
 ```
 
-Payment gateway integration is **owned by another developer**. Infrastructure can go live while **commerce go-live remains blocked**.
+## Current deployment
+
+| Piece | Host | Notes |
+|---|---|---|
+| Store | Vercel project `mmh-digital-codes` → https://www.mmhcard.com (apex 308 → www) | env: `NEXT_PUBLIC_API_URL`, `API_URL`, `AUTH_SECRET`, `AUTH_URL`, `NEXT_PUBLIC_SITE_URL`, `PANEL_URL` |
+| Admin panel | Vercel project `mmh-digital-codes-panel` → https://panel.mmhcard.com | same frontend build with `PANEL_ONLY=true`; `AUTH_URL=https://panel.mmhcard.com` |
+| API | Railway project `mmh-digital-codes`, service `backend` (Dockerfile) | `DJANGO_ENV=production`, volume `/data/media` (`MEDIA_ROOT`) |
+| Scheduled jobs | Railway service `jobs` (same image, `RUN_MODE=jobs`, cron `*/10 * * * *` via railway.json) | reconcile PayPal, clean code imports, expire stale orders |
+| Database | Railway Postgres | enable backups in the Railway dashboard |
+
+Payments: PayPal Orders v2 (see PAYMENT_INTEGRATION_HANDOFF.md). Webhook registered at `/api/v1/payments/paypal/webhook/`. Transactional email needs `EMAIL_HOST`/`EMAIL_HOST_USER`/`EMAIL_HOST_PASSWORD` on the backend.
 
 See also:
 

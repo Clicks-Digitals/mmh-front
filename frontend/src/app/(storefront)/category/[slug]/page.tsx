@@ -34,7 +34,7 @@ async function resolveListing(slug: string): Promise<Resolved | undefined> {
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
   const listing = await resolveListing(slug);
-  if (!listing) return { title: "Not found", robots: { index: false, follow: false } };
+  if (!listing) notFound();
   return pageMeta(listing.name, listing.description || listing.name, `/category/${slug}`);
 }
 

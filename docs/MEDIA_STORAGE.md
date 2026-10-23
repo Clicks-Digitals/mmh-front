@@ -11,10 +11,7 @@ Frontend resolves relative media paths using the API origin (`frontend/src/lib/m
 
 Platforms with **ephemeral filesystems** (many container hosts) will **lose uploads** on restart if media is only local.
 
-Choose one:
-
-1. **Persistent volume** mounted at `MEDIA_ROOT` (acceptable short/medium term)
-2. **Future S3-compatible storage** (django-storages or equivalent) — not integrated in this phase
+Current setup: a Railway **persistent volume** mounted at `/data/media` with `MEDIA_ROOT=/data/media`. Django serves `/media/...` in every environment (`config/media.py`, long cache headers); `code_imports/` is never served. For multi-instance scale, move to S3/R2 via django-storages.
 
 WhiteNoise serves **Django static** files (`collectstatic`), not user media. Keep that boundary clear.
 
