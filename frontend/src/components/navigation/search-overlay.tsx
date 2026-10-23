@@ -5,7 +5,9 @@ import { Price } from "@/components/ui/price";
 import { FOCUS_RING, ICON_HIT } from "@/components/ui/control";
 import { CATEGORIES, HOME_CATEGORIES } from "@/data/categories";
 import { TRENDING_SEARCHES } from "@/data/navigation";
-import { searchProducts } from "@/data/products";
+import { catalog, searchProducts } from "@/data/products";
+import { hrefHasProducts } from "@/lib/listing";
+import { categoryMatchesQuery } from "@/lib/search";
 import { useLanguage } from "@/context/language-context";
 import { useUi } from "@/context/ui-context";
 import { useDebouncedValue } from "@/hooks/use-client";
@@ -66,18 +68,20 @@ export function SearchOverlay() {
   }, [searchOpen]);
 
   const products = useMemo(() => searchProducts(debounced).slice(0, 6), [debounced]);
+  const suggestions = useMemo(() => (searchOpen ? TRENDING_SEARCHES.filter((item) => searchProducts(item).length > 0) : []), [searchOpen]);
   const categories = useMemo(() => {
     const databaseCategories = getSnapshotCategories();
-    const catalog = databaseCategories.length ? databaseCategories : CATEGORIES;
+    const products = catalog();
+    const merged = new Map(CATEGORIES.map((category) => [category.slug, category]));
+    for (const category of databaseCategories) merged.set(category.slug, category);
+    const pool = Array.from(merged.values()).filter((category) => hrefHasProducts(category.href, products, databaseCategories));
     if (!debounced) {
-      return HOME_CATEGORIES.map((slug) => catalog.find((category) => category.slug === slug)).filter(
-        (category): category is (typeof catalog)[number] => Boolean(category),
+      const featured = HOME_CATEGORIES.map((slug) => pool.find((category) => category.slug === slug)).filter(
+        (category): category is (typeof pool)[number] => Boolean(category),
       );
+      return featured.length ? featured : pool.filter((category) => !category.parent).slice(0, 6);
     }
-    const q = debounced.toLowerCase();
-    return catalog.filter(
-      (category) => category.name.toLowerCase().includes(q) || category.nameAr.includes(debounced),
-    ).slice(0, 4);
+    return pool.filter((category) => categoryMatchesQuery(category, debounced)).slice(0, 4);
   }, [debounced]);
 
   const remember = (value: string) => {
@@ -166,13 +170,13 @@ export function SearchOverlay() {
                 </section>
               ) : null}
 
-              <section>
+              <section className={suggestions.length ? undefined : "hidden"}>
                 <p className="mb-3 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted">
                   <TrendingUp className="h-3.5 w-3.5 text-gold" />
                   {t("search.trending")}
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {TRENDING_SEARCHES.map((item) => (
+                  {suggestions.map((item) => (
                     <button key={item} type="button" className={chipClass()} onClick={() => goSearch(item)}>
                       {item}
                     </button>
@@ -207,7 +211,7 @@ export function SearchOverlay() {
               <Search className="mx-auto h-8 w-8 text-muted" />
               <p className="mt-3 text-sm text-muted">{t("search.empty")}</p>
               <div className="mt-5 flex flex-wrap justify-center gap-2">
-                {TRENDING_SEARCHES.slice(0, 4).map((item) => (
+                {suggestions.slice(0, 4).map((item) => (
                   <button key={item} type="button" className={chipClass()} onClick={() => goSearch(item)}>
                     {item}
                   </button>
@@ -261,7 +265,7 @@ export function SearchOverlay() {
                             {[
                               locale === "ar" ? product.digitalOptions.platformLabelAr : product.digitalOptions.platformLabel,
                               locale === "ar" ? product.digitalOptions.regions[0]?.nameAr : product.digitalOptions.regions[0]?.name,
-                              product.fulfillmentType === "direct_topup" ? t("common.topup") : t("common.instant"),
+                              product.inStock ? (product.fulfillmentType === "direct_topup" ? t("common.topup") : t("common.digital")) : t("common.outOfStock"),
                             ]
                               .filter(Boolean)
                               .join(" · ")}

@@ -9,11 +9,14 @@ import type {
   RequiredCustomerField,
 } from "@/types";
 import { getSnapshotProducts } from "@/lib/catalog-snapshot";
+import { allowStaticCatalogFallback } from "@/lib/catalog-fallback";
+import { productsForListing, isListingGroup } from "@/lib/listing";
+import { searchCatalog } from "@/lib/search";
 
 const REFUND_EN =
-  "Digital products are generally not refundable after a code is revealed or a top-up is submitted. Placeholder policy — requires final business and legal review.";
+  "Digital products are generally not refundable after a code is revealed or a top-up is submitted.";
 const REFUND_AR =
-  "المنتجات الرقمية غير قابلة للاسترجاع عادة بعد كشف الكود أو إرسال الشحن. نص تجريبي — يحتاج مراجعة قانونية وتجارية نهائية.";
+  "المنتجات الرقمية غير قابلة للاسترجاع عادة بعد كشف الكود أو إرسال الشحن.";
 
 function playerIdField(): RequiredCustomerField {
   return {
@@ -97,15 +100,15 @@ function codeOptions(input: {
       inStock: item.inStock ?? true,
       deliveryEstimate: item.deliveryEstimate ?? "Issued after your payment is confirmed.",
     })),
-    deliveryMethods: ["account", "email", "sms"],
+    deliveryMethods: ["account"],
     deliveryEstimate: "Issued after your payment is confirmed.",
     deliveryEstimateAr: "يُصدر بعد تأكيد الدفع.",
     instructions:
       input.instructions ??
-      "Redeem the PIN in the official store of the selected platform. Match the region and currency to the receiving account. MMH does not generate a live code in this environment.",
+      "Redeem the PIN in the official store of the selected platform. Match the region and currency to the receiving account.",
     instructionsAr:
       input.instructionsAr ??
-      "استرد الرقم السري في المتجر الرسمي للمنصة المختارة. طابق المنطقة والعملة مع الحساب المستلم. إم إم إتش لا يولّد كوداً حياً في هذا العرض.",
+      "استرد الرقم السري في المتجر الرسمي للمنصة المختارة. طابق المنطقة والعملة مع الحساب المستلم.",
     howToUse: input.howToUse,
     howToUseAr: input.howToUseAr,
     regionRestrictions:
@@ -187,7 +190,7 @@ function digital(
     badges: Array.from(
       new Set<ProductBadge>([
         "digital",
-        input.fulfillmentType === "direct_topup" ? "topup" : "instant",
+        ...(input.fulfillmentType === "direct_topup" ? (["topup"] as ProductBadge[]) : []),
         ...(input.badges ?? []),
       ]),
     ),
@@ -1002,9 +1005,11 @@ export const PRODUCTS: Product[] = [
   }),
 ];
 
-function catalog(): Product[] {
+/** Live catalog snapshot; the static list is only a development fallback. */
+export function catalog(): Product[] {
   const live = getSnapshotProducts();
-  return live.length > 0 ? live : PRODUCTS;
+  if (live.length > 0) return live;
+  return allowStaticCatalogFallback() ? PRODUCTS : [];
 }
 
 export function getProductBySlug(slug: string): Product | undefined {
@@ -1015,41 +1020,17 @@ export function getProductById(id: string): Product | undefined {
   return catalog().find((product) => product.id === id);
 }
 
-const CATEGORY_GROUPS: Record<string, (product: Product) => boolean> = {
-  playstation: (product) => product.platform === "playstation",
-  steam: (product) => product.platform === "steam",
-  xbox: (product) => product.platform === "xbox",
-  nintendo: (product) => product.platform === "nintendo",
-  "mobile-games": (product) => ["pubg", "freefire", "free-fire", "mlbb", "roblox"].includes(product.platform),
-  "pc-games": (product) => ["steam", "valorant", "lol", "riot", "ea", "fortnite"].includes(product.platform),
-  "game-top-ups": (product) => product.fulfillmentType === "direct_topup",
-  "gift-cards": (product) =>
-    product.digitalOptions.kind === "gift_card" || product.digitalOptions.kind === "wallet",
-  "wallet-cards": (product) => product.digitalOptions.kind === "wallet",
-  "game-currencies": (product) =>
-    product.digitalOptions.kind === "game_currency" || product.fulfillmentType === "direct_topup",
-  subscriptions: (product) => product.digitalOptions.kind === "subscription",
-  entertainment: (product) => ["apple", "google", "nintendo"].includes(product.platform),
-  "mobile-credit": (product) => ["google", "apple", "razer"].includes(product.platform),
-  "best-sellers": (product) => Boolean(product.bestseller),
-  "new-products": (product) => product.badges.includes("new") || product.createdAt >= "2026-03-01",
-  "special-offers": (product) => Boolean(product.compareAtPriceJod),
-  deals: (product) => Boolean(product.compareAtPriceJod),
-};
-
 /** Whether a navigation grouping (e.g. "playstation", "mobile-games") includes the product. */
 export function matchesCategoryGroup(slug: string, product: Product): boolean {
-  return CATEGORY_GROUPS[slug]?.(product) ?? false;
+  return isListingGroup(slug) && productsForListing(slug, [product]).length > 0;
 }
 
 export function isCategoryGroup(slug: string): boolean {
-  return slug in CATEGORY_GROUPS;
+  return isListingGroup(slug);
 }
 
 export function getProductsByCategory(slug: string): Product[] {
-  const group = CATEGORY_GROUPS[slug];
-  if (group) return catalog().filter(group);
-  return catalog().filter((product) => product.category === slug || product.platform === slug);
+  return productsForListing(slug, catalog());
 }
 
 export function getRelatedProducts(product: Product, limit = 8): Product[] {
@@ -1096,32 +1077,7 @@ export function getMayLikeProducts(product: Product, recentIds: string[], limit 
 }
 
 export function searchProducts(query: string): Product[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return [];
-  return catalog().filter((product) => {
-    const haystack = [
-      product.name,
-      product.nameAr,
-      product.brand,
-      product.category,
-      product.platform,
-      product.shortDescription,
-      product.digitalOptions.platformLabel,
-      product.digitalOptions.kind,
-      product.fulfillmentType,
-      ...product.tags,
-      ...product.digitalOptions.regions.flatMap((region) => [region.id, region.name, region.nameAr, region.currency ?? ""]),
-      ...product.digitalOptions.denominations.flatMap((item) => [
-        item.label,
-        item.labelAr,
-        item.currency,
-        String(item.value),
-      ]),
-    ]
-      .join(" ")
-      .toLowerCase();
-    return haystack.includes(q);
-  });
+  return searchCatalog(catalog(), query);
 }
 
 export function uniqueBrands(): string[] {
@@ -1150,6 +1106,7 @@ export function uniqueKinds(): ProductKind[] {
 
 export function priceRange(): { min: number; max: number } {
   const prices = catalog().map((product) => product.priceJod);
+  if (!prices.length) return { min: 0, max: 0 };
   return { min: Math.floor(Math.min(...prices)), max: Math.ceil(Math.max(...prices)) };
 }
 

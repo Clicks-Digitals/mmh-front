@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminAccess } from "@/components/admin/admin-access";
 import { Badge } from "@/components/admin/ui/badge";
 import { AdminCard, AdminSectionHeader } from "@/components/admin/ui/card";
 import { DataTable, type DataTableColumn } from "@/components/admin/ui/data-table";
@@ -10,19 +11,13 @@ import { StatCard } from "@/components/admin/ui/stat-card";
 import { useAdminQuery } from "@/hooks/use-admin-query";
 import { getInventoryOverview, type AdminVariant } from "@/lib/api/admin";
 import { formatFils } from "@/server/money";
-import { hasPermission } from "@/server/auth/permissions";
 import { Boxes, KeyRound, Package, ShieldAlert } from "lucide-react";
-import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { useMemo } from "react";
 
 export function InventoryClient() {
-  const session = useSession();
-  const canManage = hasPermission(
-    session.data?.user?.permissions,
-    "codes.manage",
-    session.data?.user?.role,
-  );
+  const { can } = useAdminAccess();
+  const canManage = can("codes.manage");
   const { data, loading, error, reload } = useAdminQuery((token) => getInventoryOverview(token));
 
   const columns: DataTableColumn<AdminVariant>[] = useMemo(

@@ -62,7 +62,7 @@ export function LoginModal({
           className="mt-6 space-y-4"
           onSubmit={async (event) => {
             event.preventDefault();
-            if (!isValidEmail(email) || password.length < 8) {
+            if (!isValidEmail(email) || !password) {
               setError(t("auth.short"));
               return;
             }
@@ -81,14 +81,10 @@ export function LoginModal({
           <Field label={t("checkout.email")} type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="your@email.com" />
           <Field label={t("auth.password")} type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
           {error ? <p className="text-sm text-danger">{error}</p> : null}
-          <div className="rounded-xl border border-line bg-elevated px-3 py-2.5 text-xs leading-5 text-muted">
-            <p className="font-semibold text-fg">{t("auth.demoTitle")}</p>
-            <p className="mt-1">
-              {t("auth.demoEmail")}: <span className="font-mono text-fg">demo@mmh.local</span>
-            </p>
-            <p>
-              {t("auth.demoPassword")}: <span className="font-mono text-fg">DemoCustomer1!</span>
-            </p>
+          <div className="flex justify-end">
+            <Link href="/forgot-password" className="text-sm text-accent hover:text-fg" onClick={close}>
+              {t("auth.forgot")}
+            </Link>
           </div>
           <Button type="submit" className="w-full" disabled={loading}>
             {loading ? t("common.loading") : t("auth.submitLogin")}

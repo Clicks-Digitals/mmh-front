@@ -15,6 +15,7 @@ export function CategoryListing({
   initial,
   source,
   basePath,
+  subcategoriesLabel = "Subcategories",
 }: {
   title: string;
   breadcrumbs: Crumb[];
@@ -22,6 +23,7 @@ export function CategoryListing({
   initial: FilterState;
   source: Product[];
   basePath: string;
+  subcategoriesLabel?: string;
 }) {
   return (
     <div>
@@ -30,7 +32,7 @@ export function CategoryListing({
           <Breadcrumbs tone="onAccent" items={breadcrumbs} />
           <h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">{title}</h1>
           {subcategories.length ? (
-            <nav aria-label="Subcategories" className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+            <nav aria-label={subcategoriesLabel} className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
               {subcategories.map((child, index) => (
                 <span key={child.href} className="inline-flex items-center gap-4">
                   {index > 0 ? <span className="hidden text-white/35 sm:inline" aria-hidden>

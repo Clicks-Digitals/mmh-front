@@ -1,4 +1,6 @@
 import { SITE } from "@/config/site";
+import { localeDir } from "@/lib/locale";
+import { getServerLocale } from "@/server/locale";
 import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import "./globals.css";
@@ -19,18 +21,21 @@ export const metadata: Metadata = {
   },
   description: SITE.description,
   icons: { icon: "/brand/IMG_4556.png" },
+  alternates: { canonical: "/" },
   openGraph: {
-    siteName: "MMH",
+    siteName: SITE.name,
     locale: "en_JO",
     type: "website",
+    url: SITE.url,
   },
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const locale = await getServerLocale();
   return (
     <html
-      lang="en"
-      dir="ltr"
+      lang={locale}
+      dir={localeDir(locale)}
       data-input="pointer"
       data-scroll-behavior="smooth"
       suppressHydrationWarning
@@ -38,7 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     >
       <body className="min-h-full">
         <Script id="mmh-boot" strategy="beforeInteractive">
-          {`(function(){try{var r=document.documentElement;r.setAttribute('data-input','pointer');var l=localStorage.getItem('mmh-locale');if(l&&l.indexOf('ar')!==-1){r.lang='ar';r.dir='rtl';}}catch(e){}})();`}
+          {`(function(){try{document.documentElement.setAttribute('data-input','pointer');}catch(e){}})();`}
         </Script>
         {process.env.NODE_ENV === "development" ? (
           <Script id="mmh-hide-next-issue-badge" strategy="afterInteractive">

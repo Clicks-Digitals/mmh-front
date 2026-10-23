@@ -3,8 +3,10 @@ from __future__ import annotations
 import secrets
 
 from django.conf import settings
+from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from rest_framework import serializers, status, viewsets
+from rest_framework.exceptions import APIException
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -85,8 +87,20 @@ class SupplierLogSerializer(serializers.ModelSerializer):
         fields = ("id", "action", "ok", "status_code", "message", "created_at")
 
 
+class SupplierInUse(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "This supplier is used by product mappings or orders. Deactivate it instead."
+    default_code = "conflict"
+
+
 class AdminSupplierViewSet(AuditedModelViewSetMixin, viewsets.ModelViewSet):
     audit_prefix = "supplier"
+
+    def perform_destroy(self, instance):
+        try:
+            super().perform_destroy(instance)
+        except ProtectedError as exc:
+            raise SupplierInUse() from exc
     permission_classes = [IsAdminUser, HasAdminPermission]
     queryset = Supplier.objects.select_related("connection").all()
     search_fields = ["slug", "name"]

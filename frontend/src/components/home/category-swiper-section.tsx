@@ -7,7 +7,12 @@ import { useLanguage } from "@/context/language-context";
 import { useEscape, useScrollLock } from "@/hooks/use-overlay";
 import { cn } from "@/lib/cn";
 import { X } from "lucide-react";
+import { catalog as liveCatalog } from "@/data/products";
+import { getSnapshotCategories } from "@/lib/catalog-snapshot";
+import { hrefHasProducts } from "@/lib/listing";
 import Link from "next/link";
+
+const hasProducts = (href: string) => hrefHasProducts(href, liveCatalog(), getSnapshotCategories());
 import { useCallback, useMemo, useState } from "react";
 
 type CategoryItem = (typeof HOME_CATEGORY_SWIPER)[number];
@@ -20,7 +25,12 @@ export function CategorySwiperSection() {
   useScrollLock(Boolean(active));
   useEscape(Boolean(active), close);
 
-  const loop = useMemo(() => [...HOME_CATEGORY_SWIPER, ...HOME_CATEGORY_SWIPER], []);
+  const loop = useMemo(() => {
+    const available = HOME_CATEGORY_SWIPER.filter((item) => item.children.some((child) => hasProducts(child.href)));
+    return [...available, ...available];
+  }, []);
+
+  if (!loop.length) return null;
 
   return (
     <section className="py-6 sm:py-8" aria-label={t("home.categoriesTitle")}>
@@ -79,7 +89,7 @@ export function CategorySwiperSection() {
           <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
             <p className="mb-5 text-sm text-muted">{t("home.categoriesModalHint")}</p>
             <div className="mx-auto grid max-w-5xl grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 md:grid-cols-4">
-              {active.children.map((child) => (
+              {active.children.filter((child) => hasProducts(child.href)).map((child) => (
                 <Link
                   key={child.href + child.labelKey}
                   href={child.href}

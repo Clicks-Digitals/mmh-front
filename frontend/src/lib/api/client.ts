@@ -41,7 +41,13 @@ function messageFromBody(body: unknown, fallback: string): string {
   if (!body || typeof body !== "object") return fallback;
   const record = body as Record<string, unknown>;
   if (typeof record.detail === "string") return record.detail;
-  if (Array.isArray(record.detail)) return fallback;
+  if (Array.isArray(record.detail)) return typeof record.detail[0] === "string" ? record.detail[0] : fallback;
+  if (record.detail && typeof record.detail === "object") {
+    for (const value of Object.values(record.detail as Record<string, unknown>)) {
+      if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+      if (typeof value === "string") return value;
+    }
+  }
   if (typeof record.message === "string") return record.message;
   const firstKey = Object.keys(record)[0];
   const firstVal = firstKey ? record[firstKey] : null;
@@ -95,4 +101,32 @@ export async function apiFetch<T>(
     return (await response.text()) as T;
   }
   return (await response.json()) as T;
+}
+
+/** Machine-readable error code from a backend error body ({detail, code}). */
+export function apiErrorCode(error: unknown): string {
+  if (!(error instanceof ApiError) || !error.body || typeof error.body !== "object") return "";
+  const code = (error.body as { code?: unknown }).code;
+  return typeof code === "string" ? code : "";
+}
+
+/** Field key a checkout error refers to ({detail, code, field}). */
+export function apiErrorField(error: unknown): string {
+  if (!(error instanceof ApiError) || !error.body || typeof error.body !== "object") return "";
+  const field = (error.body as { field?: unknown }).field;
+  return typeof field === "string" ? field : "";
+}
+
+/** Validation errors as {field: [messages]} from {detail: {field: [msg]}}. */
+export function apiFieldErrors(error: unknown): Record<string, string[]> {
+  if (!(error instanceof ApiError) || !error.body || typeof error.body !== "object") return {};
+  const detail = (error.body as { detail?: unknown }).detail;
+  const source = detail && typeof detail === "object" && !Array.isArray(detail) ? detail : error.body;
+  const result: Record<string, string[]> = {};
+  for (const [key, value] of Object.entries(source as Record<string, unknown>)) {
+    if (key === "code") continue;
+    if (Array.isArray(value)) result[key] = value.filter((item): item is string => typeof item === "string");
+    else if (typeof value === "string" && key !== "detail") result[key] = [value];
+  }
+  return result;
 }

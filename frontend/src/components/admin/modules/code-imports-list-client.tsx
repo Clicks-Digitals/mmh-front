@@ -1,5 +1,6 @@
 "use client";
 
+import { useAdminAccess } from "@/components/admin/admin-access";
 import { ADMIN_LIST_PAGE_SIZE } from "@/components/admin/admin-list-page";
 import { Badge } from "@/components/admin/ui/badge";
 import { DataTable } from "@/components/admin/ui/data-table";
@@ -10,17 +11,11 @@ import { Pagination } from "@/components/admin/ui/pagination";
 import { useAdminResource } from "@/hooks/use-admin-resource";
 import { listCodeImports, type CodeImportBatch } from "@/lib/api/admin";
 import { formatAdminDateTime } from "@/lib/admin/format";
-import { hasPermission } from "@/server/auth/permissions";
-import { useSession } from "next-auth/react";
 import Link from "next/link";
 
 export function CodeImportsListClient() {
-  const session = useSession();
-  const canManage = hasPermission(
-    session.data?.user?.permissions,
-    "codes.manage",
-    session.data?.user?.role,
-  );
+  const { can } = useAdminAccess();
+  const canManage = can("codes.manage");
 
   const { page, setPage, items, count, loading, error, reload } = useAdminResource<CodeImportBatch>(
     async (tok, p) => {

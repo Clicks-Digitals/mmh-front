@@ -42,12 +42,10 @@ export function QuickView() {
             <div className="mt-4">
               <Price amount={product.priceJod} compareAt={product.compareAtPriceJod} locale={locale} size="lg" />
             </div>
-            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+            {!product.inStock ? <p className="mt-3 text-sm font-semibold text-danger">{t("common.outOfStock")}</p> : null}
+            <div className="mt-6">
               <Button className="w-full sm:w-auto" href={`/product/${product.slug}`} onClick={closeQuickView}>
-                {t("common.viewOptions")}
-              </Button>
-              <Button className="w-full sm:w-auto" variant="secondary" href={`/product/${product.slug}`} onClick={closeQuickView}>
-                {t("common.learnMore")}
+                {t("common.viewProduct")}
               </Button>
             </div>
           </div>

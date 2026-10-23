@@ -1,3 +1,11 @@
 {
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "redirects": [
+    {
+      "source": "/:path(.*)",
+      "has": [{ "type": "host", "value": "mmhcard.com" }],
+      "destination": "https://www.mmhcard.com/:path",
+      "permanent": true
+    }
+  ]
 }

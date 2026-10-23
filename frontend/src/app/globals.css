@@ -477,3 +477,9 @@ nextjs-portal {
   background: rgba(255, 255, 255, 0.18);
   border-radius: 999px;
 }
+
+@media (min-width: 1024px) {
+  :root {
+    --header-height: 108px;
+  }
+}

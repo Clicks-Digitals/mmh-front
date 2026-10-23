@@ -1,5 +1,7 @@
 "use client";
 
+import { useAdminAccess } from "@/components/admin/admin-access";
+import { adminErrorMessage } from "@/components/admin/lib/errors";
 import { Badge } from "@/components/admin/ui/badge";
 import { DataTable, type DataTableColumn } from "@/components/admin/ui/data-table";
 import { EmptyState } from "@/components/admin/ui/empty-state";
@@ -16,7 +18,6 @@ import {
   listProducts,
   type AdminProduct,
 } from "@/lib/api/admin";
-import { ApiError } from "@/lib/api/client";
 import { resolveMediaUrl } from "@/lib/media";
 import { formatFils } from "@/server/money";
 import Link from "next/link";
@@ -34,6 +35,7 @@ function priceRange(row: AdminProduct) {
 
 export function ProductsListClient() {
   const token = useAdminToken();
+  const canWrite = useAdminAccess().can("catalog.write");
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -88,7 +90,7 @@ export function ProductsListClient() {
         if (cancelled) return;
         setItems([]);
         setCount(0);
-        setError(err instanceof ApiError ? err.message : "Failed to load products");
+        setError(adminErrorMessage(err, "Failed to load products"));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -182,12 +184,12 @@ export function ProductsListClient() {
         header: "",
         render: (row) => (
           <Link href={`/admin/products/${row.slug}`} className="text-xs font-medium text-[var(--clicks-blue)]">
-            Edit
+            {canWrite ? "Edit" : "View"}
           </Link>
         ),
       },
     ],
-    [],
+    [canWrite],
   );
 
   return (
@@ -196,12 +198,11 @@ export function ProductsListClient() {
         title="Products"
         description="Manage digital catalog products, variants, media, and inventory."
         actions={
-          <Link
-            href="/admin/products/new"
-            className="admin-btn admin-btn-primary"
-          >
-            New product
-          </Link>
+          canWrite ? (
+            <Link href="/admin/products/new" className="admin-btn admin-btn-primary">
+              New product
+            </Link>
+          ) : null
         }
       />
       <Filters

@@ -1,11 +1,15 @@
 import { LoginForm } from "@/components/forms/auth-forms";
+import { noIndexMeta } from "@/lib/seo";
+import { Suspense } from "react";
 
-export const metadata = { title: "Sign in" };
+export const metadata = noIndexMeta("Sign in");
 
-export default function LoginPage() {
+export default function Page() {
   return (
     <div className="container-mmh py-10 md:py-16">
-      <LoginForm />
+      <Suspense fallback={null}>
+        <LoginForm />
+      </Suspense>
     </div>
   );
 }

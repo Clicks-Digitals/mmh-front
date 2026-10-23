@@ -4,10 +4,10 @@ import { cn } from "@/lib/cn";
 
 export function Logo({ className, size = 40 }: { className?: string; size?: number }) {
   return (
-    <Link href="/" className={cn("inline-flex items-center gap-2.5", className)} aria-label="MMH DC home">
+    <Link href="/" className={cn("inline-flex items-center gap-2.5", className)} aria-label="MMH home">
       <Image
         src="/brand/IMG_4556.png"
-        alt="MMH DC"
+        alt="MMH"
         width={size}
         height={size}
         className="brand-mark rounded-full object-contain"
@@ -15,7 +15,7 @@ export function Logo({ className, size = 40 }: { className?: string; size?: numb
         priority
       />
       <span className="truncate text-[15px] font-semibold tracking-[0.14em] text-fg sm:text-[17px] sm:tracking-[0.18em]">
-        MMH DC
+        MMH
       </span>
     </Link>
   );

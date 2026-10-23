@@ -1,5 +1,7 @@
-import type { Category, DeliveryMethod, Product, ProductBadge, ProductKind, RequiredCustomerField } from "@/types";
-import { apiFetch, getApiBaseUrl } from "@/lib/api/client";
+import type { Category, Product, ProductBadge, ProductKind, RequiredCustomerField } from "@/types";
+import { ApiError, apiFetch, getApiBaseUrl } from "@/lib/api/client";
+import { safeDeliveryEstimate, stripInstantClaims } from "@/lib/delivery-copy";
+import { staticCatalogImage } from "@/lib/static-images";
 
 type ApiProduct = {
   id: string;
@@ -37,6 +39,8 @@ type ApiProduct = {
   delivery_estimate_ar?: string;
   account_currency?: string;
   price_jod?: number;
+  in_stock?: boolean;
+  refundable?: boolean;
   category_slug?: string;
   platform_slug?: string;
   category?: { slug: string; name_en: string; name_ar: string };
@@ -49,12 +53,17 @@ type ApiProduct = {
     price_jod: number;
     compare_at_price_jod?: number | null;
     stock_status: string;
+    available?: boolean;
+    min_quantity?: number;
+    max_quantity?: number;
+    region?: { slug: string; name_en: string; name_ar: string; currency?: string } | null;
     name_en: string;
     name_ar: string;
     region_slug?: string | null;
     region_name_en?: string | null;
     region_name_ar?: string | null;
     region_locked?: boolean | null;
+    sort_order?: number;
   }>;
   fields?: Array<{
     key: string;
@@ -77,6 +86,7 @@ type ApiCategory = {
   id: number;
   slug: string;
   href: string;
+  parent?: string | null;
   artwork_key: string;
   name_en: string;
   name_ar: string;
@@ -108,22 +118,25 @@ function mapFulfillment(value: string): Product["fulfillmentType"] {
 }
 
 export function mapApiProduct(row: ApiProduct): Product {
-  const variants = row.variants ?? [];
+  const variants = [...(row.variants ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const variantAvailable = (variant: (typeof variants)[number]) =>
+    variant.available ?? variant.stock_status === "IN_STOCK";
   const regionsMap = new Map<string, { id: string; name: string; nameAr: string; locked: boolean; currency?: string }>();
   for (const variant of variants) {
-    const regionId = variant.region_slug || "global";
+    const regionId = variant.region?.slug || variant.region_slug || "global";
     if (!regionsMap.has(regionId)) {
-      const name = variant.region_name_en || (regionId === "global" ? "Global" : regionId.toUpperCase());
+      const name =
+        variant.region?.name_en || variant.region_name_en || (regionId === "global" ? "Global" : regionId.toUpperCase());
       regionsMap.set(regionId, {
         id: regionId,
         name,
-        nameAr: variant.region_name_ar || (regionId === "global" ? "عالمي" : name),
+        nameAr: variant.region?.name_ar || variant.region_name_ar || (regionId === "global" ? "عالمي" : name),
         locked: variant.region_locked ?? regionId !== "global",
-        currency: variant.package_currency,
+        currency: variant.region?.currency || variant.package_currency,
       });
     }
   }
-  const firstVariant = variants[0];
+  const firstVariant = variants.find(variantAvailable) ?? variants[0];
   const firstCompareAt =
     firstVariant?.compare_at_price_jod != null && firstVariant.compare_at_price_jod > firstVariant.price_jod
       ? firstVariant.compare_at_price_jod
@@ -144,10 +157,9 @@ export function mapApiProduct(row: ApiProduct): Product {
 
   const primaryMedia = [...(row.media ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
   const primaryFromGallery = primaryMedia.find((m) => m.is_primary)?.url || primaryMedia[0]?.url;
-  const image = row.primary_image_url || row.image_url || primaryFromGallery || `/catalog/${row.id}.webp`;
-  const gallery = primaryMedia.length
-    ? primaryMedia.map((m) => m.url)
-    : [image];
+  const image = row.primary_image_url || row.image_url || primaryFromGallery || staticCatalogImage(row.id);
+  const gallery = primaryMedia.length ? primaryMedia.map((m) => m.url).filter(Boolean) : image ? [image] : [];
+  const isTopup = row.fulfillment_type === "DIRECT_TOPUP";
   const platform = row.platform;
   const categorySlug = row.category_slug || row.category?.slug || "gift-cards";
 
@@ -158,20 +170,22 @@ export function mapApiProduct(row: ApiProduct): Product {
     fulfillmentType: mapFulfillment(row.fulfillment_type),
     name: row.name_en,
     nameAr: row.name_ar,
-    shortDescription: row.short_description_en || "",
-    shortDescriptionAr: row.short_description_ar || "",
-    description: row.description_en || "",
-    descriptionAr: row.description_ar || "",
+    shortDescription: stripInstantClaims(row.short_description_en),
+    shortDescriptionAr: stripInstantClaims(row.short_description_ar),
+    description: stripInstantClaims(row.description_en),
+    descriptionAr: stripInstantClaims(row.description_ar),
     brand: row.brand,
     category: categorySlug,
-    images: gallery.length ? gallery : [image],
+    images: gallery.length ? gallery : image ? [image] : [],
     artworkKey: row.artwork_key,
-    priceJod: firstVariant?.price_jod ?? row.price_jod ?? 0,
+    priceJod: variants.length ? Math.min(...variants.map((variant) => variant.price_jod)) : row.price_jod ?? 0,
     compareAtPriceJod: firstCompareAt,
     rating: Number(row.rating) || 0,
     reviewCount: row.review_count || 0,
-    badges: [...new Set([...(row.badges || []), ...(row.bestseller ? ["bestseller"] : [])])] as ProductBadge[],
-    inStock: variants.some((variant) => variant.stock_status === "IN_STOCK") || variants.length === 0,
+    badges: [...new Set([...(row.badges || []), ...(row.bestseller ? ["bestseller"] : [])])].filter(
+      (badge) => badge !== "instant",
+    ) as ProductBadge[],
+    inStock: row.in_stock ?? variants.some(variantAvailable),
     featured: row.featured,
     bestseller: row.bestseller,
     trending: row.trending,
@@ -185,21 +199,22 @@ export function mapApiProduct(row: ApiProduct): Product {
       kind: mapKind(row.kind),
       regions: [...regionsMap.values()],
       denominations: variants.map((variant) => ({
-        id: variant.external_id || String(variant.id),
-        regionId: variant.region_slug || undefined,
+        id: String(variant.id),
+        variantId: variant.id,
+        regionId: variant.region?.slug || variant.region_slug || undefined,
         label: variant.name_en,
         labelAr: variant.name_ar,
         value: Number(variant.denomination),
         currency: variant.package_currency,
         priceJod: variant.price_jod,
         compareAtPriceJod: variant.compare_at_price_jod ?? undefined,
-        inStock: variant.stock_status !== "OUT_OF_STOCK",
+        inStock: variantAvailable(variant),
+        minQuantity: variant.min_quantity,
+        maxQuantity: variant.max_quantity,
       })),
-      deliveryMethods: (row.fulfillment_type === "DIRECT_TOPUP"
-        ? ["instant_reveal"]
-        : ["account", "email", "sms"]) as DeliveryMethod[],
-      deliveryEstimate: row.delivery_estimate_en || "Instant",
-      deliveryEstimateAr: row.delivery_estimate_ar || "فوري",
+      deliveryMethods: ["account"],
+      deliveryEstimate: safeDeliveryEstimate(row.delivery_estimate_en, "en", isTopup),
+      deliveryEstimateAr: safeDeliveryEstimate(row.delivery_estimate_ar, "ar", isTopup),
       instructions: row.instructions_en || "",
       instructionsAr: row.instructions_ar || "",
       howToUse: row.how_to_use_en || [],
@@ -209,10 +224,10 @@ export function mapApiProduct(row: ApiProduct): Product {
       regionWarning: row.region_warning_en,
       regionWarningAr: row.region_warning_ar,
       accountCurrency: row.account_currency,
-      refundEligible: false,
+      refundEligible: Boolean(row.refundable),
       refundPolicyText: row.refund_policy_en || "",
       refundPolicyTextAr: row.refund_policy_ar || "",
-      instantCode: row.fulfillment_type === "CODE",
+      instantCode: false,
       requiredCustomerFields: fields,
     },
   };
@@ -227,6 +242,7 @@ export function mapApiCategory(row: ApiCategory): Category {
     descriptionAr: row.description_ar,
     href: row.href || `/category/${row.slug}`,
     artworkKey: row.artwork_key || "gift",
+    ...(row.parent ? { parent: row.parent } : {}),
   };
 }
 
@@ -237,16 +253,28 @@ function unwrapList<T>(data: Paginated<T>): T[] {
 }
 
 export async function fetchApiProducts(): Promise<Product[]> {
-  const data = await apiFetch<Paginated<ApiProduct>>("/catalog/products/?page_size=100");
-  return unwrapList(data).map(mapApiProduct);
+  const rows: ApiProduct[] = [];
+  let path: string | null = "/catalog/products/?page_size=200";
+  for (let page = 0; path && page < 20; page += 1) {
+    const data: Paginated<ApiProduct> & { next?: string | null } = await apiFetch(path);
+    rows.push(...unwrapList(data));
+    const next: string | null | undefined = Array.isArray(data) ? null : data.next;
+    path = next ? next.replace(getApiBaseUrl(), "") : null;
+    if (path && /^https?:/i.test(path)) {
+      const url: URL = new URL(path);
+      path = `${url.pathname.replace(/^.*?\/api\/v1/, "")}${url.search}`;
+    }
+  }
+  return rows.map(mapApiProduct);
 }
 
 export async function fetchApiProduct(slug: string): Promise<Product | undefined> {
   try {
-    const row = await apiFetch<ApiProduct>(`/catalog/products/${slug}/`);
+    const row = await apiFetch<ApiProduct>(`/catalog/products/${encodeURIComponent(slug)}/`);
     return mapApiProduct(row);
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return undefined;
+    throw error;
   }
 }
 

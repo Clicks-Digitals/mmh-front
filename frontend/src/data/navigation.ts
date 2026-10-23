@@ -37,6 +37,7 @@ export const FOOTER_COLUMNS = [
       { href: "/account/codes", labelKey: "account.codes" },
       { href: "/account/top-ups", labelKey: "account.topups" },
       { href: "/wishlist", labelKey: "nav.wishlist" },
+      { href: "/order-lookup", labelKey: "footer.orderLookup" },
       { href: "/faq", labelKey: "footer.faq" },
       { href: "/contact", labelKey: "footer.contact" },
     ],
@@ -60,13 +61,48 @@ export const FOOTER_COLUMNS = [
   },
 ] as const;
 
+/** Suggested searches; only those that match a live product are shown. */
 export const TRENDING_SEARCHES = [
   "Roblox",
-  "100 Robux",
   "PUBG UC",
-  "PlayStation US",
-  "Steam USD",
+  "PlayStation",
+  "Steam",
   "Apple Gift Card",
   "Google Play",
   "Free Fire",
+  "Xbox",
+  "Valorant",
+  "Fortnite",
 ];
+
+export type MegaKey = "shop" | "topups" | "gifts" | "playstation" | "mobile";
+
+/** Static groupings shown in the desktop mega menu; tiles without products are hidden. */
+export const MEGA_GROUPS: Record<
+  MegaKey,
+  { links: Array<{ href: string; labelKey: string }>; platformsOf?: "topups" | "gifts" | "mobile" | "playstation" }
+> = {
+  shop: {
+    links: [
+      { href: "/game-top-ups", labelKey: "nav.topups" },
+      { href: "/gift-cards", labelKey: "nav.gifts" },
+      { href: "/category/playstation", labelKey: "nav.playstation" },
+      { href: "/category/steam", labelKey: "nav.steam" },
+      { href: "/category/mobile-games", labelKey: "nav.mobile" },
+      { href: "/category/subscriptions", labelKey: "nav.subscriptions" },
+      { href: "/category/best-sellers", labelKey: "nav.bestSellers" },
+      { href: "/category/new-products", labelKey: "nav.newProducts" },
+      { href: "/deals", labelKey: "nav.deals" },
+    ],
+  },
+  topups: { links: [{ href: "/game-top-ups", labelKey: "nav.viewAll" }], platformsOf: "topups" },
+  gifts: { links: [{ href: "/gift-cards", labelKey: "nav.viewAll" }], platformsOf: "gifts" },
+  playstation: {
+    links: [
+      { href: "/category/playstation", labelKey: "nav.viewAll" },
+      { href: "/category/subscriptions", labelKey: "nav.subscriptions" },
+    ],
+    platformsOf: "playstation",
+  },
+  mobile: { links: [{ href: "/category/mobile-games", labelKey: "nav.viewAll" }], platformsOf: "mobile" },
+};

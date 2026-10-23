@@ -1,19 +1,15 @@
 "use client";
 
 import { getProductById } from "@/data/products";
-import { linePrice } from "@/lib/cart";
+import { lineLimits, linePrice } from "@/lib/cart";
+import { cartTotals, toFils, type AppliedCoupon } from "@/lib/coupon";
 import { uid } from "@/lib/id";
+import { clampQuantity, mergeQuantity, quantityLimits } from "@/lib/quantity";
 import { STORAGE_KEYS } from "@/lib/storage";
 import { useHydrated, useLocalStorage } from "@/hooks/use-local-storage";
 import type { CartDigitalMeta, CartItem } from "@/types";
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import type { CouponCheckResult } from "@/server/actions/checkout";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 interface AddPayload {
   productId: string;
@@ -21,71 +17,98 @@ interface AddPayload {
   digital?: CartDigitalMeta;
 }
 
+export interface AddResult {
+  capped: boolean;
+  max: number;
+}
+
+export type PromoResult = "ok" | "invalid" | "unavailable";
+
 interface CartContextValue {
   items: CartItem[];
   hydrated: boolean;
-  addItem: (payload: AddPayload) => void;
+  addItem: (payload: AddPayload) => AddResult;
   removeItem: (lineId: string) => void;
   updateQty: (lineId: string, quantity: number) => void;
   updateItemDigital: (lineId: string, digital: CartDigitalMeta) => void;
   clear: () => void;
   itemCount: number;
+  /** JOD amounts for display. */
   subtotal: number;
-  promoCode: string;
-  promoError: string | null;
   discount: number;
-  applyPromo: (code: string) => Promise<boolean>;
+  total: number;
+  subtotalFils: number;
+  discountFils: number;
+  totalFils: number;
+  promoCode: string;
+  promoError: PromoResult | null;
+  promoChecking: boolean;
+  applyPromo: (code: string, email?: string) => Promise<PromoResult>;
+  removePromo: () => void;
   lastAddedId: string | null;
 }
 
+async function quoteCoupon(code: string, subtotalFils: number, email: string): Promise<CouponCheckResult> {
+  const { validateStorefrontCoupon } = await import("@/server/actions/checkout");
+  return validateStorefrontCoupon({ code, subtotalFils, email });
+}
+
 const CartContext = createContext<CartContextValue | null>(null);
+const EMPTY_CART: CartItem[] = [];
+
+function sameLine(item: CartItem, payload: AddPayload) {
+  return (
+    item.productId === payload.productId &&
+    item.digital?.denominationId === payload.digital?.denominationId &&
+    item.digital?.regionId === payload.digital?.regionId &&
+    JSON.stringify(item.digital?.customerFields ?? {}) === JSON.stringify(payload.digital?.customerFields ?? {})
+  );
+}
+
+function limitsFor(productId: string, denominationId?: string) {
+  const product = getProductById(productId);
+  const denomination = product?.digitalOptions.denominations.find((entry) => entry.id === denominationId);
+  return quantityLimits(denomination?.minQuantity, denomination?.maxQuantity);
+}
 
 export function CartProvider({ children }: { children: ReactNode }) {
-  const [items, setItems] = useLocalStorage<CartItem[]>(STORAGE_KEYS.cart, []);
+  const [items, setItems] = useLocalStorage<CartItem[]>(STORAGE_KEYS.cart, EMPTY_CART);
   const hydrated = useHydrated();
-  const [promoCode, setPromoCode] = useState("");
-  const [promoError, setPromoError] = useState<string | null>(null);
-  const [discount, setDiscount] = useState(0);
+  const [coupon, setCoupon] = useState<AppliedCoupon | null>(null);
+  const [couponEmail, setCouponEmail] = useState("");
+  const [promoError, setPromoError] = useState<PromoResult | null>(null);
+  const [promoChecking, setPromoChecking] = useState(false);
   const [lastAddedId, setLastAddedId] = useState<string | null>(null);
 
   const addItem = useCallback(
-    (payload: AddPayload) => {
-      setItems((current) => {
-        const existing = current.find(
-          (item) =>
-            item.productId === payload.productId &&
-            item.digital?.denominationId === payload.digital?.denominationId &&
-            item.digital?.regionId === payload.digital?.regionId &&
-            item.digital?.giftIntent === payload.digital?.giftIntent &&
-            item.digital?.recipientPhone === payload.digital?.recipientPhone &&
-            item.digital?.recipientEmail === payload.digital?.recipientEmail &&
-            JSON.stringify(item.digital?.customerFields ?? {}) === JSON.stringify(payload.digital?.customerFields ?? {}),
+    (payload: AddPayload): AddResult => {
+      const limits = limitsFor(payload.productId, payload.digital?.denominationId);
+      const wanted = payload.quantity ?? limits.min;
+      const existing = items.find((item) => sameLine(item, payload));
+      if (existing) {
+        const merged = mergeQuantity(existing.quantity, wanted, limits);
+        setItems((current) =>
+          current.map((item) => (item.lineId === existing.lineId ? { ...item, quantity: merged.quantity } : item)),
         );
-        if (existing) {
-          return current.map((item) =>
-            item.lineId === existing.lineId
-              ? { ...item, quantity: item.quantity + (payload.quantity ?? 1) }
-              : item,
-          );
-        }
-        const line: CartItem = {
-          lineId: uid("line"),
-          productId: payload.productId,
-          quantity: payload.quantity ?? 1,
-          digital: payload.digital,
-          addedAt: new Date().toISOString(),
-        };
-        setLastAddedId(line.lineId);
-        return [...current, line];
-      });
+        return { capped: merged.capped, max: limits.max };
+      }
+      const quantity = clampQuantity(wanted, limits);
+      const line: CartItem = {
+        lineId: uid("line"),
+        productId: payload.productId,
+        quantity,
+        digital: payload.digital,
+        addedAt: new Date().toISOString(),
+      };
+      setLastAddedId(line.lineId);
+      setItems((current) => [...current, line]);
+      return { capped: quantity < wanted, max: limits.max };
     },
-    [setItems],
+    [items, setItems],
   );
 
   const removeItem = useCallback(
-    (lineId: string) => {
-      setItems((current) => current.filter((item) => item.lineId !== lineId));
-    },
+    (lineId: string) => setItems((current) => current.filter((item) => item.lineId !== lineId)),
     [setItems],
   );
 
@@ -93,7 +116,12 @@ export function CartProvider({ children }: { children: ReactNode }) {
     (lineId: string, quantity: number) => {
       setItems((current) =>
         current
-          .map((item) => (item.lineId === lineId ? { ...item, quantity } : item))
+          .map((item) => {
+            if (item.lineId !== lineId) return item;
+            const product = getProductById(item.productId);
+            const limits = product ? lineLimits(item, product) : quantityLimits();
+            return { ...item, quantity: quantity <= 0 ? 0 : clampQuantity(quantity, limits) };
+          })
           .filter((item) => item.quantity > 0),
       );
     },
@@ -107,44 +135,94 @@ export function CartProvider({ children }: { children: ReactNode }) {
     [setItems],
   );
 
+  const removePromo = useCallback(() => {
+    setCoupon(null);
+    setPromoError(null);
+  }, []);
+
   const clear = useCallback(() => {
     setItems([]);
-    setPromoCode("");
+    setCoupon(null);
     setPromoError(null);
-    setDiscount(0);
   }, [setItems]);
 
-  const applyPromo = useCallback(async (code: string) => {
-    const normalized = code.trim().toUpperCase();
-    try {
-      const { validateStorefrontCoupon } = await import("@/server/actions/checkout");
-      const result = await validateStorefrontCoupon({ code: normalized, items: items.map((item) => ({ variantId: item.digital?.denominationId ?? "", quantity: item.quantity })) });
-      if (!result.valid) throw new Error("invalid");
-      setPromoCode(normalized);
-      setPromoError(null);
-      setDiscount(result.discountJod);
-      return true;
-    } catch {
-      setPromoCode("");
-      setPromoError("bad");
-      setDiscount(0);
-      return false;
-    }
-  }, [items]);
-
-  const subtotal = useMemo(
+  const subtotalFils = useMemo(
     () =>
       items.reduce((sum, item) => {
         const product = getProductById(item.productId);
-        if (!product) return sum;
-        return sum + linePrice(item, product);
+        return product ? sum + toFils(linePrice(item, product)) : sum;
       }, 0),
     [items],
   );
 
+  const applyQuote = useCallback((result: CouponCheckResult): PromoResult => {
+    if (result.valid) {
+      setCoupon({
+        code: result.code,
+        subtotalFils: result.subtotalFils,
+        discountFils: result.discountFils,
+        totalFils: result.totalFils,
+      });
+      setPromoError(null);
+      return "ok";
+    }
+    if (result.reason === "invalid") {
+      setCoupon(null);
+      setPromoError("invalid");
+      return "invalid";
+    }
+    setPromoError("unavailable");
+    return "unavailable";
+  }, []);
+
+  const checkCoupon = useCallback(
+    async (code: string, subtotal: number, email: string) => applyQuote(await quoteCoupon(code, subtotal, email)),
+    [applyQuote],
+  );
+
+  const applyPromo = useCallback(
+    async (code: string, email = "") => {
+      const normalized = code.trim().toUpperCase();
+      if (!normalized) {
+        setPromoError("invalid");
+        return "invalid" as const;
+      }
+      setPromoChecking(true);
+      setCouponEmail(email);
+      try {
+        return await checkCoupon(normalized, subtotalFils, email);
+      } catch {
+        setPromoError("unavailable");
+        return "unavailable" as const;
+      } finally {
+        setPromoChecking(false);
+      }
+    },
+    [checkCoupon, subtotalFils],
+  );
+
+  // Re-quote the coupon whenever the cart subtotal changes (the old quote no longer applies).
+  const requoting = useRef(false);
+  useEffect(() => {
+    if (!coupon || coupon.subtotalFils === subtotalFils || requoting.current) return;
+    requoting.current = true;
+    const run =
+      subtotalFils > 0
+        ? quoteCoupon(coupon.code, subtotalFils, couponEmail).then((result) => {
+            applyQuote(result);
+          })
+        : Promise.resolve().then(() => setCoupon(null));
+    void run
+      .catch(() => undefined)
+      .finally(() => {
+        requoting.current = false;
+      });
+  }, [coupon, subtotalFils, couponEmail, applyQuote]);
+
+  const totals = cartTotals(subtotalFils, coupon);
   const itemCount = useMemo(() => items.reduce((sum, item) => sum + item.quantity, 0), [items]);
 
-  const value = useMemo(
+  const value = useMemo<CartContextValue>(
     () => ({
       items,
       hydrated,
@@ -154,11 +232,17 @@ export function CartProvider({ children }: { children: ReactNode }) {
       updateItemDigital,
       clear,
       itemCount,
-      subtotal,
-      promoCode,
+      subtotal: totals.subtotalFils / 1000,
+      discount: totals.discountFils / 1000,
+      total: totals.totalFils / 1000,
+      subtotalFils: totals.subtotalFils,
+      discountFils: totals.discountFils,
+      totalFils: totals.totalFils,
+      promoCode: totals.code,
       promoError,
-      discount,
+      promoChecking,
       applyPromo,
+      removePromo,
       lastAddedId,
     }),
     [
@@ -170,11 +254,14 @@ export function CartProvider({ children }: { children: ReactNode }) {
       updateItemDigital,
       clear,
       itemCount,
-      subtotal,
-      promoCode,
+      totals.subtotalFils,
+      totals.discountFils,
+      totals.totalFils,
+      totals.code,
       promoError,
-      discount,
+      promoChecking,
       applyPromo,
+      removePromo,
       lastAddedId,
     ],
   );

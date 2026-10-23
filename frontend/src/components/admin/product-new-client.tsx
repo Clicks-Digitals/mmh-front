@@ -1,17 +1,17 @@
 "use client";
 
+import { adminErrorMessage } from "@/components/admin/lib/errors";
 import { AdminCard, AdminSectionHeader } from "@/components/admin/ui/card";
 import { FormField, adminInputClass, adminTextareaClass } from "@/components/admin/ui/form-field";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { useAdminQuery } from "@/hooks/use-admin-query";
 import {
-  asList,
   createProduct,
+  fetchAllPages,
   listCategories,
   listPlatforms,
 } from "@/lib/api/admin";
-import { ApiError } from "@/lib/api/client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
@@ -37,11 +37,11 @@ export function ProductNewClient() {
 
   const { data: meta, token, loading: metaLoading } = useAdminQuery(async (tok) => {
     try {
-      const [cats, plats] = await Promise.all([
-        listCategories(tok, { page_size: 200 }),
-        listPlatforms(tok, { page_size: 200 }),
+      const [categories, platforms] = await Promise.all([
+        fetchAllPages((params) => listCategories(tok, params)),
+        fetchAllPages((params) => listPlatforms(tok, params)),
       ]);
-      return { categories: asList(cats).items, platforms: asList(plats).items };
+      return { categories, platforms };
     } catch {
       return { categories: [], platforms: [] };
     }
@@ -86,7 +86,7 @@ export function ProductNewClient() {
       toast.push("Product created", "success");
       router.push(`/admin/products/${product.slug || product.id}`);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to create product");
+      setError(adminErrorMessage(err, "Failed to create product"));
     } finally {
       setPending(false);
     }

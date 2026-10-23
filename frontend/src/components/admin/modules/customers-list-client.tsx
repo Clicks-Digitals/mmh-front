@@ -10,7 +10,7 @@ export function CustomersListClient() {
   return (
     <AdminListPage<AdminCustomer>
       title="Customers"
-      description="Customer accounts."
+      description="Registered customer accounts. Guest checkouts appear only under Orders."
       rowKey={(r) => String(r.id)}
       searchPlaceholder="Search customers…"
       loader={async (token, page, search) => {

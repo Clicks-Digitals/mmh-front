@@ -1,13 +1,15 @@
 "use client";
 
 import { cn } from "@/lib/cn";
-import { hasPermission, type PermissionKey } from "@/server/auth/permissions";
+import { useAdminAccess } from "@/components/admin/admin-access";
+import { type PermissionKey } from "@/server/auth/permissions";
 import {
   CreditCard,
   FileText,
   FolderTree,
   Globe2,
   HelpCircle,
+  Image as ImageIcon,
   KeyRound,
   LayoutDashboard,
   Link2,
@@ -69,6 +71,7 @@ export const ADMIN_NAV: Array<AdminNavItem | AdminNavGroup> = [
       { href: "/admin/orders", label: "Orders", icon: ShoppingCart, permission: "orders.read" },
       { href: "/admin/customers", label: "Customers", icon: Users, permission: "customers.read" },
       { href: "/admin/payments", label: "Payments", icon: CreditCard, permission: "orders.read" },
+      { href: "/admin/coupons", label: "Coupons", icon: Percent, permission: "orders.read" },
     ],
   },
   {
@@ -86,9 +89,10 @@ export const ADMIN_NAV: Array<AdminNavItem | AdminNavGroup> = [
     id: "content",
     label: "Content",
     icon: FileText,
-    permissionAny: ["content.read", "content.write", "orders.write", "orders.read"],
+    permissionAny: ["content.read", "content.write"],
     items: [
-      { href: "/admin/coupons", label: "Coupons", icon: Percent, permission: "orders.write" },
+      { href: "/admin/banners", label: "Banners", icon: ImageIcon, permission: "content.read" },
+      { href: "/admin/pages", label: "Pages", icon: FileText, permission: "content.read" },
       { href: "/admin/faqs", label: "FAQs", icon: HelpCircle, permission: "content.read" },
     ],
   },
@@ -177,25 +181,17 @@ export function AdminSidebar({
   onClose,
   collapsed,
   onToggleCollapse,
-  role,
-  permissions,
 }: {
   open: boolean;
   onClose: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
-  role?: string | null;
-  permissions?: string[];
 }) {
   const pathname = usePathname();
+  const { can, role } = useAdminAccess();
 
   const filtered = useMemo(() => {
-    const perms = permissions ?? [];
-    const roleKey = role as Parameters<typeof hasPermission>[2];
-    const allowed = (permission?: PermissionKey) => {
-      if (!permission) return true;
-      return hasPermission(perms, permission, roleKey);
-    };
+    const allowed = (permission?: PermissionKey) => (permission ? can(permission) : true);
 
     return ADMIN_NAV.map((entry) => {
       if (!isGroup(entry)) {
@@ -205,7 +201,7 @@ export function AdminSidebar({
       if (!items.length) return null;
       return { ...entry, items };
     }).filter(Boolean) as Array<AdminNavItem | AdminNavGroup>;
-  }, [permissions, role]);
+  }, [can]);
 
   return (
     <>

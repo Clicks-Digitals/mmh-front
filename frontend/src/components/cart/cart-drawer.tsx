@@ -1,6 +1,7 @@
 "use client";
 
-import { ProductArtwork } from "@/components/product/product-artwork";
+import { ProductCover } from "@/components/product/product-artwork";
+import { UsdEstimate } from "@/components/checkout/payment-step";
 import { Button } from "@/components/ui/button";
 import { Price } from "@/components/ui/price";
 import { QuantitySelector } from "@/components/ui/quantity-selector";
@@ -10,14 +11,16 @@ import { useLanguage } from "@/context/language-context";
 import { useUi } from "@/context/ui-context";
 import { getProductById } from "@/data/products";
 import { useEscape, useScrollLock } from "@/hooks/use-overlay";
-import { cartHasRegionLocked, linePrice, maskAccountValue } from "@/lib/cart";
+import { cartHasRegionLocked, lineLimits, lineProblem, lineProblemKey, linePrice, maskAccountValue } from "@/lib/cart";
+import { useToast } from "@/context/toast-context";
 import { X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef } from "react";
 
 export function CartDrawer() {
   const { cartOpen, setCartOpen } = useUi();
-  const { items, updateQty, removeItem, subtotal, hydrated } = useCart();
+  const { items, updateQty, removeItem, subtotal, total, discount, totalFils, hydrated } = useCart();
+  const { push } = useToast();
   const { t, locale } = useLanguage();
   const closeRef = useRef<HTMLButtonElement>(null);
 
@@ -67,7 +70,7 @@ export function CartDrawer() {
                     <div key={item.lineId} className="mb-3 rounded-[12px] border border-line bg-card p-3">
                       <div className="flex gap-3">
                         <div className="h-16 w-16 overflow-hidden rounded-lg">
-                          <ProductArtwork product={product} />
+                          <ProductCover product={product} compact className="h-full w-full" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-medium">{locale === "ar" ? product.nameAr : product.name}</p>
@@ -75,8 +78,17 @@ export function CartDrawer() {
                             {item.digital?.regionName} · {item.digital?.denominationLabel}
                           </p>
                           {player ? <p className="text-xs text-muted">{maskAccountValue(player)}</p> : null}
+                          {lineProblem(item, product) ? (
+                            <p className="text-xs text-danger">{t(lineProblemKey(lineProblem(item, product)), { max: lineLimits(item, product).max })}</p>
+                          ) : null}
                           <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                            <QuantitySelector value={item.quantity} onChange={(value) => updateQty(item.lineId, value)} />
+                            <QuantitySelector
+                              value={item.quantity}
+                              min={lineLimits(item, product).min}
+                              max={lineLimits(item, product).max}
+                              onChange={(value) => updateQty(item.lineId, value)}
+                              onLimit={(max) => push({ title: t("product.qtyMax", { max }), tone: "info" })}
+                            />
                             <button type="button" className="text-xs text-danger" onClick={() => removeItem(item.lineId)}>
                               {t("common.remove")}
                             </button>
@@ -98,6 +110,13 @@ export function CartDrawer() {
               <span className="text-muted">{t("cart.subtotal")}</span>
               <Price amount={subtotal} locale={locale} />
             </div>
+            {discount > 0 ? (
+              <div className="mb-4 flex items-center justify-between text-sm font-semibold">
+                <span>{t("cart.total")}</span>
+                <Price amount={total} locale={locale} />
+              </div>
+            ) : null}
+            <UsdEstimate totalFils={totalFils} className="mb-3 text-xs text-muted" />
             <Button className="w-full" href="/checkout" onClick={() => setCartOpen(false)}>
               {t("cart.checkout")}
             </Button>

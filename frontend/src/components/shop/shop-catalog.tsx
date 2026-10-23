@@ -8,7 +8,7 @@ import { SelectField } from "@/components/ui/select-field";
 import { FOCUS_RING, ICON_HIT } from "@/components/ui/control";
 import { countActiveFilters, emptyFilters, filtersToQuery } from "@/lib/catalog";
 import { getCategory } from "@/data/categories";
-import { PRODUCTS, uniqueRegions } from "@/data/products";
+import { uniqueRegions } from "@/data/products";
 import { useLanguage } from "@/context/language-context";
 import { cn } from "@/lib/cn";
 import type { FilterState, Product, SortOption } from "@/types";
@@ -20,7 +20,7 @@ const SORTS: SortOption[] = ["featured", "newest", "price-asc", "price-desc", "r
 
 export function ShopCatalog({
   initial,
-  source = PRODUCTS,
+  source = [],
   basePath = "/shop",
   mode = "shop",
 }: {
@@ -122,7 +122,7 @@ export function ShopCatalog({
           value={filters.sort ?? "featured"}
           onChange={(event) => update({ ...filters, sort: event.target.value as SortOption })}
         >
-          {SORTS.map((sort) => (
+          {SORTS.filter((sort) => sort !== "rating" || source.some((product) => product.reviewCount > 0)).map((sort) => (
             <option key={sort} value={sort}>
               {t(`sort.${sort}`)}
             </option>

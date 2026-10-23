@@ -1,12 +1,9 @@
-"use client";
-
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/ui/logo";
-import { Providers } from "@/context/providers";
-import { useLanguage } from "@/context/language-context";
+import { serverT } from "@/server/locale";
 
-function NotFoundBody() {
-  const { t } = useLanguage();
+export default async function NotFound() {
+  const { t } = await serverT();
   return (
     <div className="container-mmh flex min-h-[60vh] flex-col items-center justify-center py-20 text-center">
       <Logo />
@@ -16,13 +13,5 @@ function NotFoundBody() {
         {t("notFound.cta")}
       </Button>
     </div>
-  );
-}
-
-export default function NotFound() {
-  return (
-    <Providers>
-      <NotFoundBody />
-    </Providers>
   );
 }

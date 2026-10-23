@@ -13,6 +13,8 @@ export function ConfirmDialog({
   pending,
   onConfirm,
   onCancel,
+  confirmDisabled,
+  children,
 }: {
   open: boolean;
   title: string;
@@ -23,6 +25,10 @@ export function ConfirmDialog({
   pending?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
+  /** disable the confirm button (e.g. required reason missing) */
+  confirmDisabled?: boolean;
+  /** extra inputs rendered between the description and the buttons */
+  children?: React.ReactNode;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -48,6 +54,7 @@ export function ConfirmDialog({
           {title}
         </h2>
         {description ? <p className="mt-2 text-[13px] text-[var(--clicks-muted)]">{description}</p> : null}
+        {children ? <div className="mt-4 space-y-3">{children}</div> : null}
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" onClick={onCancel} disabled={pending} className="admin-btn admin-btn-secondary">
             {cancelLabel}
@@ -55,8 +62,8 @@ export function ConfirmDialog({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={pending}
-            className={cn("admin-btn", danger ? "admin-btn-danger" : "admin-btn-primary")}
+            disabled={pending || confirmDisabled}
+            className={cn("admin-btn disabled:opacity-60", danger ? "admin-btn-danger" : "admin-btn-primary")}
           >
             {pending ? "Please wait…" : confirmLabel}
           </button>

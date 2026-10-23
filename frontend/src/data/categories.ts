@@ -37,7 +37,7 @@ export const CATEGORIES: Category[] = [
   category("mobile-credit", "Mobile Credit", "رصيد الجوال", "App store cards for phones and tablets.", "بطاقات متاجر التطبيقات للهواتف والأجهزة اللوحية.", "card-google"),
   category("game-currencies", "Game Currencies", "عملات الألعاب", "UC, diamonds, V-Bucks, VP, and FC Points.", "شدات وماس وفي-بكس ونقاط فالورانت وFC.", "card-fortnite"),
   category("best-sellers", "Best Sellers", "الأكثر مبيعاً", "The digital products Jordan players buy most.", "المنتجات الرقمية الأكثر شراءً لدى اللاعبين في الأردن.", "deal"),
-  category("new-products", "New Products", "منتجات جديدة", "Recently added digital codes and top-ups.", "أكواد رقمية وشحن مباشر مضاف حديثاً.", "digital", "/shop?sort=newest"),
+  category("new-products", "New Products", "منتجات جديدة", "Recently added digital codes and top-ups.", "أكواد رقمية وشحن مباشر مضاف حديثاً.", "digital"),
   category("special-offers", "Special Offers", "عروض خاصة", "Discounted denominations and timed digital deals.", "فئات مخفضة وعروض رقمية محددة.", "deal", "/deals"),
   category("pubg-mobile", "PUBG Mobile UC", "شدات ببجي موبايل", "Direct UC top-up with Player ID.", "شحن UC مباشر بمعرّف اللاعب.", "card-pubg", "/product/pubg-mobile-uc", "game-top-ups"),
   category("free-fire", "Free Fire Diamonds", "جواهر فري فاير", "Direct diamond top-up for Free Fire.", "شحن جواهر مباشر لفري فاير.", "card-ff", "/product/free-fire-diamonds", "game-top-ups"),

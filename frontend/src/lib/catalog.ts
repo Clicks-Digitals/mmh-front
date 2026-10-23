@@ -1,4 +1,5 @@
 import { PRODUCTS } from "@/data/products";
+import { searchCatalog } from "@/lib/search";
 import { discountPercent } from "@/lib/format";
 import type { FilterState, Product, SortOption } from "@/types";
 
@@ -6,24 +7,8 @@ export function applyFilters(products: Product[], filters: FilterState): Product
   let result = products;
 
   if (filters.q) {
-    const q = filters.q.toLowerCase();
-    result = result.filter((product) =>
-      [
-        product.name,
-        product.nameAr,
-        product.brand,
-        product.platform,
-        product.category,
-        product.digitalOptions.platformLabel,
-        product.digitalOptions.kind,
-        ...product.tags,
-        ...product.digitalOptions.regions.flatMap((region) => [region.name, region.currency ?? ""]),
-        ...product.digitalOptions.denominations.map((item) => item.label),
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(q),
-    );
+    const query = filters.q;
+    result = searchCatalog(result, query);
   }
 
   if (filters.category) {

@@ -23,7 +23,6 @@ const BADGE_KEYS: Record<ProductBadge, string> = {
   limited: "common.limited",
   sale: "common.sale",
   digital: "common.digital",
-  instant: "common.instant",
   region_locked: "common.regionLocked",
   topup: "common.topup",
 };
@@ -42,10 +41,11 @@ export function ProductCard({
   const { openQuickView } = useUi();
   const wished = has(product.id);
   const sale = discountPercent(product.priceJod, product.compareAtPriceJod);
-  const cardBadges = product.badges.filter((badge) => badge !== "digital" && badge !== "instant").slice(0, 2);
+  const cardBadges = product.badges
+    .filter((badge): badge is ProductBadge => badge in BADGE_KEYS && badge !== "digital")
+    .slice(0, 2);
   const start = product.digitalOptions.denominations[0];
   const region = product.digitalOptions.regions[0];
-  const showInstant = product.badges.includes("instant") || product.digitalOptions.instantCode;
   const list = layout === "list";
 
   if (variant === "category") {
@@ -61,11 +61,6 @@ export function ProductCard({
                 showTypeBadge={false}
               />
             </div>
-            {showInstant ? (
-              <span className="pointer-events-none absolute start-2 top-2 z-10 rounded-sm bg-brand-deep px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white shadow-sm">
-                {t("common.instant")}
-              </span>
-            ) : null}
             {!product.inStock ? (
               <span className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-deep/55 text-sm font-semibold text-white">
                 {t("common.outOfStock")}
@@ -120,8 +115,8 @@ export function ProductCard({
               FOCUS_RING,
             )}
           >
-            <Plus className="h-3.5 w-3.5" />
-            {t("common.addToCart")}
+            {product.inStock ? <Plus className="h-3.5 w-3.5" /> : null}
+            {product.inStock ? t("common.viewOptions") : t("common.outOfStock")}
           </Link>
         </div>
       </article>
@@ -157,6 +152,11 @@ export function ProductCard({
             ))}
             {sale && !cardBadges.includes("sale") ? <Badge badge="sale" label={`-${sale}%`} /> : null}
           </div>
+          {!product.inStock ? (
+            <span className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-deep/80 py-1.5 text-center text-xs font-semibold text-white">
+              {t("common.outOfStock")}
+            </span>
+          ) : null}
         </Link>
         {!list ? (
           <button
@@ -183,13 +183,16 @@ export function ProductCard({
           {locale === "ar" ? product.nameAr : product.name}
         </Link>
         {start ? (
-          <p className="mt-1 hidden text-xs text-muted sm:block">{locale === "ar" ? start.labelAr : start.label}</p>
+          <p className="mt-1 hidden text-xs text-muted sm:block">
+            {locale === "ar" ? start.labelAr : start.label}
+            {region?.currency ? ` · ${region.currency}` : ""}
+          </p>
         ) : null}
-        <div className="mt-2 hidden sm:block">
-          {product.reviewCount > 0 ? (
+        {product.reviewCount > 0 ? (
+          <div className="mt-2 hidden sm:block">
             <Rating value={product.rating} count={product.reviewCount} reviewsLabel={t("common.reviews")} />
-          ) : null}
-        </div>
+          </div>
+        ) : null}
         <div className="mt-2 flex items-end justify-between gap-2 sm:mt-3 sm:gap-3">
           <Price amount={product.priceJod} compareAt={product.compareAtPriceJod} locale={locale} className="[&>span:first-child]:text-brand-deep" />
           <span className="hidden sm:inline">
@@ -209,7 +212,7 @@ export function ProductCard({
               list ? "w-auto min-w-[9.5rem] max-w-full" : "min-w-0 flex-1",
             )}
           >
-            {t("common.viewOptions")}
+            {product.inStock ? t("common.viewOptions") : t("common.outOfStock")}
           </Button>
           {list ? (
             <>

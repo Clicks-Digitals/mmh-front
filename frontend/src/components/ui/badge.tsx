@@ -7,7 +7,6 @@ const STYLES: Record<ProductBadge, string> = {
   limited: "bg-gold/12 text-gold",
   sale: "bg-gold text-elevated",
   digital: "bg-brand/20 text-fg",
-  instant: "bg-brand text-fg",
   region_locked: "bg-gold/12 text-gold",
   topup: "border border-brand/50 bg-brand/15 text-fg",
 };

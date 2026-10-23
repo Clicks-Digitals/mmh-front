@@ -1,6 +1,5 @@
 "use client";
 
-import { LoginModal } from "@/components/auth/login-modal";
 import { QuickPayModal, type QuickBuyPayload } from "@/components/checkout/quick-pay-modal";
 import { CompleteOrderBundle } from "@/components/product/complete-order-bundle";
 import { ProductGallery } from "@/components/product/product-gallery";
@@ -18,53 +17,38 @@ import { getCategory } from "@/data/categories";
 import { getAlsoBoughtProducts, getMayLikeProducts, getRelatedProducts } from "@/data/products";
 import { useCart } from "@/context/cart-context";
 import { useLanguage } from "@/context/language-context";
+import { useToast } from "@/context/toast-context";
 import { useUi } from "@/context/ui-context";
 import { useWishlist } from "@/context/wishlist-context";
 import { useLocalStorage } from "@/hooks/use-local-storage";
+import { getSnapshotCategories } from "@/lib/catalog-snapshot";
 import { discountPercent, formatJod } from "@/lib/format";
-import { defaultRegionId, denominationsForRegion, isGiftCardProduct, matchDenominationId } from "@/lib/digital-options";
+import { defaultRegionId, denominationsForRegion, matchDenominationId } from "@/lib/digital-options";
+import { clampQuantity, quantityLimits } from "@/lib/quantity";
 import { STORAGE_KEYS } from "@/lib/storage";
-import { isValidEmail, isValidDemoPhone, validateCustomerField } from "@/lib/validation";
-import type { DeliveryMethod, GiftIntent, Product } from "@/types";
+import { customerFieldError, fieldErrorKey } from "@/lib/validation";
+import type { CartDigitalMeta, Product } from "@/types";
 import { ArrowUp, Heart } from "lucide-react";
 import Link from "next/link";
-import { useSession } from "next-auth/react";
 import { useEffect, useMemo, useState } from "react";
 import { choiceClass, FOCUS_RING, ICON_HIT } from "@/components/ui/control";
 import { cn } from "@/lib/cn";
 
 const EMPTY_RECENT_IDS: string[] = [];
 
-function deliveryLabel(method: DeliveryMethod, t: (key: string) => string) {
-  if (method === "email") return t("common.emailDelivery");
-  if (method === "sms") return t("common.smsDelivery");
-  if (method === "account") return t("common.accountDelivery");
-  return t("common.instant");
-}
-
-function preferredCatalogImage(product: Product) {
-  const webp = product.images.find((src) => /\.webp($|\?)/i.test(src));
-  if (webp) return webp;
-  const fromProduct = product.images.find((src) => /\.(svg|png|jpe?g|avif)($|\?)/i.test(src));
-  if (fromProduct) return fromProduct;
-  return `/catalog/${product.id}.webp`;
-}
-
 type PanelTab = "options" | "details" | "reviews";
 
 export function DigitalProductDetail({ product }: { product: Product }) {
   const options = product.digitalOptions;
   const isTopup = product.fulfillmentType === "direct_topup";
-  const isGift = isGiftCardProduct(product);
   const multiRegion = options.regions.length > 1;
   const regionLocked = options.regions.some((item) => item.locked);
   const { t, locale } = useLanguage();
   const { addItem } = useCart();
+  const { push } = useToast();
   const { toggle, has } = useWishlist();
   const { setCartOpen } = useUi();
-  const { data: session, status } = useSession();
   const [recentIds, setRecentIds] = useLocalStorage<string[]>(STORAGE_KEYS.recentlyViewed, EMPTY_RECENT_IDS);
-  const [loginOpen, setLoginOpen] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
   const [pendingBuy, setPendingBuy] = useState<QuickBuyPayload | null>(null);
 
@@ -73,15 +57,12 @@ export function DigitalProductDetail({ product }: { product: Product }) {
   const [denominationId, setDenominationId] = useState(
     () => denominationsForRegion(product, initialRegion).find((item) => item.inStock !== false)?.id ?? "",
   );
-  const [recipientPhone, setRecipientPhone] = useState("");
-  const [giftMessage, setGiftMessage] = useState("");
-  const [sendAsGift, setSendAsGift] = useState(false);
-  const [method, setMethod] = useState<DeliveryMethod>("account");
-  const [showDelivery, setShowDelivery] = useState(false);
-  const [contact, setContact] = useState("");
   const [fields, setFields] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [guideId, setGuideId] = useState<string | null>(null);
-  const [qty, setQty] = useState(1);
+  const [qtyWanted, setQty] = useState(1);
+  const [qtyNotice, setQtyNotice] = useState("");
+  const [attempted, setAttempted] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>("options");
   const wished = has(product.id);
 
@@ -96,118 +77,131 @@ export function DigitalProductDetail({ product }: { product: Product }) {
   const similar = useMemo(() => getRelatedProducts(product, 8), [product]);
   const alsoBought = useMemo(() => getAlsoBoughtProducts(product, 6), [product]);
   const mayLike = useMemo(() => getMayLikeProducts(product, recentIds, 8), [product, recentIds]);
-  const category = getCategory(product.category);
+  const category =
+    getSnapshotCategories().find((item) => item.slug === product.category) ?? getCategory(product.category);
   const categoryHref = category?.href ?? (isTopup ? "/game-top-ups" : "/gift-cards");
-  const categoryLabel = category
-    ? locale === "ar"
-      ? category.nameAr
-      : category.name
-    : t(isTopup ? "nav.topups" : "nav.gifts");
+  const categoryLabel = category ? (locale === "ar" ? category.nameAr : category.name) : t(isTopup ? "nav.topups" : "nav.gifts");
 
   const visibleDenoms = useMemo(() => denominationsForRegion(product, regionId), [product, regionId]);
   const hasAmountChoices = visibleDenoms.length > 1;
-  const hasConfigurableOptions =
-    multiRegion ||
-    hasAmountChoices ||
-    options.requiredCustomerFields.length > 0 ||
-    isGift ||
-    options.deliveryMethods.length > 1;
+  const hasConfigurableOptions = multiRegion || hasAmountChoices || options.requiredCustomerFields.length > 0;
   const denomination = options.denominations.find((item) => item.id === denominationId);
   const region = options.regions.find((item) => item.id === regionId);
+  const limits = quantityLimits(denomination?.minQuantity, denomination?.maxQuantity);
+  const qty = clampQuantity(qtyWanted, limits);
   const sale = discountPercent(denomination?.priceJod ?? product.priceJod, denomination?.compareAtPriceJod);
-  const sendingGift = isGift && sendAsGift;
-  const deliveryMethod: DeliveryMethod = sendingGift ? "sms" : method;
-  const deliveryContact = sendingGift ? recipientPhone.trim() : contact;
-  const needsContact = deliveryMethod === "email" || deliveryMethod === "sms";
-  const contactOk = sendingGift
-    ? isValidDemoPhone(recipientPhone)
-    : !needsContact || (deliveryMethod === "email" ? isValidEmail(contact) : isValidDemoPhone(contact));
-  const fieldsOk = options.requiredCustomerFields.every((field) =>
-    validateCustomerField(field.id, fields[field.id] ?? "", field.required),
+  const fieldErrors = Object.fromEntries(
+    options.requiredCustomerFields.map((field) => [field.id, customerFieldError(field, fields[field.id] ?? "")]),
   );
-  const stockOk = denomination?.inStock !== false;
-  const ready = Boolean(regionId && denominationId && contactOk && fieldsOk && stockOk);
+  const fieldsOk = Object.values(fieldErrors).every((error) => error === null);
+  const productInStock = product.inStock && options.denominations.some((item) => item.inStock !== false);
+  const stockOk = Boolean(denomination) && denomination?.inStock !== false && product.inStock;
+  const ready = Boolean(regionId && denomination && fieldsOk && stockOk);
 
-  const price = useMemo(() => (denomination?.priceJod ?? product.priceJod) * qty, [denomination, product.priceJod, qty]);
+  const unitPrice = denomination?.priceJod ?? product.priceJod;
+  const price = Math.round(unitPrice * 1000 * qty) / 1000;
   const platformName = locale === "ar" ? options.platformLabelAr : options.platformLabel;
   const showBrand = product.brand.trim().toLowerCase() !== platformName.trim().toLowerCase();
   const productName = locale === "ar" ? product.nameAr : product.name;
-  const thumbSrc = preferredCatalogImage(product);
   const denomLabel = denomination ? (locale === "ar" ? denomination.labelAr : denomination.label) : null;
+  const regionName = region ? (locale === "ar" ? region.nameAr : region.name) : "";
+  const regionCurrency = region?.currency || denomination?.currency || options.accountCurrency || "";
+  const regionLine = regionName
+    ? regionCurrency
+      ? t("product.regionCurrency", { region: regionName, currency: regionCurrency })
+      : regionName
+    : "";
+  const reviewsVisible = product.reviewCount > 0;
   const activeTab: PanelTab =
-    !hasConfigurableOptions && panelTab === "options" ? "details" : panelTab;
+    !hasConfigurableOptions && panelTab === "options" ? "details" : !reviewsVisible && panelTab === "reviews" ? "details" : panelTab;
 
-  const nextStep = !regionId
-    ? t("product.needRegion")
-    : !denominationId
-      ? t("product.needAmount")
-      : !fieldsOk
-        ? t("product.needAccount")
-        : sendingGift && !contactOk
-          ? t("gift.needRecipient")
-          : needsContact && !contactOk
-            ? t("product.needContact")
-            : !stockOk
-              ? t("product.stockOut")
-              : null;
+  const nextStep = !productInStock
+    ? t("product.outOfStock")
+    : !regionId
+      ? t("product.needRegion")
+      : !denomination
+        ? t("product.needVariant")
+        : !stockOk
+          ? t("product.stockOut")
+          : !fieldsOk
+            ? t("product.needAccount")
+            : null;
 
   const selectRegion = (id: string) => {
     setRegionId(id);
     setDenominationId(matchDenominationId(product, id, denominationId));
   };
 
-  const buildDigital = () => {
+  const buildDigital = (): CartDigitalMeta | null => {
     if (!region || !denomination) return null;
     return {
       regionId: region.id,
-      regionName: locale === "ar" ? region.nameAr : region.name,
+      regionName,
       denominationId: denomination.id,
-      denominationLabel: locale === "ar" ? denomination.labelAr : denomination.label,
-      deliveryMethod,
-      deliveryContact: needsContact ? deliveryContact : "",
+      denominationLabel: denomLabel ?? "",
+      deliveryMethod: "account",
       platform: platformName,
-      customerFields: { ...fields },
-      giftIntent: isGift ? ((sendingGift ? "recipient" : "self") as GiftIntent) : undefined,
-      recipientPhone: sendingGift ? recipientPhone.trim() : undefined,
-      giftMessage: sendingGift ? giftMessage.trim() : undefined,
+      customerFields: Object.fromEntries(
+        options.requiredCustomerFields
+          .map((field) => [field.id, (fields[field.id] ?? "").trim()] as const)
+          .filter(([, value]) => value),
+      ),
     };
   };
 
+  const guard = () => {
+    setAttempted(true);
+    if (!ready) {
+      if (!fieldsOk) setPanelTab("options");
+      return null;
+    }
+    return buildDigital();
+  };
+
   const addToCart = () => {
-    const digital = buildDigital();
-    if (!ready || !digital) return;
-    addItem({ productId: product.id, quantity: qty, digital });
+    const digital = guard();
+    if (!digital) return;
+    const result = addItem({ productId: product.id, quantity: qty, digital });
+    if (result.capped) push({ title: t("product.qtyCapped", { max: result.max }), tone: "info" });
     setCartOpen(true);
   };
 
   const startBuyNow = () => {
-    const digital = buildDigital();
-    if (!ready || !digital || !denomination) return;
-    const payload: QuickBuyPayload = {
-      product,
-      quantity: qty,
-      digital,
-      unitPriceJod: denomination.priceJod,
-    };
-    setPendingBuy(payload);
-    if (status === "authenticated" && session?.user?.email) {
-      setPayOpen(true);
-      return;
-    }
-    setLoginOpen(true);
+    const digital = guard();
+    if (!digital || !denomination) return;
+    setPendingBuy({ product, quantity: qty, digital, denomination });
+    setPayOpen(true);
+  };
+
+  const changeQty = (value: number) => {
+    setQtyNotice(value < limits.min ? t("product.qtyMin", { min: limits.min }) : "");
+    setQty(value);
   };
 
   const tabs: Array<{ id: PanelTab; label: string }> = [
     ...(hasConfigurableOptions ? [{ id: "options" as const, label: t("product.tabOptions") }] : []),
     { id: "details", label: t("product.tabDetails") },
-    { id: "reviews", label: t("product.reviews") },
+    ...(reviewsVisible ? [{ id: "reviews" as const, label: t("product.reviews") }] : []),
   ];
+
+  const description = locale === "ar" ? product.descriptionAr || product.description : product.description;
+  const instructions = locale === "ar" ? options.instructionsAr || options.instructions : options.instructions;
+  const howToUse = (locale === "ar" && options.howToUseAr.length ? options.howToUseAr : options.howToUse).filter(Boolean);
+  const regionText = locale === "ar" ? options.regionRestrictionsAr || options.regionRestrictions : options.regionRestrictions;
+  const refundText = locale === "ar" ? options.refundPolicyTextAr || options.refundPolicyText : options.refundPolicyText;
+  const deliveryText = locale === "ar" ? options.deliveryEstimateAr : options.deliveryEstimate;
 
   const buyFooter = (
     <>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm text-muted">{t("product.qty")}</span>
-        <QuantitySelector value={qty} onChange={setQty} max={5} />
+        <QuantitySelector
+          value={qty}
+          onChange={changeQty}
+          min={limits.min}
+          max={limits.max}
+          onLimit={(max) => setQtyNotice(t("product.qtyMax", { max }))}
+        />
         <button
           type="button"
           className={cn(ICON_HIT, "ms-auto border border-line", wished && "text-gold")}
@@ -217,9 +211,13 @@ export function DigitalProductDetail({ product }: { product: Product }) {
           <Heart className={cn("h-4 w-4", wished && "fill-gold")} />
         </button>
       </div>
+      {qtyNotice ? <p className="text-xs text-amber">{qtyNotice}</p> : null}
 
       <div className="flex items-center justify-between gap-3 rounded-xl bg-brand-deep px-4 py-3.5 text-white">
-        <span className="text-sm font-medium text-white/75">{t("product.optionPrice")}</span>
+        <span className="min-w-0">
+          <span className="block text-sm font-medium text-white/75">{t("product.optionPrice")}</span>
+          {regionLine ? <span className="block truncate text-xs text-white/60">{regionLine}</span> : null}
+        </span>
         <Price
           amount={price}
           compareAt={denomination?.compareAtPriceJod ? denomination.compareAtPriceJod * qty : undefined}
@@ -230,21 +228,27 @@ export function DigitalProductDetail({ product }: { product: Product }) {
       </div>
 
       {nextStep ? (
-        <p id="product-buy-hint" className="text-xs text-muted">
+        <p id="product-buy-hint" className={cn("text-xs", attempted || !productInStock ? "text-danger" : "text-muted")}>
           {nextStep}
         </p>
       ) : (
-        <p className="text-xs text-success">{t("product.digitalNotice")}</p>
+        <p className="text-xs text-success">{t(isTopup ? "product.topupNotice" : "product.digitalNotice")}</p>
       )}
 
       <div className="flex gap-2">
-        <Button className="min-h-12 flex-1" disabled={!ready} aria-describedby={nextStep ? "product-buy-hint" : undefined} onClick={addToCart}>
-          {t("product.add")}
+        <Button
+          className="min-h-12 flex-1"
+          disabled={!stockOk}
+          aria-describedby={nextStep ? "product-buy-hint" : undefined}
+          onClick={addToCart}
+        >
+          {stockOk ? t("product.add") : t("product.outOfStock")}
         </Button>
-        <Button className="min-h-12 flex-1" variant="outline" disabled={!ready} onClick={startBuyNow}>
+        <Button className="min-h-12 flex-1" variant="outline" disabled={!stockOk} onClick={startBuyNow}>
           {t("product.buyNow")}
         </Button>
       </div>
+      <p className="text-xs leading-5 text-muted">{t(isTopup ? "delivery.topupWhere" : "delivery.where")}</p>
     </>
   );
 
@@ -252,7 +256,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
     <div className="container-mmh pb-32 pt-5 sm:pt-7 xl:pb-36">
       <Breadcrumbs
         items={[
-          { href: "/", label: locale === "ar" ? "الرئيسية" : "Home" },
+          { href: "/", label: t("common.home") },
           { href: categoryHref, label: categoryLabel },
           { label: productName },
         ]}
@@ -265,10 +269,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
 
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge
-              badge={isTopup ? "topup" : "digital"}
-              label={isTopup ? t("common.topup") : isGift ? t("gift.badge") : t("product.fulfillmentCode")}
-            />
+            <Badge badge={isTopup ? "topup" : "digital"} label={isTopup ? t("common.topup") : t("product.fulfillmentCode")} />
             {regionLocked ? <Badge badge="region_locked" label={t("common.regionLocked")} /> : null}
             {sale ? <Badge badge="sale" label={`-${sale}%`} /> : null}
           </div>
@@ -278,7 +279,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
           </p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">{productName}</h1>
 
-          {product.reviewCount > 0 ? (
+          {reviewsVisible ? (
             <div className="mt-3">
               <Rating value={product.rating} count={product.reviewCount} reviewsLabel={t("common.reviews")} />
             </div>
@@ -286,11 +287,12 @@ export function DigitalProductDetail({ product }: { product: Product }) {
 
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <StockBadge
-              inStock={stockOk && product.inStock}
+              inStock={denomination ? stockOk : productInStock}
               inLabel={t("product.available")}
               lowLabel={t("common.lowStock")}
-              outLabel={t("common.outOfStock")}
+              outLabel={t("product.outOfStock")}
             />
+            {regionLine ? <span className="text-sm font-medium text-fg">{regionLine}</span> : null}
             <span className="text-sm text-muted">
               {t("product.categoryLabel")}:{" "}
               <Link href={categoryHref} className="font-semibold text-brand-deep hover:text-fg">
@@ -299,6 +301,8 @@ export function DigitalProductDetail({ product }: { product: Product }) {
             </span>
           </div>
 
+          <p className="mt-3 text-sm text-muted">{deliveryText}</p>
+
           {!hasConfigurableOptions ? (
             <div className="mt-6 space-y-5 rounded-2xl border border-line bg-card p-4 sm:p-5">
               <div>
@@ -306,7 +310,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
                 {denomLabel ? (
                   <p className="mt-2 text-sm text-muted">
                     {t("product.fixedAmount")}: <span className="font-semibold text-fg">{denomLabel}</span>
-                    {region ? ` · ${locale === "ar" ? region.nameAr : region.name}` : ""}
+                    {regionLine ? ` · ${regionLine}` : ""}
                   </p>
                 ) : null}
               </div>
@@ -364,24 +368,25 @@ export function DigitalProductDetail({ product }: { product: Product }) {
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                         {visibleDenoms.map((item) => {
                           const selected = denominationId === item.id;
+                          const out = item.inStock === false;
                           return (
                             <button
                               key={item.id}
                               type="button"
-                              disabled={item.inStock === false}
+                              disabled={out}
                               aria-pressed={selected}
                               onClick={() => setDenominationId(item.id)}
                               className={choiceClass(selected, "flex min-h-[4.5rem] flex-col justify-center px-3 py-3 text-start disabled:opacity-40")}
                             >
                               <span className="text-base font-semibold">{locale === "ar" ? item.labelAr : item.label}</span>
                               <span className="mt-1 text-xs text-muted">
-                                {formatJod(item.priceJod, locale)}
-                                {item.inStock === false ? ` · ${t("common.unavailable")}` : ""}
+                                {out ? t("product.outOfStock") : formatJod(item.priceJod, locale)}
                               </span>
                             </button>
                           );
                         })}
                       </div>
+                      {attempted && !denomination ? <p className="mt-2 text-xs text-danger">{t("product.needVariant")}</p> : null}
                     </div>
                   ) : denomLabel ? (
                     <p className="rounded-xl border border-line bg-elevated px-3 py-3 text-sm text-muted">
@@ -389,127 +394,48 @@ export function DigitalProductDetail({ product }: { product: Product }) {
                     </p>
                   ) : null}
 
-                  {options.requiredCustomerFields.map((field) => (
-                    <div key={field.id}>
-                      <Field
-                        label={locale === "ar" ? field.labelAr : field.label}
-                        placeholder={locale === "ar" ? field.placeholderAr : field.placeholder}
-                        value={fields[field.id] ?? ""}
-                        error={
-                          fields[field.id] && !validateCustomerField(field.id, fields[field.id], field.required)
-                            ? t("product.playerIdError")
-                            : undefined
-                        }
-                        onChange={(event) => setFields((current) => ({ ...current, [field.id]: event.target.value }))}
-                      />
-                      {(locale === "ar" ? field.helpTextAr : field.helpText) ? (
-                        <>
-                          <button
-                            type="button"
-                            className={cn("mt-1 rounded-md text-xs text-gold hover:underline", FOCUS_RING)}
-                            aria-expanded={guideId === field.id}
-                            aria-controls={`guide-${field.id}`}
-                            onClick={() => setGuideId(guideId === field.id ? null : field.id)}
-                          >
-                            {t("product.findId")}
-                          </button>
-                          {guideId === field.id ? (
-                            <p
-                              id={`guide-${field.id}`}
-                              className="mt-2 rounded-[12px] border border-line bg-elevated p-3 text-xs leading-5 text-muted"
-                            >
-                              {locale === "ar" ? field.helpTextAr : field.helpText}
-                            </p>
-                          ) : null}
-                        </>
-                      ) : null}
-                    </div>
-                  ))}
-
-                  {isGift ? (
-                    <div className="space-y-3">
-                      <label className="flex cursor-pointer items-start gap-3 rounded-[12px] border border-line bg-elevated px-3 py-3 text-sm leading-5">
-                        <input
-                          type="checkbox"
-                          className={cn("mt-0.5 h-4 w-4 shrink-0 accent-[#F7C037]", FOCUS_RING)}
-                          checked={sendAsGift}
-                          onChange={(event) => setSendAsGift(event.target.checked)}
+                  {options.requiredCustomerFields.map((field) => {
+                    const error = fieldErrors[field.id];
+                    const showError = Boolean(error) && (attempted || touched[field.id]);
+                    const help = locale === "ar" ? field.helpTextAr : field.helpText;
+                    return (
+                      <div key={field.id}>
+                        <Field
+                          label={`${locale === "ar" ? field.labelAr || field.label : field.label}${field.required ? " *" : ""}`}
+                          placeholder={locale === "ar" ? field.placeholderAr : field.placeholder}
+                          type={field.type === "email" ? "email" : field.type === "tel" ? "tel" : "text"}
+                          inputMode={field.type === "tel" ? "tel" : undefined}
+                          value={fields[field.id] ?? ""}
+                          required={field.required}
+                          maxLength={200}
+                          error={showError ? t(fieldErrorKey(error)) : undefined}
+                          onBlur={() => setTouched((current) => ({ ...current, [field.id]: true }))}
+                          onChange={(event) => setFields((current) => ({ ...current, [field.id]: event.target.value }))}
                         />
-                        <span>
-                          <span className="block font-semibold text-fg">{t("gift.send")}</span>
-                          <span className="mt-1 block text-xs text-muted">{t("gift.sendHint")}</span>
-                        </span>
-                      </label>
-                      {sendingGift ? (
-                        <div>
-                          <Field
-                            label={t("gift.recipientPhone")}
-                            type="tel"
-                            inputMode="tel"
-                            value={recipientPhone}
-                            onChange={(event) => setRecipientPhone(event.target.value)}
-                            hint={t("gift.recipientPhoneHint")}
-                            placeholder="+962 7X XXX XXXX"
-                            error={recipientPhone && !isValidDemoPhone(recipientPhone) ? t("checkout.invalidPhone") : undefined}
-                          />
-                          <label className="mt-3 block space-y-1.5">
-                            <span className="text-sm font-medium">{t("gift.message")}</span>
-                            <textarea
-                              value={giftMessage}
-                              onChange={(event) => setGiftMessage(event.target.value)}
-                              placeholder={t("gift.messagePlaceholder")}
-                              rows={3}
-                              className="w-full rounded-[12px] border border-line bg-elevated px-3 py-2 text-sm"
-                            />
-                          </label>
-                        </div>
-                      ) : (
-                        <p className="text-xs leading-5 text-muted">{t("gift.forMeHint")}</p>
-                      )}
-                    </div>
-                  ) : null}
-
-                  {!sendingGift && options.deliveryMethods.length > 1 ? (
-                    <div>
-                      <button
-                        type="button"
-                        className="text-xs font-medium text-gold"
-                        onClick={() => setShowDelivery((open) => !open)}
-                        aria-expanded={showDelivery}
-                      >
-                        {t("product.deliveryAdvanced")}
-                        {!showDelivery && method !== "account" ? ` · ${deliveryLabel(method, t)}` : ""}
-                      </button>
-                      {showDelivery ? (
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {options.deliveryMethods.map((item) => {
-                            const selected = method === item;
-                            return (
-                              <button
-                                key={item}
-                                type="button"
-                                aria-pressed={selected}
-                                onClick={() => setMethod(item)}
-                                className={choiceClass(selected, "px-3 py-2")}
+                        {help ? (
+                          <>
+                            <button
+                              type="button"
+                              className={cn("mt-1 rounded-md text-xs text-gold hover:underline", FOCUS_RING)}
+                              aria-expanded={guideId === field.id}
+                              aria-controls={`guide-${field.id}`}
+                              onClick={() => setGuideId(guideId === field.id ? null : field.id)}
+                            >
+                              {t("product.findId")}
+                            </button>
+                            {guideId === field.id ? (
+                              <p
+                                id={`guide-${field.id}`}
+                                className="mt-2 rounded-[12px] border border-line bg-elevated p-3 text-xs leading-5 text-muted"
                               >
-                                {deliveryLabel(item, t)}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-                      {needsContact ? (
-                        <div className="mt-3">
-                          <Field
-                            label={t("product.deliveryContact")}
-                            value={contact}
-                            onChange={(event) => setContact(event.target.value)}
-                            placeholder={method === "email" ? "name@example.com" : "+962 7X XXX XXXX"}
-                          />
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
+                                {help}
+                              </p>
+                            ) : null}
+                          </>
+                        ) : null}
+                      </div>
+                    );
+                  })}
 
                   {buyFooter}
                 </div>
@@ -517,47 +443,62 @@ export function DigitalProductDetail({ product }: { product: Product }) {
 
               {activeTab === "details" ? (
                 <div className="space-y-5 text-sm leading-7 text-muted">
-                  <div>
-                    <h2 className="text-base font-semibold text-fg">{t("product.description")}</h2>
-                    <p className="mt-2">{locale === "ar" ? product.descriptionAr : product.description}</p>
-                  </div>
-                  <div>
-                    <h2 className="text-base font-semibold text-fg">{t("product.howToUseHeading")}</h2>
-                    <ol className="mt-2 list-decimal space-y-2 ps-5">
-                      {(locale === "ar" ? options.howToUseAr : options.howToUse).map((step) => (
-                        <li key={step}>{step}</li>
-                      ))}
-                    </ol>
-                  </div>
-                  <div>
-                    <h2 className="text-base font-semibold text-fg">{t("product.regionCompat")}</h2>
-                    <p className="mt-2">{locale === "ar" ? options.regionRestrictionsAr : options.regionRestrictions}</p>
-                  </div>
+                  {description ? (
+                    <div>
+                      <h2 className="text-base font-semibold text-fg">{t("product.description")}</h2>
+                      <p className="mt-2 whitespace-pre-line">{description}</p>
+                    </div>
+                  ) : null}
+                  {instructions ? (
+                    <div>
+                      <h2 className="text-base font-semibold text-fg">{t("product.instructions")}</h2>
+                      <p className="mt-2 whitespace-pre-line">{instructions}</p>
+                    </div>
+                  ) : null}
+                  {howToUse.length ? (
+                    <div>
+                      <h2 className="text-base font-semibold text-fg">{t("product.howToUseHeading")}</h2>
+                      <ol className="mt-2 list-decimal space-y-2 ps-5">
+                        {howToUse.map((step) => (
+                          <li key={step}>{step}</li>
+                        ))}
+                      </ol>
+                    </div>
+                  ) : null}
+                  {regionText ? (
+                    <div>
+                      <h2 className="text-base font-semibold text-fg">{t("product.regionCompat")}</h2>
+                      <p className="mt-2">{regionText}</p>
+                    </div>
+                  ) : null}
                   <div>
                     <h2 className="text-base font-semibold text-fg">{t("product.deliveryInfo")}</h2>
-                    <p className="mt-2">{locale === "ar" ? options.deliveryEstimateAr : options.deliveryEstimate}</p>
+                    <p className="mt-2">{deliveryText}</p>
+                    <p className="mt-1">{t(isTopup ? "delivery.topupWhere" : "delivery.where")}</p>
                   </div>
-                  <div>
-                    <h2 className="text-base font-semibold text-fg">{t("product.refundPolicy")}</h2>
-                    <p className="mt-2">{locale === "ar" ? options.refundPolicyTextAr : options.refundPolicyText}</p>
-                  </div>
+                  {refundText ? (
+                    <div>
+                      <h2 className="text-base font-semibold text-fg">{t("product.refundPolicy")}</h2>
+                      <p className="mt-2">{refundText}</p>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
-              {activeTab === "reviews" ? (
+              {activeTab === "reviews" && reviewsVisible ? (
                 <div>
-                  {product.reviewCount > 0 ? (
-                    <div className="mb-4">
-                      <Rating value={product.rating} count={product.reviewCount} reviewsLabel={t("common.reviews")} />
-                    </div>
-                  ) : null}
-                  <p className="text-sm leading-6 text-muted">{t("product.reviewsEmpty")}</p>
+                  <Rating value={product.rating} count={product.reviewCount} reviewsLabel={t("common.reviews")} />
                 </div>
               ) : null}
             </div>
           </div>
 
-          <CompleteOrderBundle product={product} suggestions={alsoBought.length ? alsoBought : similar} />
+          <CompleteOrderBundle
+            product={product}
+            suggestions={alsoBought.length ? alsoBought : similar}
+            mainDigital={ready ? buildDigital() : null}
+            mainQuantity={qty}
+          />
         </div>
       </div>
 
@@ -589,35 +530,30 @@ export function DigitalProductDetail({ product }: { product: Product }) {
       <div className="fixed inset-x-0 bottom-0 z-[35] border-t border-line bg-card/97 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-12px_40px_rgba(23,24,43,0.12)] backdrop-blur-md">
         <div className="container-mmh flex items-center gap-3">
           <div className="hidden h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-line bg-[#17182b] sm:block">
-            <ProductCover product={product} src={thumbSrc} shot="cover" compact label={productName} className="aspect-square h-full w-full p-0 [&_img]:p-1" />
+            <ProductCover product={product} shot="cover" compact label={productName} className="aspect-square h-full w-full p-0 [&_img]:p-1" />
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{productName}</p>
             <Price amount={price} locale={locale} className="mt-0.5 [&>span:first-child]:text-sm [&>span:first-child]:text-brand-deep" />
           </div>
           <div className="hidden md:block">
-            <QuantitySelector value={qty} onChange={setQty} max={5} />
+            <QuantitySelector
+              value={qty}
+              onChange={changeQty}
+              min={limits.min}
+              max={limits.max}
+              onLimit={(max) => setQtyNotice(t("product.qtyMax", { max }))}
+            />
           </div>
-          <Button className="min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" disabled={!ready} onClick={addToCart}>
-            {t("product.add")}
+          <Button className="min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" disabled={!stockOk} onClick={addToCart}>
+            {stockOk ? t("product.add") : t("product.outOfStock")}
           </Button>
-          <Button className="min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" variant="secondary" disabled={!ready} onClick={startBuyNow}>
+          <Button className="min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" variant="secondary" disabled={!stockOk} onClick={startBuyNow}>
             {t("product.buyNow")}
           </Button>
         </div>
       </div>
 
-      <LoginModal
-        open={loginOpen}
-        onClose={() => {
-          setLoginOpen(false);
-          setPendingBuy(null);
-        }}
-        onSuccess={() => {
-          setLoginOpen(false);
-          setPayOpen(true);
-        }}
-      />
       <QuickPayModal
         open={payOpen}
         payload={pendingBuy}

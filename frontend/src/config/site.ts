@@ -1,3 +1,5 @@
+import { siteUrl } from "@/lib/site-url";
+
 export const SITE = {
   name: "MMH",
   legalName: "MMH",
@@ -7,7 +9,7 @@ export const SITE = {
     "MMH is a Jordanian store for digital gaming codes, gift cards, wallet credit, subscriptions, and selected direct account top-ups.",
   descriptionAr:
     "إم إم إتش متجر أردني لأكواد الألعاب الرقمية وبطاقات الهدايا ورصيد المحافظ والاشتراكات وشحن الحسابات المباشر.",
-  url: "http://localhost:3001",
+  url: siteUrl(),
   currency: "JOD",
   currencyLabel: "JOD",
   localeDefault: "en" as const,

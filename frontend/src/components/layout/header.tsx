@@ -1,5 +1,6 @@
 "use client";
 
+import { DesktopNav } from "@/components/navigation/desktop-nav";
 import { LanguageSwitcher } from "@/components/navigation/language-switcher";
 import { ICON_HIT } from "@/components/ui/control";
 import { Logo } from "@/components/ui/logo";
@@ -14,7 +15,7 @@ import { useEffect, useState } from "react";
 
 export function Header() {
   const { t, locale } = useLanguage();
-  const { itemCount, subtotal, discount, hydrated } = useCart();
+  const { itemCount, total, hydrated } = useCart();
   const { setSearchOpen, setCartOpen, setMobileNavOpen } = useUi();
   const [scrolled, setScrolled] = useState(false);
 
@@ -82,12 +83,13 @@ export function Header() {
             <span className="hidden text-start sm:block">
               <span className="block text-[11px] leading-none text-muted">{t("nav.cart")}</span>
               <span className="mt-1 block text-xs font-semibold leading-none text-fg">
-                {hydrated ? formatJod(Math.max(0, subtotal - discount), locale) : formatJod(0, locale)}
+                {hydrated ? formatJod(total, locale) : formatJod(0, locale)}
               </span>
             </span>
           </button>
         </div>
       </div>
+      <DesktopNav />
     </header>
   );
 }

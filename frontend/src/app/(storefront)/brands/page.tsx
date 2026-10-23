@@ -1,32 +1,32 @@
-import { BRANDS } from "@/data/brands";
 import { pageMeta } from "@/lib/seo";
-import { loadPublishedCatalog } from "@/server/catalog/map";
+import { resolveStorefrontProducts } from "@/server/catalog/resolve";
+import { serverT } from "@/server/locale";
+import { brandCountKey, brandsFromProducts } from "@/lib/brands";
 import Link from "next/link";
 
-export const metadata = pageMeta("Brands sold by MMH", "PlayStation, Steam, Roblox, PUBG and more — sold by MMH, not owned by MMH.", "/brands");
+export const metadata = pageMeta("Brands at MMH", "Digital gaming brands sold by MMH in Jordan.", "/brands");
 
 export default async function BrandsPage() {
-  const products = await loadPublishedCatalog();
+  const [{ t, locale }, products] = await Promise.all([serverT(), resolveStorefrontProducts()]);
+  const brands = brandsFromProducts(products);
   return (
     <div className="container-mmh py-6 sm:py-10">
-      <h1 className="text-2xl font-semibold sm:text-3xl">Brands sold by MMH</h1>
-      <p className="mt-2 mb-8 max-w-2xl text-sm text-muted">
-        MMH is a retailer of digital gaming products. These platforms are sold here; MMH does not own them.
-      </p>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {BRANDS.map((brand) => {
-          const count = products.filter((product) => product.brand === brand.name).length;
-          return (
-            <article key={brand.slug} id={brand.slug} className="rounded-[12px] border border-line bg-card p-5">
-              <h2 className="text-lg font-semibold">{brand.name}</h2>
-              <p className="mt-2 text-sm text-muted">{brand.description}</p>
+      <h1 className="text-2xl font-semibold sm:text-3xl">{t("brands.title")}</h1>
+      <p className="mt-2 mb-8 max-w-2xl text-sm text-muted">{t("brands.body")}</p>
+      {brands.length ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {brands.map((brand) => (
+            <article key={brand.name} className="rounded-[12px] border border-line bg-card p-5">
+              <h2 className="text-lg font-semibold">{locale === "ar" ? brand.nameAr : brand.name}</h2>
               <Link href={`/shop?brand=${encodeURIComponent(brand.name)}`} className="mt-4 inline-flex text-sm text-accent">
-                {count} products
+                {t(brandCountKey(brand.count, locale), { count: brand.count })}
               </Link>
             </article>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-muted">{t("brands.empty")}</p>
+      )}
     </div>
   );
 }

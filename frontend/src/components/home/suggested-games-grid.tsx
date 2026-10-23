@@ -3,6 +3,9 @@
 import { CategoryTileImage } from "@/components/home/category-tile-image";
 import { HOME_SUGGEST_TILES } from "@/data/home";
 import { useLanguage } from "@/context/language-context";
+import { catalog as liveCatalog } from "@/data/products";
+import { getSnapshotCategories } from "@/lib/catalog-snapshot";
+import { hrefHasProducts } from "@/lib/listing";
 import Link from "next/link";
 
 export function SuggestedGamesGrid() {
@@ -12,7 +15,7 @@ export function SuggestedGamesGrid() {
     <section className="container-mmh py-6 sm:py-8">
       <h2 className="mb-4 text-center text-xl font-bold tracking-tight sm:mb-6 sm:text-2xl">{t("home.suggest")}</h2>
       <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 lg:gap-4">
-        {HOME_SUGGEST_TILES.map((tile) => (
+        {HOME_SUGGEST_TILES.filter((tile) => hrefHasProducts(tile.href, liveCatalog(), getSnapshotCategories())).map((tile) => (
           <Link
             key={tile.id}
             href={tile.href}

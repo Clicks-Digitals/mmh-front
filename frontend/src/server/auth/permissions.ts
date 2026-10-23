@@ -84,8 +84,8 @@ export function hasPermission(
   role?: AdminRole | null,
 ) {
   if (role === "SUPER_ADMIN") return true;
-  if (permissions?.includes("*")) return true;
-  if (permissions?.includes(permission)) return true;
+  // Role permissions are editable in the backend, so an explicit list is authoritative.
+  if (Array.isArray(permissions)) return permissions.includes("*") || permissions.includes(permission);
   return can(role, permission);
 }
 
@@ -100,6 +100,7 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionKey | undefined> = {
   "/admin/codes": PERMISSIONS.codesRead,
   "/admin/codes/import": PERMISSIONS.codesManage,
   "/admin/codes/imports": PERMISSIONS.codesManage,
+  "/admin/integrations/1epin/logs": PERMISSIONS.suppliersRead,
   "/admin/orders": PERMISSIONS.ordersRead,
   "/admin/customers": PERMISSIONS.customersRead,
   "/admin/suppliers": PERMISSIONS.suppliersRead,

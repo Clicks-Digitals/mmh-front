@@ -3,54 +3,82 @@
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { useLanguage } from "@/context/language-context";
-import { isValidEmail } from "@/lib/validation";
-import { useRouter } from "next/navigation";
+import { isValidEmail, isValidPhone } from "@/lib/validation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
-import { registerCustomer } from "@/server/actions/customer-auth";
+
+/** Only same-site relative paths are allowed as post-login destinations. */
+export function safeCallbackUrl(value: string | null | undefined, fallback = "/account"): string {
+  const raw = String(value ?? "").trim();
+  if (!raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/\\")) return fallback;
+  if (raw.startsWith("/admin") || raw.startsWith("/api")) return fallback;
+  return raw;
+}
 
 export function LoginForm() {
   const { t } = useLanguage();
   const router = useRouter();
+  const params = useSearchParams();
+  const callbackUrl = safeCallbackUrl(params.get("callbackUrl"));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   return (
     <form
       className="mx-auto w-full max-w-md space-y-4"
       onSubmit={async (event) => {
         event.preventDefault();
-        if (!isValidEmail(email) || password.length < 8) {
+        if (!isValidEmail(email) || !password) {
           setError(t("auth.short"));
           return;
         }
         setError("");
+        setLoading(true);
         const result = await signIn("credentials", { email, password, redirect: false });
+        setLoading(false);
         if (result?.error) {
           setError(t("auth.invalid"));
           return;
         }
-        router.push("/account");
+        router.push(callbackUrl);
         router.refresh();
       }}
     >
       <h1 className="text-2xl font-semibold">{t("auth.loginTitle")}</h1>
-      <div className="rounded-xl border border-line bg-elevated px-3 py-2.5 text-xs leading-5 text-muted">
-        <p className="font-semibold text-fg">{t("auth.demoTitle")}</p>
-        <p className="mt-1">
-          {t("auth.demoEmail")}: <span className="font-mono text-fg">demo@mmh.local</span>
-        </p>
-        <p>
-          {t("auth.demoPassword")}: <span className="font-mono text-fg">DemoCustomer1!</span>
-        </p>
+      <Field label={t("checkout.email")} type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} />
+      <Field
+        label={t("auth.password")}
+        type="password"
+        autoComplete="current-password"
+        value={password}
+        onChange={(event) => setPassword(event.target.value)}
+      />
+      <div className="flex justify-end">
+        <Link href="/forgot-password" className="text-sm text-accent hover:text-fg">
+          {t("auth.forgot")}
+        </Link>
       </div>
-      <Field label={t("checkout.email")} value={email} onChange={(event) => setEmail(event.target.value)} />
-      <Field label={t("auth.password")} type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-      {error ? <p className="text-sm text-danger">{error}</p> : null}
-      <Button type="submit" className="w-full">{t("auth.submitLogin")}</Button>
-      <Link href="/register" className="block text-center text-sm text-accent">{t("account.register")}</Link>
+      {error ? (
+        <p className="text-sm text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <Button type="submit" className="w-full" disabled={loading}>
+        {loading ? t("common.loading") : t("auth.submitLogin")}
+      </Button>
+      <p className="text-center text-sm text-muted">
+        {t("auth.noAccount")}{" "}
+        <Link
+          href={callbackUrl !== "/account" ? `/register?callbackUrl=${encodeURIComponent(callbackUrl)}` : "/register"}
+          className="font-semibold text-accent"
+        >
+          {t("account.register")}
+        </Link>
+      </p>
     </form>
   );
 }
@@ -58,53 +86,233 @@ export function LoginForm() {
 export function RegisterForm() {
   const { t } = useLanguage();
   const router = useRouter();
+  const params = useSearchParams();
+  const callbackUrl = safeCallbackUrl(params.get("callbackUrl"));
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [phone, setPhone] = useState("");
-  const [error, setError] = useState("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   return (
     <form
       className="mx-auto w-full max-w-md space-y-4"
       onSubmit={async (event) => {
         event.preventDefault();
-        if (!name.trim() || !isValidEmail(email)) {
-          setError(t("checkout.required"));
-          return;
-        }
-        if (password.length < 12) {
-          setError(t("auth.short"));
-          return;
-        }
-        if (password !== confirm) {
-          setError(t("auth.mismatch"));
-          return;
-        }
+        const next: Record<string, string> = {};
+        if (name.trim().length < 2) next.name = t("validation.required");
+        if (!isValidEmail(email)) next.email = t("validation.email");
+        if (phone.trim() && !isValidPhone(phone)) next.phone = t("validation.phone");
+        if (password.length < 12) next.password = t("auth.passwordRules");
+        if (password !== confirm) next.confirm = t("auth.mismatch");
+        setErrors(next);
+        setFormError("");
+        if (Object.keys(next).length) return;
+        setLoading(true);
+        const { registerCustomer } = await import("@/server/actions/customer-auth");
         const registration = await registerCustomer({ name, email, phone, password });
         if (!registration.ok) {
-          setError(registration.error === "password" ? t("auth.strongPassword") : t("auth.registerUnavailable"));
+          setLoading(false);
+          if (registration.error === "validation") {
+            const fields = registration.fields;
+            const mapped: Record<string, string> = {};
+            if (fields.email?.length) {
+              mapped.email = fields.email.some((message) => /already/i.test(message)) ? t("auth.emailTaken") : fields.email[0];
+            }
+            if (fields.password?.length) mapped.password = fields.password.join(" ");
+            if (fields.full_name?.length) mapped.name = fields.full_name[0];
+            if (fields.phone?.length) mapped.phone = fields.phone[0];
+            setErrors(mapped);
+            if (!Object.keys(mapped).length) setFormError(Object.values(fields).flat()[0] ?? t("auth.registerUnavailable"));
+            return;
+          }
+          setFormError(
+            t(registration.error === "throttled" ? "auth.throttled" : registration.error === "invalid" ? "checkout.fixFields" : "auth.unavailable"),
+          );
           return;
         }
         const result = await signIn("credentials", { email, password, redirect: false });
+        setLoading(false);
         if (result?.error) {
-          setError(t("auth.invalid"));
+          router.push("/login");
           return;
         }
-        router.push("/account");
+        router.push(callbackUrl);
         router.refresh();
       }}
     >
       <h1 className="text-2xl font-semibold">{t("auth.registerTitle")}</h1>
-      <Field label={t("checkout.name")} value={name} onChange={(event) => setName(event.target.value)} />
-      <Field label={t("checkout.email")} value={email} onChange={(event) => setEmail(event.target.value)} />
-      <Field label={t("checkout.phone")} value={phone} onChange={(event) => setPhone(event.target.value)} />
-      <Field label={t("auth.password")} type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-      <Field label={t("auth.confirm")} type="password" value={confirm} onChange={(event) => setConfirm(event.target.value)} />
-      {error ? <p className="text-sm text-danger">{error}</p> : null}
-      <Button type="submit" className="w-full">{t("auth.submitRegister")}</Button>
-      <Link href="/login" className="block text-center text-sm text-accent">{t("account.signIn")}</Link>
+      <Field label={t("checkout.name")} autoComplete="name" value={name} error={errors.name} onChange={(event) => setName(event.target.value)} />
+      <Field label={t("checkout.email")} type="email" autoComplete="email" value={email} error={errors.email} onChange={(event) => setEmail(event.target.value)} />
+      <Field
+        label={t("checkout.phone")}
+        type="tel"
+        autoComplete="tel"
+        placeholder="+962 79 123 4567"
+        value={phone}
+        error={errors.phone}
+        onChange={(event) => setPhone(event.target.value)}
+      />
+      <Field
+        label={t("auth.password")}
+        type="password"
+        autoComplete="new-password"
+        hint={t("auth.passwordRules")}
+        value={password}
+        error={errors.password}
+        onChange={(event) => setPassword(event.target.value)}
+      />
+      <Field
+        label={t("auth.confirm")}
+        type="password"
+        autoComplete="new-password"
+        value={confirm}
+        error={errors.confirm}
+        onChange={(event) => setConfirm(event.target.value)}
+      />
+      {formError ? (
+        <p className="text-sm text-danger" role="alert">
+          {formError}
+        </p>
+      ) : null}
+      <Button type="submit" className="w-full" disabled={loading}>
+        {loading ? t("common.loading") : t("auth.submitRegister")}
+      </Button>
+      <Link href="/login" className="block text-center text-sm text-accent">
+        {t("account.signIn")}
+      </Link>
+    </form>
+  );
+}
+
+export function ForgotPasswordForm() {
+  const { t } = useLanguage();
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
+  const [sent, setSent] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  if (sent) {
+    return (
+      <div className="mx-auto w-full max-w-md space-y-4">
+        <h1 className="text-2xl font-semibold">{t("auth.forgotTitle")}</h1>
+        <p className="rounded-xl border border-success/30 bg-success/10 p-4 text-sm text-success">{t("auth.forgotSent")}</p>
+        <Link href="/login" className="block text-sm text-accent">
+          {t("auth.backToLogin")}
+        </Link>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      className="mx-auto w-full max-w-md space-y-4"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        if (!isValidEmail(email)) {
+          setError(t("validation.email"));
+          return;
+        }
+        setLoading(true);
+        setError("");
+        const { requestPasswordResetAction } = await import("@/server/actions/customer-auth");
+        const result = await requestPasswordResetAction({ email });
+        setLoading(false);
+        if (result.ok) setSent(true);
+        else setError(t(result.error === "throttled" ? "auth.throttled" : result.error === "invalid" ? "validation.email" : "auth.unavailable"));
+      }}
+    >
+      <h1 className="text-2xl font-semibold">{t("auth.forgotTitle")}</h1>
+      <p className="text-sm text-muted">{t("auth.forgotBody")}</p>
+      <Field label={t("checkout.email")} type="email" autoComplete="email" value={email} error={error || undefined} onChange={(event) => setEmail(event.target.value)} />
+      <Button type="submit" className="w-full" disabled={loading}>
+        {loading ? t("common.loading") : t("auth.forgotSubmit")}
+      </Button>
+      <Link href="/login" className="block text-center text-sm text-accent">
+        {t("auth.backToLogin")}
+      </Link>
+    </form>
+  );
+}
+
+export function ResetPasswordForm() {
+  const { t } = useLanguage();
+  const params = useSearchParams();
+  const uid = params.get("uid") ?? "";
+  const token = params.get("token") ?? "";
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [errors, setErrors] = useState<string[]>([]);
+  const [state, setState] = useState<"form" | "done" | "invalid">(uid && token ? "form" : "invalid");
+  const [loading, setLoading] = useState(false);
+
+  if (state !== "form") {
+    return (
+      <div className="mx-auto w-full max-w-md space-y-4">
+        <h1 className="text-2xl font-semibold">{t("auth.resetTitle")}</h1>
+        <p
+          className={
+            state === "done"
+              ? "rounded-xl border border-success/30 bg-success/10 p-4 text-sm text-success"
+              : "rounded-xl border border-danger/30 bg-danger/10 p-4 text-sm text-danger"
+          }
+        >
+          {state === "done" ? t("auth.resetDone") : uid && token ? t("auth.resetInvalid") : t("auth.resetMissing")}
+        </p>
+        <Button href={state === "done" ? "/login" : "/forgot-password"}>
+          {state === "done" ? t("auth.submitLogin") : t("auth.forgotSubmit")}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      className="mx-auto w-full max-w-md space-y-4"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        if (password.length < 12) {
+          setErrors([t("auth.passwordRules")]);
+          return;
+        }
+        if (password !== confirm) {
+          setErrors([t("auth.mismatch")]);
+          return;
+        }
+        setLoading(true);
+        setErrors([]);
+        const { confirmPasswordResetAction } = await import("@/server/actions/customer-auth");
+        const result = await confirmPasswordResetAction({ uid, token, password });
+        setLoading(false);
+        if (result.ok) setState("done");
+        else if (result.error === "invalid_token") setState("invalid");
+        else if (result.error === "validation") setErrors(result.messages);
+        else setErrors([t("auth.unavailable")]);
+      }}
+    >
+      <h1 className="text-2xl font-semibold">{t("auth.resetTitle")}</h1>
+      <Field
+        label={t("auth.newPassword")}
+        type="password"
+        autoComplete="new-password"
+        hint={t("auth.passwordRules")}
+        value={password}
+        onChange={(event) => setPassword(event.target.value)}
+      />
+      <Field label={t("auth.confirm")} type="password" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} />
+      {errors.length ? (
+        <ul className="space-y-1 text-sm text-danger" role="alert">
+          {errors.map((message) => (
+            <li key={message}>{message}</li>
+          ))}
+        </ul>
+      ) : null}
+      <Button type="submit" className="w-full" disabled={loading}>
+        {loading ? t("common.loading") : t("auth.resetSubmit")}
+      </Button>
     </form>
   );
 }

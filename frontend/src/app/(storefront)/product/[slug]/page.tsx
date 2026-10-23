@@ -12,7 +12,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { slug } = await params;
   const product = await resolveStorefrontProduct(slug);
-  if (!product) return pageMeta("Product", "MMH product");
+  if (!product) return { title: "Not found", robots: { index: false, follow: false } };
   return {
     ...pageMeta(product.name, product.shortDescription, `/product/${slug}`),
     other: {

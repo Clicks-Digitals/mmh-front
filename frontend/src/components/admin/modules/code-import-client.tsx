@@ -1,5 +1,7 @@
 "use client";
 
+import { adminErrorMessage } from "@/components/admin/lib/errors";
+import { useAdminAccess } from "@/components/admin/admin-access";
 import { Badge } from "@/components/admin/ui/badge";
 import { EmptyState } from "@/components/admin/ui/empty-state";
 import { ErrorState } from "@/components/admin/ui/error-state";
@@ -8,8 +10,8 @@ import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { useAdminQuery } from "@/hooks/use-admin-query";
 import {
-  asList,
   confirmCodeImport,
+  fetchAllPages,
   createManualCode,
   downloadCodeImportErrors,
   downloadCodeImportTemplate,
@@ -19,9 +21,6 @@ import {
   type AdminVariant,
   type CodeImportBatch,
 } from "@/lib/api/admin";
-import { ApiError } from "@/lib/api/client";
-import { hasPermission } from "@/server/auth/permissions";
-import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -48,24 +47,18 @@ export function CodeImportClient() {
   const toast = useAdminToast();
   const router = useRouter();
   const search = useSearchParams();
-  const session = useSession();
-  const canManage = hasPermission(
-    session.data?.user?.permissions,
-    "codes.manage",
-    session.data?.user?.role,
-  );
+  const { can } = useAdminAccess();
+  const canManage = can("codes.manage");
 
   const presetVariant = search.get("variant") || "";
 
   const { data, loading, error, reload, token } = useAdminQuery(async (tok) => {
+    // Paginate (backend caps page_size) instead of requesting one huge page.
     const [products, variants] = await Promise.all([
-      listProducts(tok, { page_size: 200 }),
-      listVariants(tok, { page_size: 500 }),
+      fetchAllPages((params) => listProducts(tok, { ...params, ordering: "name_en" })),
+      fetchAllPages((params) => listVariants(tok, params)),
     ]);
-    return {
-      products: asList(products).items,
-      variants: asList(variants).items as AdminVariant[],
-    };
+    return { products, variants: variants as AdminVariant[] };
   });
 
   const [mode, setMode] = useState<"SIMPLE" | "ADVANCED">("SIMPLE");
@@ -119,7 +112,7 @@ export function CodeImportClient() {
       setStep("preview");
       toast.push("File validated", "success");
     } catch (err) {
-      toast.push(err instanceof ApiError ? err.message : "Preview failed", "error");
+      toast.push(adminErrorMessage(err, "Preview failed"), "error");
     } finally {
       setPending(false);
     }
@@ -134,7 +127,7 @@ export function CodeImportClient() {
       setStep("result");
       toast.push("Import completed", "success");
     } catch (err) {
-      toast.push(err instanceof ApiError ? err.message : "Import failed", "error");
+      toast.push(adminErrorMessage(err, "Import failed"), "error");
     } finally {
       setPending(false);
     }
@@ -146,7 +139,7 @@ export function CodeImportClient() {
       const csv = await downloadCodeImportTemplate(token, m);
       downloadText(`code-import-${m.toLowerCase()}.csv`, csv);
     } catch (err) {
-      toast.push(err instanceof ApiError ? err.message : "Template download failed", "error");
+      toast.push(adminErrorMessage(err, "Template download failed"), "error");
     }
   }
 
@@ -156,7 +149,7 @@ export function CodeImportClient() {
       const csv = await downloadCodeImportErrors(token, batch.id);
       downloadText(`import-${batch.id}-errors.csv`, csv);
     } catch (err) {
-      toast.push(err instanceof ApiError ? err.message : "Error report failed", "error");
+      toast.push(adminErrorMessage(err, "Error report failed"), "error");
     }
   }
 
@@ -177,7 +170,7 @@ export function CodeImportClient() {
       setManualPin("");
       toast.push("Code added", "success");
     } catch (err) {
-      toast.push(err instanceof ApiError ? err.message : "Could not add code", "error");
+      toast.push(adminErrorMessage(err, "Could not add code"), "error");
     } finally {
       setPending(false);
     }

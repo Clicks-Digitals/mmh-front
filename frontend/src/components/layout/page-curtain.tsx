@@ -56,7 +56,7 @@ export function PageCurtain() {
             animate={{ opacity: open ? 1 : 0 }}
             transition={{ duration: 0.2, delay: open ? 0.2 : 0 }}
           >
-            MMH DC
+            MMH
           </motion.p>
         </motion.div>
       ) : null}

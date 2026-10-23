@@ -10,7 +10,10 @@ import { useEffect, useRef, useState } from "react";
  */
 export function useAdminResource<T>(
   loader: (token: string, page: number, search: string) => Promise<{ items: T[]; count: number }>,
+  /** extra values (e.g. filters) that trigger a reload when they change */
+  deps: unknown[] = [],
 ) {
+  const depsKey = JSON.stringify(deps);
   const token = useAdminToken();
   const [page, setPage] = useState(1);
   const [search, setSearchState] = useState("");
@@ -66,7 +69,7 @@ export function useAdminResource<T>(
     return () => {
       cancelled = true;
     };
-  }, [token, page, debouncedSearch, reloadTick]);
+  }, [token, page, debouncedSearch, reloadTick, depsKey]);
 
   function setSearch(value: string) {
     setSearchState(value);

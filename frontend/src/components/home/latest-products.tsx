@@ -1,15 +1,13 @@
 "use client";
 
 import { ProductRail } from "@/components/product/product-card";
-import { PRODUCTS } from "@/data/products";
-import { getSnapshotProducts } from "@/lib/catalog-snapshot";
+import { catalog as liveCatalog } from "@/data/products";
 import { useLanguage } from "@/context/language-context";
 import Link from "next/link";
 
 export function LatestProducts() {
   const { t } = useLanguage();
-  const catalog = getSnapshotProducts();
-  const source = catalog.length ? catalog : PRODUCTS;
+  const source = liveCatalog();
   const products = source.filter((product) => product.trending).slice(0, 8);
   const items = products.length ? products : source.slice(0, 8);
 

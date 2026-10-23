@@ -1,14 +1,15 @@
-import { CustomerOrders } from "@/components/account/customer-account";
+import { CustomerOrderDetail } from "@/components/account/customer-account";
+import { noIndexMeta } from "@/lib/seo";
 import { requireCustomer } from "@/server/auth/require-customer";
-import { loadCustomerOrders } from "@/server/orders/customer";
+import { loadOrder } from "@/server/orders/load";
 import { notFound } from "next/navigation";
 
-export const metadata = { title: "Order details" };
+export const metadata = noIndexMeta("Order details");
 
 export default async function CustomerOrderPage({ params }: { params: Promise<{ number: string }> }) {
   const { number } = await params;
-  const user = await requireCustomer(`/account/orders/${number}`);
-  const order = (await loadCustomerOrders(user.accessToken)).find((item) => item.number === number);
-  if (!order) notFound();
-  return <CustomerOrders orders={[order]} />;
+  await requireCustomer(`/account/orders/${number}`);
+  const loaded = await loadOrder(decodeURIComponent(number));
+  if (!loaded) notFound();
+  return <CustomerOrderDetail order={loaded.order} />;
 }

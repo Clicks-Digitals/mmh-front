@@ -182,3 +182,23 @@ class AdminSupplierEndpointTests(TestCase):
         client.delete(f"/api/v1/admin/suppliers/{supplier.pk}/")
         actions = set(AuditLog.objects.filter(entity_type="Supplier").values_list("action", flat=True))
         self.assertEqual(actions, {"supplier.created", "supplier.updated", "supplier.deleted"})
+
+
+class SupplierDeleteTests(TestCase):
+    def test_supplier_with_orders_returns_409_not_500(self):
+        admin = make_admin("sup-delete@mmh.test", AdminRole.SUPER_ADMIN)
+        supplier = Supplier.objects.create(slug="busy-supplier", name="Busy")
+        SupplierOrder.objects.create(supplier=supplier, order_item_id=1, supplier_ref="BUSY-1")
+
+        res = auth_client(admin).delete(f"/api/v1/admin/suppliers/{supplier.id}/")
+
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertTrue(Supplier.objects.filter(pk=supplier.pk).exists())
+
+    def test_unused_supplier_can_be_deleted(self):
+        admin = make_admin("sup-delete2@mmh.test", AdminRole.SUPER_ADMIN)
+        supplier = Supplier.objects.create(slug="idle-supplier", name="Idle")
+
+        res = auth_client(admin).delete(f"/api/v1/admin/suppliers/{supplier.id}/")
+
+        self.assertEqual(res.status_code, 204, res.content)

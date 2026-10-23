@@ -1,55 +1,42 @@
 import { CATEGORIES } from "@/data/categories";
-import { PRODUCTS, getProductBySlug } from "@/data/products";
+import { PRODUCTS } from "@/data/products";
+import { allowStaticCatalogFallback } from "@/lib/catalog-fallback";
+import { ApiError } from "@/lib/api/client";
 import { fetchApiCategories, fetchApiProduct, fetchApiProducts } from "@/server/catalog/from-api";
 import type { Category, Product } from "@/types";
 
-/**
- * Static catalog fallback is for development/demo UX only.
- * In production (NODE_ENV=production), fallback is OFF unless explicitly enabled —
- * a backend outage must never present stale prices/stock as purchasable truth.
- */
-function allowStaticCatalogFallback(): boolean {
-  if (process.env.NEXT_PUBLIC_ALLOW_STATIC_CATALOG_FALLBACK === "true") {
-    return true;
-  }
-  if (process.env.NEXT_PUBLIC_ALLOW_STATIC_CATALOG_FALLBACK === "false") {
-    return false;
-  }
-  return process.env.NODE_ENV !== "production";
-}
-
-/** Load published products from Django API, optionally falling back to static catalog. */
+/** Load published products from Django API; the static catalog is only a development fallback. */
 export async function resolveStorefrontProducts(): Promise<Product[]> {
   try {
     const rows = await fetchApiProducts();
-    if (rows.length) return rows;
+    if (rows.length || !allowStaticCatalogFallback()) return rows;
   } catch {
     /* fall through */
   }
-  if (!allowStaticCatalogFallback()) return [];
-  return PRODUCTS;
+  return allowStaticCatalogFallback() ? PRODUCTS : [];
 }
 
 export async function resolveStorefrontCategories(): Promise<Category[]> {
   try {
     const rows = await fetchApiCategories();
-    if (rows.length) return rows;
+    if (rows.length || !allowStaticCatalogFallback()) return rows;
   } catch {
     /* fall through */
   }
-  if (!allowStaticCatalogFallback()) return [];
-  return CATEGORIES;
+  return allowStaticCatalogFallback() ? CATEGORIES : [];
 }
 
 export async function resolveStorefrontProduct(slug: string): Promise<Product | undefined> {
   try {
     const row = await fetchApiProduct(slug);
     if (row) return row;
-  } catch {
-    /* fall through */
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 404) {
+      if (!allowStaticCatalogFallback()) throw error;
+    }
   }
   if (!allowStaticCatalogFallback()) return undefined;
-  return getProductBySlug(slug);
+  return PRODUCTS.find((product) => product.slug === slug);
 }
 
 export function isStaticCatalogFallbackEnabled(): boolean {

@@ -1,31 +1,41 @@
-import { CategoryListing } from "@/components/shop/category-listing";
-import { parseFilterParams } from "@/lib/catalog";
-import { pageMeta } from "@/lib/seo";
-import { notFound } from "next/navigation";
-import type { Metadata } from "next";
-import { resolveStorefrontCategories } from "@/server/catalog/resolve";
-import { queryPublishedProducts } from "@/server/catalog/query";
 import { getCategory } from "@/data/categories";
-import { isCategoryGroup } from "@/data/products";
-import type { Category } from "@/types";
+import { isListingGroup, productsForListing } from "@/lib/listing";
+import { pageMeta } from "@/lib/seo";
+import { resolveStorefrontCategories, resolveStorefrontProducts } from "@/server/catalog/resolve";
+import { ListingPage } from "@/server/catalog/listing-page";
+import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 
-/** Database category, or a built-in navigation grouping such as PlayStation or Mobile Games. */
-function findCategory(categories: Category[], slug: string): Category | undefined {
+type Resolved = { slug: string; name: string; nameAr: string; description: string };
+
+/** A backend category, a built-in grouping (PlayStation, Mobile Games…), or a platform with products. */
+async function resolveListing(slug: string): Promise<Resolved | undefined> {
+  const [categories, products] = await Promise.all([resolveStorefrontCategories(), resolveStorefrontProducts()]);
   const fromApi = categories.find((item) => item.slug === slug);
-  if (fromApi) return fromApi;
-  return isCategoryGroup(slug) ? getCategory(slug) : undefined;
+  if (fromApi) return { slug, name: fromApi.name, nameAr: fromApi.nameAr, description: fromApi.description };
+  if (isListingGroup(slug)) {
+    const group = getCategory(slug);
+    if (!group || !productsForListing(slug, products, categories).length) return undefined;
+    return { slug, name: group.name, nameAr: group.nameAr, description: group.description };
+  }
+  const platformProduct = products.find((product) => product.platform === slug);
+  if (platformProduct) {
+    const options = platformProduct.digitalOptions;
+    return {
+      slug,
+      name: options.platformLabel || platformProduct.brand,
+      nameAr: options.platformLabelAr || options.platformLabel || platformProduct.brand,
+      description: `${options.platformLabel || platformProduct.brand} digital products sold by MMH.`,
+    };
+  }
+  return undefined;
 }
 
-export async function generateMetadata({
-  params,
-}: {
-  params: Promise<{ slug: string }>;
-}): Promise<Metadata> {
+export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
-  const categories = await resolveStorefrontCategories();
-  const category = findCategory(categories, slug);
-  if (!category) return pageMeta("Category", "MMH category", "/shop");
-  return pageMeta(category.name, category.description, `/category/${slug}`);
+  const listing = await resolveListing(slug);
+  if (!listing) return { title: "Not found", robots: { index: false, follow: false } };
+  return pageMeta(listing.name, listing.description || listing.name, `/category/${slug}`);
 }
 
 export default async function CategoryPage({
@@ -36,35 +46,14 @@ export default async function CategoryPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { slug } = await params;
-  const categories = await resolveStorefrontCategories();
-  const category = findCategory(categories, slug);
-  if (!category) notFound();
-
-  const query = await searchParams;
-  const filters = { ...parseFilterParams(query), category: slug };
-  const source = await queryPublishedProducts(filters, slug);
-
-  const children = categories.filter((item) => item.parent === slug);
-  const siblings = category.parent
-    ? categories.filter((item) => item.parent === category.parent && item.slug !== slug)
-    : [];
-  const subcategories = (children.length ? children : siblings).map((item) => ({
-    href: item.href,
-    label: item.name,
-  }));
-
+  const listing = await resolveListing(slug);
+  if (!listing) notFound();
   return (
-    <CategoryListing
-      title={category.name}
-      breadcrumbs={[
-        { href: "/", label: "MMH" },
-        { href: "/shop", label: "Shop" },
-        { label: category.name },
-      ]}
-      subcategories={subcategories}
-      initial={filters}
-      source={source}
+    <ListingPage
+      slug={slug}
+      title={{ en: listing.name, ar: listing.nameAr }}
       basePath={`/category/${slug}`}
+      searchParams={searchParams}
     />
   );
 }

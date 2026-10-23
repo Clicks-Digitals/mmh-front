@@ -1,8 +1,9 @@
+import { noIndexMeta } from "@/lib/seo";
 import { CustomerOrders } from "@/components/account/customer-account";
 import { requireCustomer } from "@/server/auth/require-customer";
 import { loadCustomerOrders } from "@/server/orders/customer";
 
-export const metadata = { title: "Digital codes" };
+export const metadata = noIndexMeta("Digital codes");
 
 export default async function CodesPage() {
   const user = await requireCustomer("/account/codes");

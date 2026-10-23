@@ -4,7 +4,7 @@ export type ProductType = "digital";
 
 export type FulfillmentType = "code" | "direct_topup";
 
-export type DeliveryMethod = "account" | "email" | "sms" | "instant_reveal";
+export type DeliveryMethod = "account" | "email";
 
 export type ProductKind =
   | "gift_card"
@@ -22,7 +22,6 @@ export type ProductBadge =
   | "limited"
   | "sale"
   | "digital"
-  | "instant"
   | "region_locked"
   | "topup";
 
@@ -68,6 +67,10 @@ export interface DigitalDenomination {
   compareAtPriceJod?: number;
   inStock?: boolean;
   deliveryEstimate?: string;
+  /** Backend variant primary key (sent to checkout as variant_id). */
+  variantId?: number;
+  minQuantity?: number;
+  maxQuantity?: number;
 }
 
 export interface DigitalProductOptions {
@@ -153,22 +156,15 @@ export interface NavLink {
   mega?: "shop" | "topups" | "gifts" | "playstation" | "mobile";
 }
 
-export type GiftIntent = "self" | "recipient";
-
 export interface CartDigitalMeta {
   regionId: string;
   regionName: string;
   denominationId: string;
   denominationLabel: string;
-  deliveryMethod: DeliveryMethod;
-  deliveryContact: string;
+  deliveryMethod?: DeliveryMethod;
+  deliveryContact?: string;
   platform: string;
   customerFields?: Record<string, string>;
-  giftIntent?: GiftIntent;
-  recipientName?: string;
-  recipientEmail?: string;
-  recipientPhone?: string;
-  giftMessage?: string;
 }
 
 export interface CartItem {

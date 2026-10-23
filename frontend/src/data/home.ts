@@ -138,8 +138,3 @@ export const HOME_SUGGEST_TILES = [
   { id: "google", href: "/product/google-play-gift-card", image: "/catalog/google-play.webp", artworkKey: "card-google", labelKey: "home.suggest.google" },
 ] as const;
 
-export const HOME_TESTIMONIALS = [
-  { id: "t1", nameKey: "home.testimonial1Name", bodyKey: "home.testimonial1Body" },
-  { id: "t2", nameKey: "home.testimonial2Name", bodyKey: "home.testimonial2Body" },
-  { id: "t3", nameKey: "home.testimonial3Name", bodyKey: "home.testimonial3Body" },
-] as const;

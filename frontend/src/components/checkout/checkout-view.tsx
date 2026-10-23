@@ -1,139 +1,62 @@
 "use client";
 
-import { PayPalCheckout } from "@/components/checkout/paypal-checkout";
+import { PaymentStep, UsdEstimate, type CheckoutFailure } from "@/components/checkout/payment-step";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { Price } from "@/components/ui/price";
 import { useCart } from "@/context/cart-context";
 import { useLanguage } from "@/context/language-context";
-import { linePrice, maskAccountValue } from "@/lib/cart";
+import { checkoutLine, lineProblem, lineProblemKey, linePrice, maskAccountValue } from "@/lib/cart";
+import { formatDiscount } from "@/lib/coupon";
 import { getProductById } from "@/data/products";
-import { ApiError } from "@/lib/api/client";
-import { createPayPalOrder } from "@/lib/api/paypal";
-import { isValidDemoPhone, isValidEmail } from "@/lib/validation";
-import { STORAGE_KEYS, writeJson } from "@/lib/storage";
-import type { CheckoutDraft } from "@/types";
+import { isValidEmail, isValidPhone } from "@/lib/validation";
+import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import Link from "next/link";
 
-function errorCode(error: ApiError) {
-  if (!error.body || typeof error.body !== "object") return "";
-  const code = (error.body as { code?: unknown }).code;
-  return typeof code === "string" ? code : "";
-}
-
-const empty: CheckoutDraft = {
-  customer: { fullName: "", email: "", phone: "" },
-  digital: { method: "account", contact: "" },
-  payment: { method: "paypal" },
-  notes: "",
-  regionConfirmed: false,
-  refundConfirmed: false,
-};
+type Contact = { fullName: string; email: string; phone: string };
 
 export function CheckoutView() {
-  const { items, subtotal, discount, promoCode, clear, hydrated } = useCart();
+  const { items, subtotal, total, discountFils, totalFils, promoCode, clear, hydrated } = useCart();
   const { t, locale } = useLanguage();
+  const { data: session, status } = useSession();
   const router = useRouter();
+  const sessionEmail = status === "authenticated" && session?.user?.kind === "CUSTOMER" ? session.user.email : "";
   const [step, setStep] = useState(1);
-  const [draft, setDraft] = useState<CheckoutDraft>(empty);
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [preparing, setPreparing] = useState(false);
-  const [placeError, setPlaceError] = useState("");
-  const [preparedState, setPrepared] = useState<{
-    key: string;
-    id: string;
-    orderNumber: string;
-    checkoutToken: string;
-    paypalAmount: string;
-    paypalCurrency: string;
-  } | null>(null);
-  const total = subtotal - discount;
-  const idempotencyKey = useMemo(
+  const [contact, setContact] = useState<Contact>({ fullName: "", email: "", phone: "" });
+  const [confirmed, setConfirmed] = useState(false);
+  const [showErrors, setShowErrors] = useState(false);
+  const [failure, setFailure] = useState<CheckoutFailure | null>(null);
+
+  const email = (contact.email || sessionEmail).trim();
+  const fullName = (contact.fullName || (sessionEmail ? session?.user?.name ?? "" : "")).trim();
+
+  const errors = {
+    name: fullName.length < 2 ? t("validation.required") : "",
+    email: !isValidEmail(email) ? t("validation.email") : "",
+    phone: contact.phone.trim() && !isValidPhone(contact.phone) ? t("validation.phone") : "",
+  };
+  const serverFieldError = (key: string) => (failure?.field === key && failure.message ? failure.message : "");
+
+  const lines = useMemo(
     () =>
-      items
-        .map((item) => `${item.lineId}:${item.quantity}:${item.digital?.denominationId ?? ""}`)
-        .join("|") + `:${draft.customer.email}:paypal`,
-    [items, draft.customer.email],
+      items.map((item) => {
+        const product = getProductById(item.productId);
+        return { item, product, problem: lineProblem(item, product) };
+      }),
+    [items],
   );
+  const blocked = lines.some((line) => line.problem);
+  const steps = [t("checkout.step1"), t("checkout.step2"), t("checkout.reviewPay")];
 
-  // A prepared PayPal order only belongs to the cart and email it was created for.
-  const prepared = preparedState?.key === idempotencyKey ? preparedState : null;
-
-  const patch = (next: Partial<CheckoutDraft>) => setDraft((current) => ({ ...current, ...next }));
-
-  const validate = (currentStep: number) => {
-    const next: Record<string, string> = {};
-    if (currentStep === 1) {
-      if (!draft.customer.fullName.trim()) next.name = t("checkout.required");
-      if (!isValidEmail(draft.customer.email)) next.email = t("checkout.invalidEmail");
-      if (!isValidDemoPhone(draft.customer.phone)) next.phone = t("checkout.invalidPhone");
+  const goNext = () => {
+    if (step === 1) {
+      setShowErrors(true);
+      if (errors.name || errors.email || errors.phone) return;
     }
-    if (currentStep === 4) {
-      if (!draft.regionConfirmed) next.confirm = t("checkout.required");
-      if (!draft.refundConfirmed) next.refund = t("checkout.required");
-    }
-    setErrors(next);
-    return Object.keys(next).length === 0;
-  };
-
-  const steps = useMemo(() => [t("checkout.step1"), t("checkout.step2"), t("checkout.step3"), t("checkout.step4")], [t]);
-
-  const finish = (orderId: string, orderNumber: string) => {
-    writeJson(STORAGE_KEYS.checkout, { draft, items, total, createdAt: new Date().toISOString(), orderId });
-    clear();
-    router.push(`/order-success?ref=${encodeURIComponent(orderId)}&number=${encodeURIComponent(orderNumber)}`);
-  };
-
-  const prepareOrder = async () => {
-    setPreparing(true);
-    setPlaceError("");
-    try {
-      const { createStorefrontOrder } = await import("@/server/actions/checkout");
-      const result = await createStorefrontOrder({
-        email: draft.customer.email,
-        fullName: draft.customer.fullName,
-        phone: draft.customer.phone,
-        notes: draft.notes,
-        idempotencyKey,
-        couponCode: promoCode || undefined,
-        paymentProvider: "paypal",
-        items: items.map((item) => ({
-          productId: item.productId,
-          variantId: item.digital?.denominationId || getProductById(item.productId)?.digitalOptions.denominations[0]?.id || item.productId,
-          quantity: item.quantity,
-          fields: item.digital?.customerFields,
-        })),
-      });
-      if (!result.ok) {
-        setPlaceError(result.message);
-        patch({ regionConfirmed: false, refundConfirmed: false });
-        return;
-      }
-      if (result.paymentStatus === "PAID") {
-        finish(result.id, result.orderNumber);
-        return;
-      }
-      if (!result.checkoutToken || !result.paypalAmount || !result.paypalCurrency) {
-        setPlaceError(t("checkout.paypalUnavailable"));
-        patch({ regionConfirmed: false, refundConfirmed: false });
-        return;
-      }
-      setPrepared({
-        key: idempotencyKey,
-        id: result.id,
-        orderNumber: result.orderNumber,
-        checkoutToken: result.checkoutToken,
-        paypalAmount: result.paypalAmount,
-        paypalCurrency: result.paypalCurrency,
-      });
-    } catch (error) {
-      setPlaceError(error instanceof Error ? error.message : t("checkout.paypalUnavailable"));
-      patch({ regionConfirmed: false, refundConfirmed: false });
-    } finally {
-      setPreparing(false);
-    }
+    if (step === 2 && blocked) return;
+    setStep((value) => Math.min(3, value + 1));
   };
 
   if (!hydrated) return <div className="container-mmh py-16">{t("common.loading")}</div>;
@@ -141,7 +64,9 @@ export function CheckoutView() {
     return (
       <div className="container-mmh py-16">
         <p className="text-muted">{t("cart.empty")}</p>
-        <Button className="mt-4" href="/shop">{t("cart.emptyCta")}</Button>
+        <Button className="mt-4" href="/shop">
+          {t("cart.emptyCta")}
+        </Button>
       </div>
     );
   }
@@ -156,9 +81,7 @@ export function CheckoutView() {
               key={label}
               className={`flex shrink-0 items-center gap-2 rounded-md px-2.5 py-1.5 ${step === index + 1 ? "bg-gold text-elevated" : index + 1 < step ? "bg-brand text-fg" : "bg-brand-deep text-muted"}`}
             >
-              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/15 text-[11px] font-semibold">
-                {index + 1}
-              </span>
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/15 text-[11px] font-semibold">{index + 1}</span>
               <span className="hidden sm:inline">{label}</span>
             </li>
           ))}
@@ -166,39 +89,83 @@ export function CheckoutView() {
 
         {step === 1 ? (
           <div className="mt-8 space-y-4">
-            <p className="text-sm text-muted">{t("checkout.contactHint")}</p>
-            <Field label={t("checkout.name")} value={draft.customer.fullName} error={errors.name} onChange={(event) => patch({ customer: { ...draft.customer, fullName: event.target.value } })} />
-            <Field label={t("checkout.email")} value={draft.customer.email} error={errors.email} onChange={(event) => patch({ customer: { ...draft.customer, email: event.target.value } })} />
-            <Field label={t("checkout.phone")} hint={t("checkout.phoneHint")} value={draft.customer.phone} error={errors.phone} onChange={(event) => patch({ customer: { ...draft.customer, phone: event.target.value } })} />
+            {sessionEmail ? (
+              <p className="text-sm text-muted">{t("checkout.signedInAs", { email: sessionEmail })}</p>
+            ) : (
+              <p className="text-sm text-muted">
+                {t("checkout.signInOptional")}{" "}
+                <Link href="/login?callbackUrl=%2Fcheckout" className="font-semibold text-brand-deep hover:text-fg">
+                  {t("account.signIn")}
+                </Link>
+              </p>
+            )}
+            <Field
+              label={t("checkout.name")}
+              autoComplete="name"
+              value={contact.fullName || (sessionEmail ? session?.user?.name ?? "" : "")}
+              error={(showErrors && errors.name) || serverFieldError("full_name") || undefined}
+              onChange={(event) => setContact((current) => ({ ...current, fullName: event.target.value }))}
+            />
+            <Field
+              label={t("checkout.email")}
+              type="email"
+              autoComplete="email"
+              hint={t("checkout.contactHint")}
+              value={contact.email || sessionEmail}
+              error={(showErrors && errors.email) || serverFieldError("email") || undefined}
+              onChange={(event) => setContact((current) => ({ ...current, email: event.target.value }))}
+            />
+            <Field
+              label={t("checkout.phone")}
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              placeholder="+962 79 123 4567"
+              hint={t("checkout.phoneHint")}
+              value={contact.phone}
+              error={errors.phone || serverFieldError("phone") || undefined}
+              onChange={(event) => setContact((current) => ({ ...current, phone: event.target.value }))}
+            />
+            <UsdEstimate totalFils={totalFils} className="text-sm text-muted" />
           </div>
         ) : null}
 
         {step === 2 ? (
           <div className="mt-8 space-y-4">
-            {items.map((item) => {
-              const product = getProductById(item.productId);
-              if (!product) return null;
-              const player = item.digital?.customerFields?.playerId || item.digital?.customerFields?.userId;
+            {lines.map(({ item, product, problem }) => {
+              if (!product) {
+                return (
+                  <article key={item.lineId} className="rounded-[12px] border border-danger/40 bg-card p-4 text-sm text-danger">
+                    {t("checkout.lineNeedsOptions")}
+                  </article>
+                );
+              }
+              const fieldsText = product.digitalOptions.requiredCustomerFields
+                .map((field) => {
+                  const value = item.digital?.customerFields?.[field.id];
+                  return value ? `${locale === "ar" ? field.labelAr || field.label : field.label}: ${maskAccountValue(value)}` : "";
+                })
+                .filter(Boolean)
+                .join(" · ");
+              const serverError = product.digitalOptions.requiredCustomerFields.map((field) => serverFieldError(field.id)).find(Boolean);
               return (
                 <article key={item.lineId} className="rounded-[12px] border border-line bg-card p-4 text-sm">
-                  <p className="font-medium">{locale === "ar" ? product.nameAr : product.name}</p>
+                  <p className="font-medium">
+                    {locale === "ar" ? product.nameAr : product.name} × {item.quantity}
+                  </p>
                   <p className="mt-1 text-muted">
-                    {item.digital?.platform} · {item.digital?.regionName} · {item.digital?.denominationLabel}
+                    {[item.digital?.platform, item.digital?.regionName, item.digital?.denominationLabel].filter(Boolean).join(" · ")}
                   </p>
                   <p className="text-accent">
-                    {product.fulfillmentType === "direct_topup"
-                      ? t("common.topup")
-                      : item.digital?.giftIntent === "recipient"
-                        ? `${t("gift.sentTo")} ${item.digital.recipientPhone || item.digital.deliveryContact || ""}`
-                        : item.digital?.giftIntent === "self"
-                          ? t("gift.keptInOrders")
-                          : t("common.instant")}
-                    {item.digital?.giftIntent !== "recipient" && item.digital?.deliveryContact ? ` · ${item.digital.deliveryContact}` : ""}
-                    {player ? ` · ${maskAccountValue(player)}` : ""}
+                    {product.fulfillmentType === "direct_topup" ? t("delivery.topupAfterPayment") : t("delivery.afterPayment")}
+                    {fieldsText ? ` · ${fieldsText}` : ""}
                   </p>
-                  {item.digital?.giftMessage ? <p className="mt-2 text-xs text-muted">“{item.digital.giftMessage}”</p> : null}
+                  {problem ? <p className="mt-2 text-xs text-danger">{t(lineProblemKey(problem), { max: 5 })}</p> : null}
+                  {serverError ? <p className="mt-2 text-xs text-danger">{serverError}</p> : null}
                   <p className="mt-2 text-xs text-amber">{t("checkout.refundWarn")}</p>
-                  <Link href="/cart" className="mt-2 inline-block text-xs text-gold">{t("common.edit")}</Link>
+                  <Link href="/cart" className="mt-2 inline-block text-xs text-gold">
+                    {t("common.edit")}
+                  </Link>
                 </article>
               );
             })}
@@ -206,72 +173,52 @@ export function CheckoutView() {
         ) : null}
 
         {step === 3 ? (
-          <div className="mt-8 space-y-3">
-            <p className="text-sm text-muted">{t("checkout.payNote")}</p>
-            <div className="flex min-h-12 w-full items-center rounded-xl border border-line bg-card px-4 text-start font-medium">
-              {t("checkout.payCard")}
-            </div>
-          </div>
-        ) : null}
-
-        {step === 4 ? (
-          <div className="mt-8 space-y-3 text-sm">
-            <p className="break-words"><strong>{draft.customer.fullName}</strong> · {draft.customer.email} · {draft.customer.phone}</p>
+          <div className="mt-8 space-y-4 text-sm">
+            <p className="break-words">
+              <strong>{fullName}</strong> · {email}
+              {contact.phone ? ` · ${contact.phone}` : ""}
+            </p>
             <p className="rounded-xl border border-line bg-card p-3 text-muted">{t("checkout.payNote")}</p>
-            {prepared ? (
-              <p className="rounded-xl border border-line bg-card p-3 text-sm">
-                <span className="text-muted">{t("checkout.paypalCharge")}</span>
-                <span className="ms-2 font-semibold">
-                  {prepared.paypalAmount} {prepared.paypalCurrency}
-                </span>
-              </p>
-            ) : null}
+            <p className="text-muted">{t("delivery.where")}</p>
             <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-card p-4 leading-5 text-muted">
               <input
                 type="checkbox"
                 className="mt-0.5 h-4 w-4 shrink-0 accent-[#F7C037]"
-                checked={draft.regionConfirmed && draft.refundConfirmed}
-                disabled={preparing}
-                onChange={(event) => {
-                  const checked = event.target.checked;
-                  patch({ regionConfirmed: checked, refundConfirmed: checked });
-                  if (!checked) {
-                    setPrepared(null);
-                    return;
-                  }
-                  void prepareOrder();
-                }}
+                checked={confirmed}
+                onChange={(event) => setConfirmed(event.target.checked)}
               />
               <span>{t("product.confirmCombined")}</span>
             </label>
-            {errors.confirm || errors.refund ? <p className="text-xs text-danger">{t("checkout.required")}</p> : null}
-            {preparing ? <p className="text-sm text-muted">{t("checkout.paypalPreparing")}</p> : null}
-            {prepared ? (
-              <PayPalCheckout
-                currencyCode={prepared.paypalCurrency}
-                createOrder={async () => {
-                  try {
-                    const created = await createPayPalOrder(prepared.orderNumber, prepared.checkoutToken);
-                    if (!created.paypal_order_id) throw new Error(t("checkout.paypalUnavailable"));
-                    return { orderId: created.paypal_order_id };
-                  } catch (error) {
-                    if (error instanceof ApiError && errorCode(error) === "already_paid") {
-                      finish(prepared.id, prepared.orderNumber);
-                      throw new Error("ALREADY_PAID");
-                    }
-                    throw error;
-                  }
-                }}
-                onPaid={() => finish(prepared.id, prepared.orderNumber)}
-                onCancel={() => setPlaceError(t("checkout.paypalCancel"))}
-                onError={(message) => setPlaceError(message)}
-              />
-            ) : null}
-            {draft.regionConfirmed && !prepared && !preparing ? (
-              <Button variant="secondary" onClick={() => void prepareOrder()}>
-                {t("checkout.payCard")}
-              </Button>
-            ) : null}
+            {showErrors && !confirmed ? <p className="text-xs text-danger">{t("checkout.required")}</p> : null}
+            <PaymentStep
+              input={{
+                email,
+                fullName,
+                phone: contact.phone,
+                couponCode: promoCode || undefined,
+                items: lines.filter((line) => line.product).map((line) => checkoutLine(line.item, line.product!)),
+              }}
+              totalFils={totalFils}
+              disabled={blocked}
+              onBeforePrepare={() => {
+                setShowErrors(true);
+                if (errors.name || errors.email || errors.phone) {
+                  setStep(1);
+                  return false;
+                }
+                return confirmed && !blocked;
+              }}
+              onFailure={(next) => {
+                setFailure(next);
+                if (!next?.field) return;
+                if (["email", "full_name", "phone"].includes(next.field)) setStep(1);
+                else if (next.field !== "coupon_code") setStep(2);
+              }}
+              onPaid={(orderNumber) => {
+                clear();
+                router.push(`/order-success?number=${encodeURIComponent(orderNumber)}`);
+              }}
+            />
           </div>
         ) : null}
 
@@ -281,30 +228,50 @@ export function CheckoutView() {
               {t("common.back")}
             </Button>
           ) : null}
-          {step < 4 ? (
-            <Button className="w-full sm:w-auto" onClick={() => validate(step) && setStep((value) => value + 1)}>{t("common.continue")}</Button>
+          {step < 3 ? (
+            <Button className="w-full sm:w-auto" disabled={step === 2 && blocked} onClick={goNext}>
+              {t("common.continue")}
+            </Button>
           ) : null}
-          {placeError ? <p className="text-sm text-danger">{placeError}</p> : null}
         </div>
       </div>
       <aside className="order-first h-fit rounded-[14px] border border-line bg-elevated p-5 lg:order-none">
         <h2 className="font-semibold">{t("cart.summary")}</h2>
         <ul className="mt-4 space-y-2 text-sm">
-          {items.map((item) => {
-            const product = getProductById(item.productId);
-            if (!product) return null;
-            return (
+          {lines.map(({ item, product }) =>
+            product ? (
               <li key={item.lineId} className="flex justify-between gap-3">
-                <span>{locale === "ar" ? product.nameAr : product.name} × {item.quantity}</span>
+                <span>
+                  {locale === "ar" ? product.nameAr : product.name} × {item.quantity}
+                </span>
                 <Price amount={linePrice(item, product)} locale={locale} size="sm" />
               </li>
-            );
-          })}
+            ) : null,
+          )}
         </ul>
-        <div className="mt-4 flex justify-between border-t border-line pt-3 font-semibold">
-          <span>{t("cart.total")}</span>
-          <Price amount={total} locale={locale} />
-        </div>
+        <dl className="mt-4 space-y-2 border-t border-line pt-3 text-sm">
+          <div className="flex justify-between">
+            <dt className="text-muted">{t("checkout.subtotal")}</dt>
+            <dd>
+              <Price amount={subtotal} locale={locale} size="sm" />
+            </dd>
+          </div>
+          {discountFils > 0 ? (
+            <div className="flex justify-between text-success">
+              <dt>
+                {t("checkout.discount")} ({promoCode})
+              </dt>
+              <dd>{formatDiscount(discountFils, locale)}</dd>
+            </div>
+          ) : null}
+          <div className="flex justify-between border-t border-line pt-3 font-semibold">
+            <dt>{t("checkout.total")}</dt>
+            <dd>
+              <Price amount={total} locale={locale} />
+            </dd>
+          </div>
+        </dl>
+        <UsdEstimate totalFils={totalFils} className="mt-2 text-xs text-muted" />
       </aside>
     </div>
   );

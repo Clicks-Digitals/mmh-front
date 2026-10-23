@@ -1,59 +1,34 @@
 "use client";
 
-import { hasPermission, ROUTE_PERMISSIONS, type PermissionKey } from "@/server/auth/permissions";
+import { useAdminAccess } from "@/components/admin/admin-access";
+import { ADMIN_NAV } from "@/components/admin/layout/sidebar";
+import { type PermissionKey } from "@/server/auth/permissions";
 import { Search } from "lucide-react";
-import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 type CommandItem = { href: string; label: string; permission?: PermissionKey };
 
+/** Every real page in the sidebar, plus a few deep links. */
 const ITEMS: CommandItem[] = [
-  { href: "/admin", label: "Dashboard" },
-  { href: "/admin/products", label: "Products", permission: "catalog.read" },
+  ...ADMIN_NAV.flatMap((entry) =>
+    "items" in entry
+      ? entry.items.map((item) => ({ href: item.href, label: item.label, permission: item.permission }))
+      : [{ href: entry.href, label: entry.label, permission: entry.permission }],
+  ),
   { href: "/admin/products/new", label: "New product", permission: "catalog.write" },
-  { href: "/admin/categories", label: "Categories", permission: "catalog.read" },
-  { href: "/admin/platforms", label: "Platforms", permission: "catalog.read" },
-  { href: "/admin/regions", label: "Regions", permission: "catalog.read" },
-  { href: "/admin/inventory", label: "Inventory", permission: "codes.read" },
-  { href: "/admin/codes", label: "Codes", permission: "codes.read" },
   { href: "/admin/codes/import", label: "Import codes", permission: "codes.manage" },
-  { href: "/admin/orders", label: "Orders", permission: "orders.read" },
-  { href: "/admin/customers", label: "Customers", permission: "customers.read" },
-  { href: "/admin/suppliers", label: "Suppliers", permission: "suppliers.read" },
-  { href: "/admin/integrations/1epin", label: "OneEpin", permission: "suppliers.read" },
-  { href: "/admin/integrations/1epin/logs", label: "OneEpin logs", permission: "suppliers.read" },
-  { href: "/admin/payments", label: "Payments", permission: "orders.read" },
-  { href: "/admin/coupons", label: "Coupons", permission: "orders.read" },
-  { href: "/admin/faqs", label: "FAQs", permission: "content.read" },
-  { href: "/admin/administrators", label: "Administrators", permission: "admins.read" },
-  { href: "/admin/roles", label: "Roles", permission: "admins.read" },
-  { href: "/admin/audit", label: "Audit log", permission: "audit.read" },
-  { href: "/admin/settings", label: "Settings", permission: "settings.manage" },
+  { href: "/admin/codes/imports", label: "Code import history", permission: "codes.manage" },
+  { href: "/admin/orders?fulfillment_status=MANUAL_REVIEW", label: "Orders in manual review", permission: "orders.read" },
 ];
 
-export function AdminCommandMenu({
-  permissions = [],
-  role,
-}: {
-  permissions?: string[];
-  role?: string | null;
-}) {
+export function AdminCommandMenu() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const router = useRouter();
-  const session = useSession();
-  const sessionPerms = (session.data?.user?.permissions as string[] | undefined) ?? permissions;
-  const sessionRole = (session.data?.user?.role as string | null | undefined) ?? role;
+  const { can } = useAdminAccess();
 
-  const allowed = useMemo(
-    () =>
-      ITEMS.filter((item) => {
-        if (!item.permission) return true;
-        return hasPermission(sessionPerms, item.permission as PermissionKey, sessionRole as never);
-      }),
-    [sessionPerms, sessionRole],
-  );
+  const allowed = useMemo(() => ITEMS.filter((item) => !item.permission || can(item.permission)), [can]);
 
   const results = useMemo(
     () => allowed.filter((item) => item.label.toLowerCase().includes(query.toLowerCase())),
@@ -132,4 +107,3 @@ export function AdminCommandMenu({
   );
 }
 
-void ROUTE_PERMISSIONS;

@@ -9,6 +9,9 @@ import { useUi } from "@/context/ui-context";
 import { CATEGORIES } from "@/data/categories";
 import { useEscape, useScrollLock } from "@/hooks/use-overlay";
 import { getSnapshotCategories } from "@/lib/catalog-snapshot";
+import { catalog } from "@/data/products";
+import { hrefHasProducts } from "@/lib/listing";
+import { formatJod } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import type { Category } from "@/types";
 import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
@@ -18,24 +21,33 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 function buildMenuCategories(): Category[] {
   const snapshot = getSnapshotCategories();
-  // Prefer the curated tree (parents + children) so chevrons always work.
-  // Append any extra published root categories from the DB snapshot.
+  const products = catalog();
+  // Curated tree + live root categories; every entry must lead to products.
   const bySlug = new Map(CATEGORIES.map((category) => [category.slug, category]));
-  for (const category of snapshot) {
-    if (!bySlug.has(category.slug)) bySlug.set(category.slug, category);
-  }
-  return Array.from(bySlug.values());
+  for (const category of snapshot) bySlug.set(category.slug, category);
+  const all = Array.from(bySlug.values());
+  const withProducts = all.filter((category) => hrefHasProducts(category.href, products, snapshot));
+  const kept = new Set(withProducts.map((category) => category.slug));
+  // Keep parents whose own listing is empty only if a child survives.
+  return all.filter(
+    (category) => kept.has(category.slug) || all.some((child) => child.parent === category.slug && kept.has(child.slug)),
+  ).filter((category) => !category.parent || kept.has(category.slug));
 }
 
 export function MobileMenu() {
+  const { mobileNavOpen } = useUi();
+  return mobileNavOpen ? <MobileMenuPanel /> : null;
+}
+
+function MobileMenuPanel() {
   const { mobileNavOpen, setMobileNavOpen, setSearchOpen, setCartOpen } = useUi();
   const { t, locale } = useLanguage();
-  const { itemCount, subtotal, hydrated } = useCart();
+  const { itemCount, total, hydrated } = useCart();
   const pathname = usePathname();
   const [stack, setStack] = useState<string[]>([]);
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const categories = useMemo(() => buildMenuCategories(), [mobileNavOpen]);
+  const categories = useMemo(() => buildMenuCategories(), []);
   const currentParent = stack.at(-1);
   const currentCategory = categories.find((category) => category.slug === currentParent);
   const visibleCategories = useMemo(
@@ -47,10 +59,7 @@ export function MobileMenu() {
   useEscape(mobileNavOpen, () => setMobileNavOpen(false));
 
   useEffect(() => {
-    if (!mobileNavOpen) {
-      setStack([]);
-      return;
-    }
+    if (!mobileNavOpen) return;
     closeRef.current?.focus();
     const dialog = dialogRef.current;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -73,8 +82,6 @@ export function MobileMenu() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mobileNavOpen]);
-
-  if (!mobileNavOpen) return null;
 
   const close = () => {
     setMobileNavOpen(false);
@@ -141,7 +148,7 @@ export function MobileMenu() {
               onClick={close}
               className="flex min-h-12 items-center justify-between border-b border-white/10 px-4 text-sm font-semibold text-gold"
             >
-              <span>{locale === "ar" ? "عرض الكل" : "View all"}</span>
+              <span>{t("nav.viewAll")}</span>
               <ChevronRight className="h-4 w-4 rtl:rotate-180" />
             </Link>
           ) : (
@@ -153,7 +160,7 @@ export function MobileMenu() {
                 active("/") && "bg-white/8 text-gold",
               )}
             >
-              {locale === "ar" ? "الرئيسية" : "Home"}
+              {t("common.home")}
             </Link>
           )}
 
@@ -213,7 +220,7 @@ export function MobileMenu() {
               {t("nav.cart")}
               {hydrated && itemCount ? ` (${itemCount})` : ""}
             </span>
-            <span>{hydrated ? `${subtotal.toFixed(2)} ${SITE.currency}` : SITE.currency}</span>
+            <span>{hydrated ? formatJod(total, locale) : SITE.currency}</span>
           </button>
         </div>
       </aside>

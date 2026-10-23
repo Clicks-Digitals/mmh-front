@@ -3,6 +3,9 @@
 import { CategoryTileImage } from "@/components/home/category-tile-image";
 import { HOME_PLATFORM_LINKS } from "@/data/home";
 import { useLanguage } from "@/context/language-context";
+import { catalog as liveCatalog } from "@/data/products";
+import { getSnapshotCategories } from "@/lib/catalog-snapshot";
+import { hrefHasProducts } from "@/lib/listing";
 import Link from "next/link";
 
 export function PlatformQuickLinks() {
@@ -11,7 +14,7 @@ export function PlatformQuickLinks() {
   return (
     <section className="container-mmh py-5 sm:py-7" aria-label={t("home.shopByCategory")}>
       <div className="flex gap-4 overflow-x-auto pb-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:grid sm:grid-cols-4 sm:gap-5 sm:overflow-visible lg:grid-cols-8 lg:gap-4">
-        {HOME_PLATFORM_LINKS.map((item) => (
+        {HOME_PLATFORM_LINKS.filter((tile) => hrefHasProducts(tile.href, liveCatalog(), getSnapshotCategories())).map((item) => (
           <Link
             key={item.id}
             href={item.href}

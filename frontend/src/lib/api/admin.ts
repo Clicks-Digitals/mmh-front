@@ -42,7 +42,12 @@ export type DashboardStats = {
   active_products: number;
   codes_available: number;
   low_stock_variants: number;
+  low_stock_threshold?: number;
+  out_of_stock_variants?: number;
   pending_orders: number;
+  pending_payment_24h?: number;
+  awaiting_delivery?: number;
+  manual_review?: number;
   failed_fulfillment: number;
   active_suppliers: number;
   order_status_breakdown: Array<{
@@ -78,6 +83,22 @@ export type AdminProduct = {
   short_description_ar?: string;
   description_en?: string;
   description_ar?: string;
+  instructions_en?: string;
+  instructions_ar?: string;
+  how_to_use_en?: string[];
+  how_to_use_ar?: string[];
+  region_restrictions_en?: string;
+  region_restrictions_ar?: string;
+  refund_policy_en?: string;
+  refund_policy_ar?: string;
+  region_warning_en?: string;
+  region_warning_ar?: string;
+  delivery_estimate_en?: string;
+  delivery_estimate_ar?: string;
+  account_currency?: string;
+  source?: string;
+  refundable?: boolean;
+  sort_order?: number;
   price_jod?: number | null;
   price_min_fils?: number | null;
   price_max_fils?: number | null;
@@ -144,7 +165,7 @@ export type AdminProductField = {
   delete?: boolean;
 };
 
-export type ProductWritePayload = {
+export type ProductWritePayload = Record<string, unknown> & {
   id: string;
   slug: string;
   kind: string;
@@ -165,8 +186,8 @@ export type ProductWritePayload = {
   trending?: boolean;
   source?: string;
   account_currency?: string;
-  variants?: Array<Partial<AdminVariant> & { sku: string; price_fils: number; name_en?: string }>;
-  fields?: Array<Partial<AdminProductField>>;
+  variants?: Array<Record<string, unknown>>;
+  fields?: Array<Record<string, unknown>>;
 };
 
 export type AdminVariant = {
@@ -195,6 +216,9 @@ export type AdminVariant = {
   codes_reserved?: number;
   codes_delivered?: number;
   low_stock?: boolean;
+  available_codes?: number;
+  effective_stock_status?: string;
+  available?: boolean;
 };
 
 export type AdminCategory = {
@@ -210,6 +234,7 @@ export type AdminCategory = {
   description_en?: string;
   description_ar?: string;
   parent?: number | string | null;
+  parent_slug?: string | null;
   products_count?: number;
 };
 
@@ -234,6 +259,14 @@ export type AdminRegion = {
   variants_count?: number;
 };
 
+export type AdminOrderCode = {
+  id: number | string;
+  masked: string;
+  status?: string;
+  source?: string;
+  delivered_at?: string | null;
+};
+
 export type AdminOrderItem = {
   id: number | string;
   product_id?: string;
@@ -244,10 +277,26 @@ export type AdminOrderItem = {
   quantity: number;
   unit_price_fils: number;
   line_total_fils?: number;
-  codes?: DigitalCodeRow[];
+  fulfillment_type?: string;
+  customer_fields?: Record<string, unknown> | null;
   delivery_method?: string;
+  delivery_contact?: string;
   region_name?: string;
   platform_name?: string;
+  delivered?: boolean;
+  delivered_at?: string | null;
+  delivery_note?: string;
+  available_codes_for_variant?: number | null;
+  codes?: AdminOrderCode[];
+};
+
+export type AdminRefund = {
+  payment_id: number | string;
+  provider: string;
+  id: string;
+  status: string;
+  amount: string | number;
+  currency: string;
 };
 
 export type AdminOrder = {
@@ -267,8 +316,13 @@ export type AdminOrder = {
   item_count?: number;
   user?: number | string | null;
   coupon?: number | string | null;
+  coupon_code?: string | null;
   items?: AdminOrderItem[];
   payments?: Payment[];
+  refunds?: AdminRefund[];
+  can_cancel?: boolean;
+  allowed_payment_transitions?: string[];
+  allowed_fulfillment_transitions?: string[];
   region_confirmed?: boolean;
   refund_confirmed?: boolean;
   created_at: string;
@@ -281,9 +335,21 @@ export type AdminCustomer = {
   name: string;
   phone?: string;
   status?: string;
+  notes?: string;
   locale?: string;
+  disabled?: boolean;
   created_at?: string;
+  updated_at?: string;
   orders_count?: number;
+  total_spent_fils?: number;
+  recent_orders?: Array<{
+    id: number | string;
+    order_number: string;
+    total_fils: number;
+    payment_status: string;
+    fulfillment_status: string;
+    created_at: string;
+  }>;
 };
 
 export type DigitalCodeRow = {
@@ -298,6 +364,7 @@ export type DigitalCodeRow = {
   order_item?: number | string | null;
   order_number?: string | null;
   revealed_at?: string | null;
+  delivered_at?: string | null;
   created_at?: string;
 };
 
@@ -360,9 +427,25 @@ export type Supplier = {
   last_checked_at?: string | null;
   created_at?: string;
   live_locked?: boolean;
-  mappings?: unknown[];
-  recent_orders?: unknown[];
+  mappings?: SupplierMappingRow[];
+  recent_orders?: Array<{
+    id: number | string;
+    order_item_id?: number | string;
+    supplier_ref?: string;
+    status?: string;
+    created_at?: string;
+  }>;
   recent_logs?: SupplierLog[];
+};
+
+export type SupplierMappingRow = {
+  id: number | string;
+  product: string;
+  variant?: number | string | null;
+  external_product_id: string;
+  external_name?: string;
+  ignored?: boolean;
+  created_at?: string;
 };
 
 export type SupplierLog = {
@@ -378,19 +461,36 @@ export type SupplierLog = {
 
 export type OneEpinStatus = {
   supplier?: string;
-  configured?: boolean;
   mode?: string;
   environment?: string;
   email_configured?: boolean;
   password_configured?: boolean;
   callback_configured?: boolean;
   last_balance?: string | null;
+  last_balance_currency?: string;
   last_checked_at?: string | null;
-  last_ping_at?: string | null;
-  balance?: number | null;
-  ok?: boolean;
-  detail?: string;
   live_locked?: boolean;
+};
+
+export type OneEpinPingResult = OneEpinStatus & { ok?: boolean; message?: string; detail?: string };
+
+export type OneEpinBalance = {
+  ok: boolean;
+  cached: boolean;
+  balance: string | null;
+  amount?: string | null;
+  currency: string;
+  last_checked_at: string | null;
+  message: string;
+  detail?: string;
+};
+
+export type OneEpinSyncResult = {
+  ok: boolean;
+  noop?: boolean;
+  message?: string;
+  detail?: string;
+  [key: string]: unknown;
 };
 
 export type Payment = {
@@ -406,6 +506,7 @@ export type Payment = {
   provider_capture_id?: string | null;
   external_ref?: string | null;
   external_id?: string | null;
+  paid_at?: string | null;
   created_at: string;
   updated_at?: string;
 };
@@ -420,6 +521,7 @@ export type Coupon = {
   starts_at?: string | null;
   ends_at?: string | null;
   max_uses?: number | null;
+  max_uses_per_customer?: number | null;
   used_count?: number;
   created_at?: string;
 };
@@ -432,6 +534,8 @@ export type Banner = {
   placement?: string;
   desktop_image?: string;
   mobile_image?: string;
+  desktop_image_url?: string;
+  mobile_image_url?: string;
   title_en: string;
   title_ar?: string;
   subtitle_en?: string;
@@ -476,6 +580,7 @@ export type AdminUser = {
   permissions?: string[];
   disabled?: boolean;
   date_joined?: string;
+  last_login?: string | null;
   created_at?: string;
 };
 
@@ -483,6 +588,7 @@ export type RoleInfo = {
   role: string;
   label: string;
   permissions: string[];
+  editable?: boolean;
 };
 
 export type PermissionInfo = {
@@ -492,6 +598,7 @@ export type PermissionInfo = {
 
 export type AuditLog = {
   id: number | string;
+  actor?: number | null;
   actor_email?: string | null;
   action: string;
   entity_type?: string;
@@ -511,7 +618,6 @@ export type SiteSettings = {
   facebook_url?: string;
   tiktok_url?: string;
   youtube_url?: string;
-  currency_display?: string;
   low_stock_threshold?: number;
   maintenance_mode?: boolean;
   updated_at?: string;
@@ -571,6 +677,30 @@ export function updateProduct(
     method: "PATCH",
     body: JSON.stringify(body),
   });
+}
+
+export function archiveProduct(token: string, slug: string) {
+  return adminFetch<AdminProduct>(`/admin/products/${encodeURIComponent(slug)}/archive/`, { token, method: "POST" });
+}
+
+export function unarchiveProduct(token: string, slug: string) {
+  return adminFetch<AdminProduct>(`/admin/products/${encodeURIComponent(slug)}/unarchive/`, { token, method: "POST" });
+}
+
+export function createVariant(token: string, body: Record<string, unknown> & { product: string }) {
+  return adminFetch<AdminVariant>("/admin/variants/", { token, method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateVariant(token: string, id: number | string, body: Record<string, unknown>) {
+  return adminFetch<AdminVariant>(`/admin/variants/${encodeURIComponent(String(id))}/`, {
+    token,
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteVariant(token: string, id: number | string) {
+  return adminFetch<void>(`/admin/variants/${encodeURIComponent(String(id))}/`, { token, method: "DELETE" });
 }
 
 export function deleteProduct(token: string, idOrSlug: string) {
@@ -853,13 +983,48 @@ export function getOrder(token: string, id: string) {
 export function transitionOrder(
   token: string,
   id: number | string,
-  body: { payment_status?: string; fulfillment_status?: string; refund_amount_fils?: number },
+  body: { payment_status?: string; fulfillment_status?: string; refund_amount_fils?: number; reason?: string },
 ) {
   return adminFetch<AdminOrder>(`/admin/orders/${encodeURIComponent(String(id))}/transition/`, {
     token,
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export function fulfillOrder(token: string, id: number | string) {
+  return adminFetch<AdminOrder>(`/admin/orders/${encodeURIComponent(String(id))}/fulfill/`, { token, method: "POST" });
+}
+
+export function attachOrderItemCode(
+  token: string,
+  id: number | string,
+  itemId: number | string,
+  body: { code: string; pin?: string },
+) {
+  return adminFetch<AdminOrder>(
+    `/admin/orders/${encodeURIComponent(String(id))}/items/${encodeURIComponent(String(itemId))}/codes/`,
+    { token, method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function markOrderItemDelivered(
+  token: string,
+  id: number | string,
+  itemId: number | string,
+  body: { note?: string },
+) {
+  return adminFetch<AdminOrder>(
+    `/admin/orders/${encodeURIComponent(String(id))}/items/${encodeURIComponent(String(itemId))}/mark-delivered/`,
+    { token, method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export function resendOrderEmail(token: string, id: number | string) {
+  return adminFetch<{ detail: string; sent: string[]; to: string }>(
+    `/admin/orders/${encodeURIComponent(String(id))}/resend-email/`,
+    { token, method: "POST" },
+  );
 }
 
 /* ─── Customers ─── */
@@ -872,6 +1037,18 @@ export function getCustomer(token: string, id: string) {
   return adminFetch<AdminCustomer>(`/admin/customers/${encodeURIComponent(id)}/`, { token });
 }
 
+export function updateCustomer(
+  token: string,
+  id: number | string,
+  body: { phone?: string; status?: string; notes?: string },
+) {
+  return adminFetch<AdminCustomer>(`/admin/customers/${encodeURIComponent(String(id))}/`, {
+    token,
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
 /* ─── Suppliers / 1Epin ─── */
 
 export function listSuppliers(token: string, params?: ListParams) {
@@ -882,25 +1059,44 @@ export function getSupplier(token: string, id: string) {
   return adminFetch<Supplier>(`/admin/suppliers/${encodeURIComponent(id)}/`, { token });
 }
 
+export function createSupplier(token: string, body: { slug: string; name: string; active: boolean }) {
+  return adminFetch<Supplier>("/admin/suppliers/", { token, method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateSupplier(
+  token: string,
+  id: number | string,
+  body: Partial<{ slug: string; name: string; active: boolean }>,
+) {
+  return adminFetch<Supplier>(`/admin/suppliers/${encodeURIComponent(String(id))}/`, {
+    token,
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteSupplier(token: string, id: number | string) {
+  return adminFetch<void>(`/admin/suppliers/${encodeURIComponent(String(id))}/`, { token, method: "DELETE" });
+}
+
 export function getOneEpinStatus(token: string) {
   return adminFetch<OneEpinStatus>("/admin/1epin/status/", { token });
 }
 
 export function pingOneEpin(token: string) {
-  return adminFetch<OneEpinStatus>("/admin/1epin/ping/", { token, method: "POST" });
+  return adminFetch<OneEpinPingResult>("/admin/1epin/ping/", { token, method: "POST" });
 }
 
 export function getOneEpinBalance(token: string) {
-  return adminFetch<{ balance: number | string | null; last_balance?: string | null }>("/admin/1epin/balance/", {
-    token,
-  });
+  return adminFetch<OneEpinBalance>("/admin/1epin/balance/", { token });
+}
+
+export function refreshOneEpinBalance(token: string) {
+  return adminFetch<OneEpinBalance>("/admin/1epin/balance/refresh/", { token, method: "POST" });
 }
 
 export function syncOneEpin(token: string) {
-  return adminFetch<{ ok: boolean; detail?: string; message?: string }>("/admin/1epin/sync/", {
-    token,
-    method: "POST",
-  });
+  return adminFetch<OneEpinSyncResult>("/admin/1epin/sync/", { token, method: "POST" });
 }
 
 export function listOneEpinLogs(token: string, params?: ListParams) {
@@ -968,6 +1164,17 @@ export function deleteBanner(token: string, id: number | string) {
   return adminFetch<void>(`/admin/banners/${encodeURIComponent(String(id))}/`, {
     token,
     method: "DELETE",
+  });
+}
+
+export function uploadBannerImage(token: string, id: number | string, file: File, target: "desktop" | "mobile") {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("target", target);
+  return adminFetch<Banner>(`/admin/banners/${encodeURIComponent(String(id))}/image/`, {
+    token,
+    method: "POST",
+    body: form,
   });
 }
 
@@ -1049,7 +1256,7 @@ export function createAdministrator(
 export function updateAdministrator(
   token: string,
   id: number | string,
-  body: { role?: string; title?: string; disabled?: boolean; full_name?: string },
+  body: { role?: string; title?: string; disabled?: boolean; full_name?: string; password?: string },
 ) {
   return adminFetch<AdminUser>(`/admin/administrators/${encodeURIComponent(String(id))}/`, {
     token,
@@ -1093,6 +1300,41 @@ export function updateSiteSettings(token: string, body: Partial<SiteSettings>) {
     method: "PATCH",
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * Load every page of a paginated list (page_size within the backend max of 100),
+ * stopping at `maxPages` as a safety net.
+ */
+export async function fetchAllPages<T>(
+  load: (params: ListParams) => Promise<Paginated<T> | T[]>,
+  params: ListParams = {},
+  maxPages = 20,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let page = 1; page <= maxPages; page += 1) {
+    const data = await load({ ...params, page, page_size: 100 });
+    if (Array.isArray(data)) return data;
+    out.push(...(data.results ?? []));
+    if (!data.next) break;
+  }
+  return out;
+}
+
+/* ─── Current admin ─── */
+
+export type AdminMe = {
+  id: number | string;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  kind?: string;
+  role?: string | null;
+  permissions?: string[];
+};
+
+export function getAdminMe(token: string) {
+  return apiFetch<AdminMe>("/auth/me/", { token });
 }
 
 /** Normalize list responses that may be paginated or a bare array. */
