@@ -78,6 +78,9 @@ class CodeImportBatchStatus(models.TextChoices):
     FAILED = "FAILED", "Failed"
 
 
+ORDER_LOCALES = [("en", "English"), ("ar", "Arabic")]
+
+
 class Order(models.Model):
     order_number = models.CharField(max_length=32, unique=True)
     user = models.ForeignKey(
@@ -87,6 +90,17 @@ class Order(models.Model):
     full_name = models.CharField(max_length=160)
     phone = models.CharField(max_length=40, blank=True)
     notes = models.TextField(blank=True)
+    # Internal staff notes (never shown to the customer). Edited via admin PATCH, audited.
+    staff_notes = models.TextField(blank=True)
+    # Customer language captured at checkout; every customer e-mail is sent in it.
+    locale = models.CharField(max_length=2, choices=ORDER_LOCALES, default="en")
+    # sha256 of the normalized cart (email, lines, fields, coupon, totals): reuse of open PENDING orders.
+    cart_signature = models.CharField(max_length=64, blank=True, db_index=True)
+    # Stock reservation (D2): set when a PayPal order is created; codes are held until then.
+    reserved_until = models.DateTimeField(null=True, blank=True)
+    # One-shot customer e-mails (D9).
+    codes_email_sent_at = models.DateTimeField(null=True, blank=True)
+    partial_email_sent_at = models.DateTimeField(null=True, blank=True)
     coupon = models.ForeignKey(Coupon, null=True, blank=True, on_delete=models.SET_NULL)
     subtotal_fils = models.IntegerField(default=0)
     discount_fils = models.IntegerField(default=0)
@@ -130,11 +144,17 @@ class OrderItem(models.Model):
     line_total_fils = models.IntegerField()
     product_name = models.CharField(max_length=255)
     variant_name = models.CharField(max_length=160)
+    product_name_ar = models.CharField(max_length=255, blank=True)
+    variant_name_ar = models.CharField(max_length=160, blank=True)
     customer_fields = models.JSONField(default=dict, blank=True)
+    # [{key, label_en, label_ar, value}] in definition order, captured at checkout.
+    field_details = models.JSONField(default=list, blank=True)
     delivery_method = models.CharField(max_length=32, blank=True)
     delivery_contact = models.CharField(max_length=255, blank=True)
     region_name = models.CharField(max_length=120, blank=True)
+    region_name_ar = models.CharField(max_length=120, blank=True)
     platform_name = models.CharField(max_length=120, blank=True)
+    platform_name_ar = models.CharField(max_length=120, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
     delivery_note = models.TextField(blank=True)
 
@@ -219,6 +239,8 @@ class CodeImportBatch(models.Model):
     duplicate_rows = models.IntegerField(default=0)
     failed_rows = models.IntegerField(default=0)
     error_report = models.JSONField(default=list, blank=True)
+    # D3: waiting MANUAL_REVIEW orders completed right after this import.
+    auto_delivered_orders = models.IntegerField(default=0)
     preview_rows = models.JSONField(default=list, blank=True)
     pending_file_path = models.CharField(max_length=512, blank=True)
     # AES-GCM ciphertext (base64) of the normalized rows awaiting confirmation; cleared afterwards.
@@ -249,6 +271,8 @@ class DigitalCode(models.Model):
         max_length=32, choices=DigitalCodeSource.choices, default=DigitalCodeSource.MANUAL, blank=True
     )
     code_fingerprint = models.CharField(max_length=64, unique=True, null=True, blank=True, db_index=True)
+    # sha256 of the normalized CODE text only (PIN ignored): duplicate detection + full-code search.
+    code_identity = models.CharField(max_length=64, null=True, blank=True, db_index=True)
     import_batch = models.ForeignKey(
         CodeImportBatch,
         null=True,
@@ -271,6 +295,8 @@ class DigitalCode(models.Model):
     revealed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="revealed_codes"
     )
+    # First time the customer revealed this code (order page / codes API).
+    customer_revealed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -281,3 +307,34 @@ class DigitalCode(models.Model):
 
     def __str__(self) -> str:
         return f"Code {self.id} ({self.masked})"
+
+
+class RefundStatus(models.TextChoices):
+    PENDING = "PENDING", "Pending"
+    COMPLETED = "COMPLETED", "Completed"
+    FAILED = "FAILED", "Failed"
+
+
+class Refund(models.Model):
+    """Refund ledger (D5). One row per refund, PayPal or recorded manually."""
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="refund_records")
+    payment = models.ForeignKey(Payment, null=True, blank=True, on_delete=models.SET_NULL, related_name="refund_records")
+    provider = models.CharField(max_length=32, default="manual")
+    status = models.CharField(max_length=16, choices=RefundStatus.choices, default=RefundStatus.COMPLETED)
+    amount_fils = models.IntegerField()
+    currency = models.CharField(max_length=8, default="JOD")
+    provider_amount = models.CharField(max_length=32, blank=True)
+    provider_currency = models.CharField(max_length=8, blank=True)
+    provider_refund_id = models.CharField(max_length=64, blank=True, db_index=True)
+    reason = models.CharField(max_length=500, blank=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="refunds_issued"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self) -> str:
+        return f"Refund {self.id} {self.amount_fils} fils ({self.provider})"

@@ -106,3 +106,55 @@ class AuditedModelViewSetMixin:
             entity_id=pk,
             meta=meta,
         )
+
+
+# --- Display helpers (OR-14, RO-17) ---------------------------------------------------
+
+ENTITY_NAMES = {
+    "Order": "Order",
+    "Coupon": "Coupon",
+    "DigitalCode": "Code",
+    "CodeImportBatch": "Code import",
+    "ProductVariant": "Product option",
+    "Product": "Product",
+    "User": "User",
+}
+
+
+def actor_label(entry) -> str:
+    actor = getattr(entry, "actor", None) if getattr(entry, "actor_id", None) else None
+    if actor is None:
+        return ""
+    name = (actor.get_full_name() or "").strip() if hasattr(actor, "get_full_name") else ""
+    return f"{name} ({actor.email})" if name else (actor.email or f"User #{actor.pk}")
+
+
+def entity_label(entry) -> str:
+    """Readable target, e.g. 'Order 1A2B3C4D5E6F', 'Coupon SAVE10', 'User jane@example.com'."""
+    meta = entry.meta or {}
+    kind = entry.entity_type or ""
+    name = ENTITY_NAMES.get(kind, kind)
+    if kind == "Order" and meta.get("order_number"):
+        return f"Order {meta['order_number']}"
+    if kind == "Coupon" and meta.get("code"):
+        return f"Coupon {meta['code']}"
+    if kind == "DigitalCode":
+        masked = meta.get("masked")
+        order_number = meta.get("order_number")
+        label = f"Code {masked}" if masked else f"Code #{entry.entity_id}"
+        return f"{label} (order {order_number})" if order_number else label
+    if kind == "CodeImportBatch" and meta.get("filename"):
+        return f"Code import {meta['filename']}"
+    for key in ("email", "target_email", "user_email"):
+        if meta.get(key) and kind == "User":
+            return f"User {meta[key]}"
+    if kind == "User" and entry.entity_id:
+        from django.contrib.auth import get_user_model
+
+        user = get_user_model().objects.filter(pk=entry.entity_id).only("email").first() if str(entry.entity_id).isdigit() else None
+        if user is not None:
+            return f"User {user.email}"
+    for key in ("name_en", "title_en", "slug", "name", "code", "sku"):
+        if meta.get(key):
+            return f"{name} {meta[key]}"
+    return f"{name} #{entry.entity_id}" if entry.entity_id else name

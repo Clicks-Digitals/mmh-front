@@ -48,6 +48,9 @@ class User(AbstractUser):
     email = models.EmailField(unique=True)
     kind = models.CharField(max_length=20, choices=UserKind.choices, default=UserKind.CUSTOMER)
     disabled = models.BooleanField(default=False)
+    # Embedded in every JWT as the ``tv`` claim. Bumping it (password change/reset, disable,
+    # role change) invalidates all outstanding access tokens immediately.
+    token_version = models.PositiveIntegerField(default=0)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS: list[str] = []

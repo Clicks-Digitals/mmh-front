@@ -13,6 +13,8 @@ from rest_framework.views import APIView
 
 from accounts.drf_permissions import HasAdminPermission, IsAdminUser
 from audit.services import AuditedModelViewSetMixin
+from catalog.serializers import AutoSlugMixin, _check_unique_slug
+from catalog.stock import mapping_stock_payload, supplier_is_live
 from suppliers.models import (
     Supplier,
     SupplierApiLog,
@@ -36,6 +38,7 @@ class SupplierSerializer(serializers.ModelSerializer):
     callback_configured = serializers.BooleanField(source="connection.callback_configured", read_only=True)
     last_balance = serializers.CharField(source="connection.last_balance", read_only=True)
     last_checked_at = serializers.DateTimeField(source="connection.last_checked_at", read_only=True)
+    live_purchasing = serializers.SerializerMethodField()
 
     class Meta:
         model = Supplier
@@ -44,6 +47,7 @@ class SupplierSerializer(serializers.ModelSerializer):
             "slug",
             "name",
             "active",
+            "live_purchasing",
             "created_at",
             "environment",
             "email_configured",
@@ -54,14 +58,32 @@ class SupplierSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("created_at",)
 
+    def get_live_purchasing(self, obj) -> bool:
+        """D18: True only when live purchasing is enabled for this supplier."""
+        return bool(obj.active and supplier_is_live(obj))
 
-class SupplierWriteSerializer(serializers.ModelSerializer):
+
+class SupplierWriteSerializer(AutoSlugMixin, serializers.ModelSerializer):
+    """Blank/missing ``slug`` on create is derived from ``name`` (CA-15)."""
+
+    slug_source = "name"
+    slug_fallback = "supplier"
+    slug = serializers.SlugField(max_length=50, required=False, allow_blank=True)
+
     class Meta:
         model = Supplier
-        fields = ("slug", "name", "active")
+        fields = ("id", "slug", "name", "active")
+        read_only_fields = ("id",)
+
+    def validate_slug(self, value):
+        return _check_unique_slug(self, value)
 
 
 class SupplierMappingSerializer(serializers.ModelSerializer):
+    counts_as_stock = serializers.SerializerMethodField()
+    counts_as_stock_reason = serializers.SerializerMethodField()
+    counts_as_stock_message = serializers.SerializerMethodField()
+
     class Meta:
         model = SupplierProductMapping
         fields = (
@@ -72,7 +94,25 @@ class SupplierMappingSerializer(serializers.ModelSerializer):
             "external_name",
             "ignored",
             "created_at",
+            "counts_as_stock",
+            "counts_as_stock_reason",
+            "counts_as_stock_message",
         )
+
+    def _payload(self, obj) -> dict:
+        cache = getattr(obj, "_stock_payload", None)
+        if cache is None:
+            cache = obj._stock_payload = mapping_stock_payload(obj)
+        return cache
+
+    def get_counts_as_stock(self, obj) -> bool:
+        return self._payload(obj)["counts_as_stock"]
+
+    def get_counts_as_stock_reason(self, obj):
+        return self._payload(obj)["counts_as_stock_reason"]
+
+    def get_counts_as_stock_message(self, obj) -> str:
+        return self._payload(obj)["counts_as_stock_message"]
 
 
 class SupplierOrderSerializer(serializers.ModelSerializer):
@@ -102,12 +142,18 @@ class AdminSupplierViewSet(AuditedModelViewSetMixin, viewsets.ModelViewSet):
         except ProtectedError as exc:
             raise SupplierInUse() from exc
     permission_classes = [IsAdminUser, HasAdminPermission]
-    queryset = Supplier.objects.select_related("connection").all()
+    queryset = Supplier.objects.select_related("connection").order_by("name", "id")
     search_fields = ["slug", "name"]
     filterset_fields = ["active"]
 
     def get_permissions(self):
-        self.admin_permission = "suppliers.read" if self.action in {"list", "retrieve"} else "suppliers.write"
+        if self.action == "list":
+            # RO-11: the product editor (catalog roles) needs the supplier lookup list.
+            self.admin_permission = ("suppliers.read", "catalog.read")
+        elif self.action == "retrieve":
+            self.admin_permission = "suppliers.read"
+        else:
+            self.admin_permission = "suppliers.write"
         return super().get_permissions()
 
     def get_serializer_class(self):
@@ -118,10 +164,12 @@ class AdminSupplierViewSet(AuditedModelViewSetMixin, viewsets.ModelViewSet):
     def retrieve(self, request, *args, **kwargs):
         supplier = self.get_object()
         data = SupplierSerializer(supplier).data
-        data["mappings"] = SupplierMappingSerializer(supplier.mappings.select_related("product", "variant")[:50], many=True).data
+        data["mappings"] = SupplierMappingSerializer(
+            supplier.mappings.select_related("product", "variant", "supplier", "supplier__connection")[:50], many=True
+        ).data
         data["recent_orders"] = SupplierOrderSerializer(supplier.orders.order_by("-created_at")[:20], many=True).data
         data["recent_logs"] = SupplierLogSerializer(supplier.api_logs.order_by("-created_at")[:20], many=True).data
-        data["live_locked"] = True
+        data["live_locked"] = not supplier_is_live(supplier)
         return Response(data)
 
     def perform_create(self, serializer):
@@ -130,6 +178,17 @@ class AdminSupplierViewSet(AuditedModelViewSetMixin, viewsets.ModelViewSet):
 
     def _audit_label(self, instance) -> dict:
         return {"slug": instance.slug, "name": instance.name, "active": instance.active}
+
+
+CREDENTIALS_MISSING_MESSAGE = (
+    "1Epin credentials are not configured (set ONEEPIN_EMAIL and ONEEPIN_PASSWORD on the server). "
+    "The connection was not tested."
+)
+BALANCE_TEST_MODE_MESSAGE = "Balance is not available in test mode"
+
+
+def credentials_configured() -> bool:
+    return bool(settings.ONEEPIN_EMAIL and settings.ONEEPIN_PASSWORD)
 
 
 def supplier_status_payload(supplier: Supplier) -> dict:
@@ -146,7 +205,9 @@ def supplier_status_payload(supplier: Supplier) -> dict:
         "last_balance": connection.last_balance,
         "last_balance_currency": meta.get("balance_currency", ""),
         "last_checked_at": connection.last_checked_at,
-        "live_locked": True,
+        "credentials_configured": credentials_configured(),
+        "live_purchasing": bool(supplier.active and supplier_is_live(supplier)),
+        "live_locked": not supplier_is_live(supplier),
     }
 
 
@@ -182,6 +243,13 @@ class SupplierPingView(APIView):
 
     def post(self, request):
         supplier = ensure_mock_supplier()
+        if not credentials_configured():
+            # CA-25: never report a successful test without credentials.
+            message = CREDENTIALS_MISSING_MESSAGE
+            log_supplier_action(supplier, "ping", False, message)
+            payload = supplier_status_payload(supplier)
+            payload.update({"ok": False, "message": message, "detail": message, "code": "not_configured"})
+            return Response(payload, status=status.HTTP_409_CONFLICT)
         try:
             provider = get_supplier_provider()
             result = provider.check_connection()
@@ -220,6 +288,13 @@ class SupplierBalanceRefreshView(APIView):
 
     def post(self, request):
         supplier = ensure_mock_supplier()
+        if (settings.SUPPLIER_MODE or "mock").lower() == "mock":
+            # CA-25: the mock provider has no real balance; say so instead of "Mock balance".
+            message = BALANCE_TEST_MODE_MESSAGE
+            log_supplier_action(supplier, "balance", False, message)
+            payload = _balance_payload(supplier, ok=False, message=message, cached=True)
+            payload.update({"detail": message, "code": "test_mode"})
+            return Response(payload, status=status.HTTP_409_CONFLICT)
         try:
             provider = get_supplier_provider()
             bal = provider.get_balance()

@@ -306,7 +306,9 @@ class CodeImportTests(TestCase):
             {"variant_id": self.variant.id, "code": "MANUAL-ONLY-1", "pin": "55"},
             format="json",
         )
-        self.assertEqual(dup.status_code, 400)
+        self.assertEqual(dup.status_code, 409)
+        self.assertEqual(dup.json()["code"], "duplicate_code")
+        self.assertIn("already in stock", dup.json()["detail"])
 
         deact = client.post(f"/api/v1/admin/codes/{code_id}/deactivate/")
         self.assertEqual(deact.status_code, 200)

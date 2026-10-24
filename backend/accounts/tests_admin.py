@@ -3,7 +3,6 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
-from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import AdminProfile, AdminRole, Permission, RolePermission, UserKind
 from accounts.permissions import ROLE_PERMISSIONS
@@ -26,8 +25,12 @@ User = get_user_model()
 
 
 def auth_client(user) -> APIClient:
+    """Bearer client for ``user`` carrying the *current* token_version (re-read from the DB)."""
+    from accounts.authentication import VersionedRefreshToken
+
     client = APIClient()
-    token = RefreshToken.for_user(user).access_token
+    fresh = User.objects.filter(pk=user.pk).first() or user
+    token = VersionedRefreshToken.for_user(fresh).access_token
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
     return client
 
@@ -51,6 +54,7 @@ def seed_permissions() -> None:
         ("orders.read", "Read orders"),
         ("orders.write", "Write orders"),
         ("orders.fulfill", "Fulfill"),
+        ("orders.notify", "Resend order emails to customers"),
         ("codes.read", "Codes read"),
         ("codes.manage", "Codes manage"),
         ("codes.reveal", "Reveal"),
@@ -191,7 +195,7 @@ class AdminApiTests(TestCase):
             {"payment_status": "REFUNDED"},
             format="json",
         )
-        self.assertEqual(res.status_code, 400)
+        self.assertIn(res.status_code, (400, 409))  # 409 since the D8 state machine
         self.order.refresh_from_db()
         self.assertEqual(self.order.payment_status, PaymentStatus.PENDING)
 

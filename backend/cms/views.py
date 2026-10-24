@@ -1,3 +1,5 @@
+import re
+
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import generics, serializers, status, viewsets
@@ -8,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.drf_permissions import HasAdminPermission, IsAdminUser
+from accounts.validators import normalize_whatsapp
 from audit.services import AuditedModelViewSetMixin, record_audit
 from catalog.serializers import media_absolute_url
 from cms.models import Banner, ContentPage, FAQ, SiteSettings
@@ -47,17 +50,31 @@ class PublicBannerSerializer(_BannerImageUrlsMixin, serializers.ModelSerializer)
         read_only_fields = BANNER_PUBLIC_FIELDS
 
 
+def banner_status(banner, now=None) -> str:
+    """CA-24: ``unpublished`` | ``scheduled`` (starts later) | ``expired`` (ended) | ``live``."""
+    if not banner.published:
+        return "unpublished"
+    now = now or timezone.now()
+    if banner.start_at and banner.start_at > now:
+        return "scheduled"
+    if banner.end_at and banner.end_at <= now:
+        return "expired"
+    return "live"
+
+
 class AdminBannerSerializer(serializers.ModelSerializer):
     """Stores image values as given; ``*_image_url`` are the absolute display URLs."""
 
     desktop_image_url = serializers.SerializerMethodField()
     mobile_image_url = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
 
     class Meta:
         model = Banner
         fields = BANNER_PUBLIC_FIELDS + (
             "desktop_image_url",
             "mobile_image_url",
+            "status",
             "published",
             "start_at",
             "end_at",
@@ -71,6 +88,9 @@ class AdminBannerSerializer(serializers.ModelSerializer):
 
     def get_mobile_image_url(self, obj) -> str:
         return media_absolute_url(self.context.get("request"), obj.mobile_image)
+
+    def get_status(self, obj) -> str:
+        return banner_status(obj)
 
     def validate(self, attrs):
         start = attrs.get("start_at", getattr(self.instance, "start_at", None))
@@ -111,15 +131,42 @@ class PublicContentPageSerializer(serializers.ModelSerializer):
 class PublicContentPageListSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContentPage
-        fields = ("slug", "title_en", "title_ar")
+        fields = ("slug", "title_en", "title_ar", "show_in_footer", "sort_order")
         read_only_fields = fields
+
+
+PAGE_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class AdminContentPageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContentPage
-        fields = ("id", "slug", "title_en", "title_ar", "body_en", "body_ar", "published", "updated_at")
+        fields = (
+            "id",
+            "slug",
+            "title_en",
+            "title_ar",
+            "body_en",
+            "body_ar",
+            "published",
+            "show_in_footer",
+            "sort_order",
+            "updated_at",
+        )
         read_only_fields = ("id", "updated_at")
+
+    def validate_slug(self, value: str) -> str:
+        value = (value or "").strip().lower()
+        if not PAGE_SLUG_RE.fullmatch(value):
+            raise serializers.ValidationError(
+                "Use lowercase letters, digits and single hyphens only (e.g. shipping-info)."
+            )
+        qs = ContentPage.objects.filter(slug=value)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("A page with this slug already exists")
+        return value
 
 
 ContentPageSerializer = AdminContentPageSerializer
@@ -144,6 +191,12 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = ("updated_at",)
+
+    def validate_whatsapp_number(self, value):
+        try:
+            return normalize_whatsapp(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
 
     def validate_low_stock_threshold(self, value):
         if value is not None and value < 0:
@@ -214,7 +267,7 @@ class FAQListView(generics.ListAPIView):
 class ContentPageListView(generics.ListAPIView):
     permission_classes = [AllowAny]
     serializer_class = PublicContentPageListSerializer
-    queryset = ContentPage.objects.filter(published=True).order_by("slug")
+    queryset = ContentPage.objects.filter(published=True).order_by("sort_order", "slug")
     pagination_class = None
     filter_backends: list = []
 
@@ -242,19 +295,38 @@ class AdminBannerViewSet(_ContentPermissionMixin, AuditedModelViewSetMixin, view
 
     @action(
         detail=True,
-        methods=["post"],
+        methods=["post", "delete"],
         url_path="image",
         parser_classes=[MultiPartParser, FormParser, JSONParser],
     )
     def upload_image(self, request, pk=None):
-        """Upload an image file and store its URL on ``desktop_image`` or ``mobile_image``."""
+        """POST: upload an image file into ``desktop_image`` / ``mobile_image`` (``target``).
+
+        DELETE ``?target=desktop|mobile``: clear that image (CA-24).
+        """
         from catalog.services.media import MediaUploadError, save_upload
 
         banner = self.get_object()
-        target = str(request.data.get("target") or "desktop").lower()
+        raw_target = request.query_params.get("target") if request.method == "DELETE" else None
+        target = str(raw_target or request.data.get("target") or ("" if request.method == "DELETE" else "desktop")).lower()
         field = {"desktop": "desktop_image", "mobile": "mobile_image"}.get(target)
         if not field:
-            return Response({"detail": "target must be 'desktop' or 'mobile'"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "target must be 'desktop' or 'mobile'", "code": "validation_error"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if request.method == "DELETE":
+            previous = getattr(banner, field)
+            setattr(banner, field, "")
+            banner.save(update_fields=[field, "updated_at"])
+            record_audit(
+                request.user,
+                "cms.banner.image_removed",
+                entity_type="Banner",
+                entity_id=banner.pk,
+                meta={"field": field, "previous": previous[:200], "title_en": banner.title_en},
+            )
+            return Response(AdminBannerSerializer(banner, context={"request": request}).data)
         upload = request.FILES.get("file") or request.FILES.get("image")
         if not upload:
             return Response({"detail": "file is required"}, status=status.HTTP_400_BAD_REQUEST)

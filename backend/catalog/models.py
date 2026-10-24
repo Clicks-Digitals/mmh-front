@@ -36,6 +36,16 @@ class FieldInputType(models.TextChoices):
     SELECT = "SELECT", "Select"
 
 
+class FieldInputFormat(models.TextChoices):
+    """Character rules for a required customer field (D17), enforced at checkout."""
+
+    TEXT = "text", "Any text"
+    NUMERIC = "numeric", "Digits only"
+    ALPHANUMERIC = "alphanumeric", "Letters and digits"
+    EMAIL = "email", "Email address"
+    PHONE = "phone", "Phone number"
+
+
 class StockStatus(models.TextChoices):
     IN_STOCK = "IN_STOCK", "In stock"
     OUT_OF_STOCK = "OUT_OF_STOCK", "Out of stock"
@@ -52,6 +62,9 @@ class Category(models.Model):
     artwork_url = models.CharField(max_length=512, blank=True)
     status = models.CharField(max_length=16, choices=PublishStatus.choices, default=PublishStatus.PUBLISHED)
     sort_order = models.IntegerField(default=0)
+    # D20: storefront header / mega menu / mobile menu / home tiles list published categories
+    # with show_in_menu, ordered by sort_order then name.
+    show_in_menu = models.BooleanField(default=False)
     name_en = models.CharField(max_length=160)
     name_ar = models.CharField(max_length=160, blank=True)
     description_en = models.TextField(blank=True)
@@ -60,7 +73,7 @@ class Category(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["sort_order", "slug"]
+        ordering = ["sort_order", "name_en", "slug"]
         verbose_name_plural = "categories"
 
     def __str__(self) -> str:
@@ -105,7 +118,7 @@ class Product(models.Model):
     category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name="products")
     platform = models.ForeignKey(Platform, on_delete=models.PROTECT, related_name="products")
     brand = models.CharField(max_length=120)
-    artwork_key = models.CharField(max_length=64)
+    artwork_key = models.CharField(max_length=64, blank=True, default="")
     account_currency = models.CharField(max_length=8, blank=True)
     status = models.CharField(max_length=16, choices=PublishStatus.choices, default=PublishStatus.DRAFT)
     featured = models.BooleanField(default=False)
@@ -203,6 +216,11 @@ class ProductFieldDefinition(models.Model):
     placeholder_ar = models.CharField(max_length=160, blank=True)
     help_text_en = models.CharField(max_length=255, blank=True)
     help_text_ar = models.CharField(max_length=255, blank=True)
+    input_format = models.CharField(max_length=16, choices=FieldInputFormat.choices, default=FieldInputFormat.TEXT)
+    min_length = models.PositiveIntegerField(null=True, blank=True)
+    max_length = models.PositiveIntegerField(null=True, blank=True)
+    # SELECT fields: [{"value": "eu", "label_en": "Europe", "label_ar": "أوروبا"}, ...]
+    options = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ["sort_order", "key"]

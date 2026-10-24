@@ -12,7 +12,8 @@ from commerce.throttling import COMMERCE_THROTTLE_CLASSES
 
 class PayPalCreateOrderSerializer(serializers.Serializer):
     order_number = serializers.CharField(max_length=32)
-    checkout_token = serializers.CharField(max_length=64)
+    checkout_token = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    access_token = serializers.CharField(max_length=128, required=False, allow_blank=True)
 
 
 class PayPalCaptureSerializer(serializers.Serializer):
@@ -38,11 +39,12 @@ class PayPalCreateOrderView(APIView):
         try:
             payload = create_checkout_order(
                 order_number=serializer.validated_data["order_number"],
-                checkout_token=serializer.validated_data["checkout_token"],
+                checkout_token=serializer.validated_data.get("checkout_token") or "",
+                access_token=serializer.validated_data.get("access_token") or "",
                 user=request.user,
             )
         except PaymentError as exc:
-            return Response({"detail": exc.message, "code": exc.code}, status=exc.status)
+            return Response({"detail": exc.message, "code": exc.code, **exc.extra}, status=exc.status)
         return Response(payload)
 
 

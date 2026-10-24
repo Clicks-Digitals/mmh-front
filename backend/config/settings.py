@@ -136,6 +136,8 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+    # D16: reject low-variety passwords (fewer than 5 distinct characters).
+    {"NAME": "accounts.validators.MinimumDistinctCharactersValidator", "OPTIONS": {"min_distinct": 5}},
 ]
 
 LANGUAGE_CODE = "en-us"
@@ -240,6 +242,7 @@ THROTTLE_RATES = {
     "password_reset_confirm": _rate("password_reset_confirm", "20/hour"),
     "token_refresh": _rate("token_refresh", "60/min"),
     "logout": _rate("logout", "30/min"),
+    "change_password": _rate("change_password", "10/hour"),
     "coupon": _rate("coupon", "20/min"),
     "checkout": _rate("checkout", "30/hour"),
     "order_lookup": _rate("order_lookup", "30/min"),

@@ -46,6 +46,19 @@ def fingerprint_code(code: str, pin: str | None = None) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
+def normalize_code_text(code: str) -> str:
+    """Code-only identity text: no whitespace or dashes, upper case. PIN is ignored (D10)."""
+    return re.sub(r"[\s\-]+", "", (code or "").strip().upper())
+
+
+def code_identity(code: str) -> str | None:
+    """sha256 of the normalized code text, or None for an empty code."""
+    text = normalize_code_text(code)
+    if not text:
+        return None
+    return hashlib.sha256(("code:" + text).encode("utf-8")).hexdigest()
+
+
 def encrypt_code(plaintext: str) -> tuple[str, str, str]:
     key = _key_bytes()
     nonce = os.urandom(12)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import secrets
@@ -39,15 +41,26 @@ MAX_FIELD_LENGTH = 255
 TEL_RE = re.compile(r"^\+?[0-9][0-9\s\-().]{4,24}$")
 REUSABLE_PAYMENT_STATUSES = {PaymentStatus.PENDING, PaymentStatus.AUTHORIZED}
 REUSABLE_FULFILLMENT_STATUSES = {FulfillmentStatus.NOT_STARTED, FulfillmentStatus.QUEUED}
+REUSE_WINDOW_HOURS = 72  # same as the unpaid-order expiry
+MAX_CUSTOMER_NOTE = 500
+ACCOUNT_DISABLED_MESSAGE = "This account has been disabled. Please contact support."
 
 
 class CheckoutError(Exception):
-    def __init__(self, message: str, status: int = 400, code: str = "checkout_error", field: str = ""):
+    def __init__(
+        self,
+        message: str,
+        status: int = 400,
+        code: str = "checkout_error",
+        field: str = "",
+        extra: dict | None = None,
+    ):
         super().__init__(message)
         self.message = message
         self.status = status
         self.code = code
         self.field = field
+        self.extra = extra or {}
 
 
 def jod_to_fils(amount) -> int:
@@ -87,7 +100,7 @@ def _coupon_use_counts(coupon: Coupon, *, email: str | None = None, now=None) ->
 
 
 def coupon_unusable_reason(coupon: Coupon, *, now=None, email: str | None = None) -> str | None:
-    """Internal reason a coupon cannot be used (for logs only), else None."""
+    """Reason a coupon cannot be used, else None."""
     now = now or timezone.now()
     if not coupon.active:
         return "inactive"
@@ -104,6 +117,15 @@ def coupon_unusable_reason(coupon: Coupon, *, now=None, email: str | None = None
     return None
 
 
+# OR-17 / OR-25: an existing coupon gets a specific reason; unknown/inactive stays generic.
+COUPON_REASON_ERRORS = {
+    "not_started": ("coupon_not_started", "This coupon is not active yet."),
+    "expired": ("coupon_expired", "This coupon has expired."),
+    "usage_limit": ("coupon_limit_reached", "This coupon has reached its usage limit."),
+    "customer_limit": ("coupon_customer_limit", "You have already used this coupon the maximum number of times."),
+}
+
+
 def coupon_discount_fils(coupon: Coupon, subtotal_fils: int) -> int:
     subtotal_fils = max(int(subtotal_fils or 0), 0)
     if coupon.percent_off is not None:
@@ -116,13 +138,14 @@ def coupon_discount_fils(coupon: Coupon, subtotal_fils: int) -> int:
 
 
 def resolve_coupon(code: str, *, subtotal_fils: int, email: str | None = None) -> tuple[Coupon, int]:
-    """Look up and validate a coupon. Every failure gets the same message (no enumeration)."""
+    """Look up and validate a coupon. Unknown and inactive codes share one generic message."""
     cleaned = (code or "").strip()
     coupon = Coupon.objects.filter(code__iexact=cleaned).first() if cleaned else None
     reason = "not_found" if coupon is None else coupon_unusable_reason(coupon, email=email)
     if reason:
         logger.info("Coupon rejected code=%r reason=%s", cleaned[:40], reason)
-        raise CheckoutError(INVALID_COUPON_MESSAGE, status=400, code="invalid_coupon", field="coupon_code")
+        code_name, message = COUPON_REASON_ERRORS.get(reason, ("invalid_coupon", INVALID_COUPON_MESSAGE))
+        raise CheckoutError(message, status=400, code=code_name, field="coupon_code")
     return coupon, coupon_discount_fils(coupon, subtotal_fils)
 
 
@@ -147,6 +170,7 @@ def validate_coupon(
         "discount_jod": discount / 1000,
         "total_fils": total,
         "total_jod": total / 1000,
+        "free_order": subtotal_fils > 0 and total == 0,
     }
 
 
@@ -176,36 +200,93 @@ def _resolve_variant(product: Product, raw: dict[str, Any]) -> ProductVariant:
     return variant
 
 
-def _validate_fields(product: Product, submitted: dict[str, Any] | None) -> dict[str, str]:
+ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+ALNUM_RE = re.compile(r"^[A-Za-z0-9]+$")
+
+
+def normalize_digits(value: str) -> str:
+    """ST-11: Arabic-Indic / Persian digits -> ASCII."""
+    return (value or "").translate(ARABIC_DIGITS)
+
+
+def _field_format(definition) -> str:
+    fmt = str(getattr(definition, "input_format", "") or "").lower()
+    if fmt and fmt != "text":
+        return fmt
+    # "text" is the default format: the legacy field type still decides email/phone checks.
+    if definition.type == FieldInputType.EMAIL:
+        return "email"
+    if definition.type == FieldInputType.TEL:
+        return "phone"
+    return "text"
+
+
+def _field_options(definition) -> list[dict[str, Any]]:
+    options = getattr(definition, "options", None) or []
+    return [o for o in options if isinstance(o, dict) and str(o.get("value") or "").strip()]
+
+
+def _validate_fields(product: Product, submitted: dict[str, Any] | None) -> tuple[dict[str, str], list[dict[str, str]]]:
+    """D17 validation. Returns (values by key, [{key, label_en, label_ar, value}] for the order item)."""
     submitted = submitted or {}
     cleaned: dict[str, str] = {}
+    details: list[dict[str, str]] = []
     for definition in product.fields.all():
         label = definition.label_en or definition.key
-        value = str(submitted.get(definition.key) or "").strip()
+        value = normalize_digits(str(submitted.get(definition.key) or "").strip())
         if not value:
             if definition.required:
-                raise CheckoutError(f"{label} is required", field=definition.key)
+                raise CheckoutError(f"{label} is required", field=definition.key, code="field_required")
             continue
         if len(value) > MAX_FIELD_LENGTH:
-            raise CheckoutError(f"{label} is too long", field=definition.key)
-        if definition.type == FieldInputType.EMAIL:
+            raise CheckoutError(f"{label} is too long", field=definition.key, code="invalid_field")
+        options = _field_options(definition)
+        fmt = _field_format(definition)
+        if options:
+            allowed = {str(o["value"]) for o in options}
+            if value not in allowed:
+                raise CheckoutError(f"Choose a valid option for {label}", field=definition.key, code="invalid_field")
+        elif fmt == "email":
             try:
                 validate_email(value)
             except DjangoValidationError as exc:
-                raise CheckoutError(f"{label} must be a valid email address", field=definition.key) from exc
-        elif definition.type == FieldInputType.TEL:
+                raise CheckoutError(
+                    f"{label} must be a valid email address", field=definition.key, code="invalid_field"
+                ) from exc
+        elif fmt == "phone":
             if not TEL_RE.match(value):
-                raise CheckoutError(f"{label} must be a valid phone number", field=definition.key)
+                raise CheckoutError(f"{label} must be a valid phone number", field=definition.key, code="invalid_field")
+        elif fmt == "numeric":
+            if not value.isdigit() or not value.isascii():
+                raise CheckoutError(f"{label} must contain digits only", field=definition.key, code="invalid_field")
+        elif fmt == "alphanumeric":
+            if not ALNUM_RE.match(value):
+                raise CheckoutError(
+                    f"{label} must contain only letters and digits", field=definition.key, code="invalid_field"
+                )
+        min_len = getattr(definition, "min_length", None)
+        max_len = getattr(definition, "max_length", None)
+        if min_len and len(value) < int(min_len):
+            raise CheckoutError(
+                f"{label} must be at least {min_len} characters", field=definition.key, code="invalid_field"
+            )
+        if max_len and len(value) > int(max_len):
+            raise CheckoutError(
+                f"{label} must be at most {max_len} characters", field=definition.key, code="invalid_field"
+            )
         cleaned[definition.key] = value
-    return cleaned
-
-
-def _has_supplier_mapping(variant: ProductVariant) -> bool:
-    try:
-        from suppliers.models import SupplierProductMapping
-    except Exception:  # pragma: no cover - suppliers app always installed
-        return False
-    return SupplierProductMapping.objects.filter(variant=variant, ignored=False, supplier__active=True).exists()
+        detail = {
+            "key": definition.key,
+            "label_en": definition.label_en or definition.key,
+            "label_ar": definition.label_ar or "",
+            "value": value,
+        }
+        option = next((o for o in options if str(o["value"]) == value), None)
+        if option:
+            detail["value_label_en"] = str(option.get("label_en") or value)
+            detail["value_label_ar"] = str(option.get("label_ar") or "")
+        details.append(detail)
+    return cleaned, details
 
 
 def _normalize_delivery_method(value: Any) -> str:
@@ -216,8 +297,6 @@ def _normalize_delivery_method(value: Any) -> str:
 
 
 def _build_lines(items: list[dict[str, Any]], *, default_delivery: str) -> list[dict[str, Any]]:
-    from commerce.services.inventory import available_code_counts
-
     if not items:
         raise CheckoutError("Cart is empty")
     if len(items) > MAX_LINES:
@@ -244,7 +323,7 @@ def _build_lines(items: list[dict[str, Any]], *, default_delivery: str) -> list[
                 field="quantity",
             )
         total_units += qty
-        fields = _validate_fields(product, raw.get("fields"))
+        fields, details = _validate_fields(product, raw.get("fields"))
         lines.append(
             {
                 "product": product,
@@ -252,45 +331,65 @@ def _build_lines(items: list[dict[str, Any]], *, default_delivery: str) -> list[
                 "qty": qty,
                 "line_total": variant.price_fils * qty,
                 "fields": fields,
+                "field_details": details,
                 "delivery_method": _normalize_delivery_method(raw.get("delivery_method") or default_delivery),
             }
         )
     if total_units > MAX_UNITS_PER_ORDER:
         raise CheckoutError(f"An order can contain at most {MAX_UNITS_PER_ORDER} items")
-
-    _check_stock(lines, available_code_counts)
     return lines
 
 
-def _check_stock(lines: list[dict[str, Any]], available_code_counts) -> None:
-    demo = bool(getattr(settings, "ALLOW_DEMO_AUTO_PAYMENT", False))
-    requested: dict[int, int] = {}
+def _check_stock(lines: list[dict[str, Any]]) -> None:
+    """ST-07: one 409 listing every line that cannot be fulfilled, with what is available."""
+    from commerce.services.inventory import shortage_message, stock_shortages
+
+    failures: list[dict[str, Any]] = []
     for line in lines:
         product, variant = line["product"], line["variant"]
-        if product.fulfillment_type == FulfillmentType.DIRECT_TOPUP:
-            if variant.stock_status == StockStatus.OUT_OF_STOCK:
-                raise CheckoutError(
-                    f"Out of stock: {product.name_en} ({variant.name_en})", status=409, code="out_of_stock"
-                )
-            continue
-        requested[variant.id] = requested.get(variant.id, 0) + line["qty"]
-    if demo or not requested:
-        return  # demo checkout issues demo codes instead of inventory
-    counts = available_code_counts(requested.keys())
-    for line in lines:
-        variant = line["variant"]
-        if variant.id not in requested:
-            continue
-        if requested[variant.id] <= counts.get(variant.id, 0):
-            continue
-        if _has_supplier_mapping(variant):
-            continue
+        if product.fulfillment_type == FulfillmentType.DIRECT_TOPUP and variant.stock_status == StockStatus.OUT_OF_STOCK:
+            failures.append(
+                {
+                    "product_id": product.id,
+                    "variant_id": variant.id,
+                    "product_name": product.name_en,
+                    "product_name_ar": product.name_ar or "",
+                    "variant_name": variant.name_en,
+                    "variant_name_ar": variant.name_ar or "",
+                    "requested": line["qty"],
+                    "available": 0,
+                }
+            )
+    if not getattr(settings, "ALLOW_DEMO_AUTO_PAYMENT", False):  # demo checkout issues demo codes
+        failures.extend(stock_shortages(lines))
+    if failures:
         raise CheckoutError(
-            f"Out of stock: {line['product'].name_en} ({variant.name_en})", status=409, code="out_of_stock"
+            shortage_message(failures), status=409, code="out_of_stock", extra={"lines": failures}
         )
 
 
 # --- Orders ---------------------------------------------------------------------------
+
+
+def cart_signature(*, email: str, lines: list[dict[str, Any]], coupon: Coupon | None, total: int) -> str:
+    """D1: identical cart = same email, lines (variant, qty, fields, delivery), coupon and total."""
+    payload = {
+        "email": email.lower(),
+        "coupon": coupon.code.upper() if coupon else "",
+        "total": total,
+        "lines": sorted(
+            [
+                line["product"].id,
+                line["variant"].id,
+                line["qty"],
+                line["variant"].price_fils,
+                sorted(line["fields"].items()),
+                line["delivery_method"],
+            ]
+            for line in lines
+        ),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
 def _reusable_order(idem: str, email: str) -> Order | None:
@@ -302,6 +401,21 @@ def _reusable_order(idem: str, email: str) -> Order | None:
             email__iexact=email,
             payment_status__in=REUSABLE_PAYMENT_STATUSES,
             fulfillment_status__in=REUSABLE_FULFILLMENT_STATUSES,
+        )
+        .order_by("-id")
+        .first()
+    )
+
+
+def _reusable_by_signature(signature: str, email: str) -> Order | None:
+    cutoff = timezone.now() - timedelta(hours=REUSE_WINDOW_HOURS)
+    return (
+        Order.objects.filter(
+            cart_signature=signature,
+            email__iexact=email,
+            payment_status__in=[PaymentStatus.PENDING],
+            fulfillment_status__in=REUSABLE_FULFILLMENT_STATUSES,
+            created_at__gte=cutoff,
         )
         .order_by("-id")
         .first()
@@ -320,27 +434,37 @@ def _create_order_row(**fields) -> Order:
     raise CheckoutError("Could not allocate an order number", status=503)  # pragma: no cover
 
 
+def _assert_not_disabled(email: str, user) -> None:
+    """D15: a disabled customer cannot check out (signed in or by e-mail)."""
+    if user is not None and getattr(user, "is_authenticated", False) and getattr(user, "disabled", False):
+        raise CheckoutError(ACCOUNT_DISABLED_MESSAGE, status=403, code="account_disabled")
+    if User.objects.filter(email__iexact=email, disabled=True, kind="CUSTOMER").exists():
+        raise CheckoutError(ACCOUNT_DISABLED_MESSAGE, status=403, code="account_disabled")
+
+
+def _locale(value: Any) -> str:
+    value = str(value or "").strip().lower()[:2]
+    return value if value in {"en", "ar"} else "en"
+
+
 @transaction.atomic
 def create_storefront_order(*, data: dict[str, Any], user=None) -> Order:
     """
     Create a storefront order.
 
-    Always creates Order + PENDING Payment first.
-
-    DEVELOPMENT/DEMO (ALLOW_DEMO_AUTO_PAYMENT=true):
-      applies placeholder auto-pay → fulfillment issues demo codes.
-
-    PRODUCTION / when demo auto-pay is disabled:
-      leaves payment PENDING; no codes; coupon not consumed until payment verified.
-      Real PSP integration must call commerce.services.payment.mark_payment_verified.
+    * D1: an open PENDING order for the same email + identical cart is reused (no duplicates).
+    * D6: a total of 0 after the coupon is paid immediately with provider "free".
+    * PayPal: the order stays PENDING with a PayPal payment row; codes are reserved at create-order.
+    * Demo (ALLOW_DEMO_AUTO_PAYMENT, never production): placeholder auto-pay + demo codes.
     """
     provider = str(data.get("payment_provider") or "").strip().lower()
     email = str(data["email"]).strip().lower()
     idem = str(data.get("idempotency_key") or "").strip()
+    _assert_not_disabled(email, user)
 
     existing = _reusable_order(idem, email)
     if existing:
-        if provider == "paypal":
+        if provider == "paypal" and existing.total_fils > 0:
             _prepare_paypal(existing)
         return existing
     if idem and Order.objects.filter(idempotency_key=idem).exists():
@@ -357,7 +481,18 @@ def create_storefront_order(*, data: dict[str, Any], user=None) -> Order:
         coupon, discount = resolve_coupon(str(data["coupon_code"]), subtotal_fils=subtotal, email=email)
 
     total = max(subtotal - discount, 0)
-    if provider == "paypal":
+    signature = cart_signature(email=email, lines=lines, coupon=coupon, total=total)
+    if total > 0:
+        reused = _reusable_by_signature(signature, email)
+        if reused is not None:
+            if provider == "paypal":
+                _prepare_paypal(reused)
+            logger.info("Checkout reused open order %s for an identical cart", reused.order_number)
+            return reused
+
+    _check_stock(lines)
+
+    if provider == "paypal" and total > 0:
         from commerce.services.paypal import assert_paypal_ready, quote_paypal_amount
 
         try:
@@ -371,8 +506,10 @@ def create_storefront_order(*, data: dict[str, Any], user=None) -> Order:
         user=order_user,
         email=email,
         full_name=data["full_name"],
-        phone=data.get("phone") or "",
-        notes=data.get("notes") or "",
+        phone=normalize_digits(data.get("phone") or ""),
+        notes=(data.get("notes") or "").strip()[:MAX_CUSTOMER_NOTE],
+        locale=_locale(data.get("locale")),
+        cart_signature=signature,
         coupon=coupon,
         subtotal_fils=subtotal,
         discount_fils=discount,
@@ -387,6 +524,7 @@ def create_storefront_order(*, data: dict[str, Any], user=None) -> Order:
     for line in lines:
         product, variant = line["product"], line["variant"]
         method = line["delivery_method"]
+        region = variant.region
         OrderItem.objects.create(
             order=order,
             product=product,
@@ -395,13 +533,28 @@ def create_storefront_order(*, data: dict[str, Any], user=None) -> Order:
             unit_price_fils=variant.price_fils,
             line_total_fils=line["line_total"],
             product_name=product.name_en,
+            product_name_ar=product.name_ar or "",
             variant_name=variant.name_en,
+            variant_name_ar=variant.name_ar or "",
             customer_fields=line["fields"],
+            field_details=line["field_details"],
             delivery_method=method,
             delivery_contact=email if method == "email" else "",
-            region_name=variant.region.name_en if variant.region else "",
+            region_name=region.name_en if region else "",
+            region_name_ar=(region.name_ar or "") if region else "",
             platform_name=product.platform.name_en,
+            platform_name_ar=product.platform.name_ar or "",
         )
+
+    if total == 0:
+        from commerce.services.payment import settle_free_order
+
+        try:
+            settle_free_order(order)
+        except PaymentError as exc:
+            raise CheckoutError(exc.message, status=exc.status, code=exc.code) from exc
+        order.refresh_from_db()
+        return order
 
     if provider == "paypal":
         _prepare_paypal(order)

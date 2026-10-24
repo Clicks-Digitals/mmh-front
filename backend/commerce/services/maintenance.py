@@ -9,7 +9,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from commerce.models import FulfillmentStatus, Order, Payment, PaymentStatus
-from commerce.services.orders import OrderTransitionError, transition_order
+from commerce.notifications import queue_order_expired
+from commerce.services.orders import OrderTransitionError, cancel_order
 
 logger = logging.getLogger("commerce")
 
@@ -51,15 +52,13 @@ def expire_stale_orders(*, older_than_hours: int = EXPIRE_AFTER_HOURS, limit: in
                 locked = Order.objects.select_for_update().get(pk=order.pk)
                 if locked.payment_status != PaymentStatus.PENDING:
                     continue
-                transition_order(
+                cancel_order(
                     locked,
-                    payment_status=PaymentStatus.CANCELLED,
-                    fulfillment_status=FulfillmentStatus.CANCELLED,
                     reason=f"Expired: unpaid for more than {older_than_hours}h",
+                    source="system",
+                    notify=False,
                 )
-                Payment.objects.filter(order=locked, status=PaymentStatus.PENDING).update(
-                    status=PaymentStatus.CANCELLED, updated_at=now
-                )
+                queue_order_expired(locked.id)
             counts["expired"] += 1
         except OrderTransitionError as exc:
             counts["errors"] += 1

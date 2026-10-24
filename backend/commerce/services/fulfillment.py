@@ -6,7 +6,7 @@ import secrets
 from django.conf import settings
 from django.db import transaction
 
-from commerce.crypto import encrypt_code, fingerprint_code
+from commerce.crypto import code_identity, encrypt_code, fingerprint_code
 from commerce.models import (
     DigitalCode,
     DigitalCodeSource,
@@ -72,7 +72,7 @@ def fulfill_order(order: Order, *, actor=None) -> Order:
     if order.fulfillment_status == FulfillmentStatus.COMPLETED:
         return order
 
-    if order.payment_status != PaymentStatus.PAID:
+    if order.payment_status not in {PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED}:
         raise FulfillmentError(
             f"Order {order.order_number} is not paid (payment_status={order.payment_status})",
             status=409,
@@ -140,6 +140,7 @@ def _fulfill_demo_codes(order: Order) -> None:
                 status=DigitalCodeStatus.DELIVERED,
                 source=DigitalCodeSource.CHECKOUT_DEMO,
                 code_fingerprint=fingerprint_code(demo_pin),
+                code_identity=code_identity(demo_pin),
                 ciphertext=ciphertext,
                 nonce=nonce,
                 masked=masked,

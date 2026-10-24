@@ -21,7 +21,7 @@ python manage.py runserver 8000
 Base: `http://localhost:8000/api/v1/`
 
 - Health: `/health/`, `/api/health/`, `/api/ready/`
-- Auth: `/auth/register/`, `/auth/token/`, `/auth/token/refresh/`, `/auth/logout/`, `/auth/password-reset/`, `/auth/password-reset/confirm/`, `/auth/me/`
+- Auth: `/auth/register/`, `/auth/token/`, `/auth/token/refresh/`, `/auth/logout/`, `/auth/password-reset/`, `/auth/password-reset/confirm/`, `/auth/me/` (GET, PATCH name/phone), `/auth/change-password/`
 - Catalog: `/catalog/...`
 - Checkout: `/checkout/orders/`, `/coupons/validate/`
 - Orders: `/orders/mine/`, `/orders/:order_number/`
@@ -35,6 +35,15 @@ See `.env.example`. Key production flags:
 - `DJANGO_ENV=production` (and `staging`) requires strong `SECRET_KEY`, `CODE_ENCRYPTION_KEY` (64 hex chars), DB password, CORS, `DEBUG=false`
 - `ALLOW_DEMO_AUTO_PAYMENT` must be false in production
 - `ONEEPIN_ALLOW_LIVE` remains false until payment go-live
+
+### Auth & stock rules
+
+- Login: 401 `invalid_credentials` (unknown email or wrong password), 403 `account_disabled` (only after a correct password), 429 when throttled.
+- Every JWT carries `tv` = `User.token_version`. Password change/reset, disabling an account and admin role changes bump it, so existing access tokens stop working at once (401). After a role change the refresh token still works and re-issues an access token with the new permissions; a password change or disable blacklists refresh tokens too.
+- `is_superuser` mirrors the SUPER_ADMIN role (role changes keep it in sync; migration `accounts.0005` repairs existing rows).
+- Passwords must contain at least 5 different characters (on top of Django's validators).
+- A supplier mapping counts as stock only when the supplier is active **and** live purchasing is on (`ONEEPIN_ALLOW_LIVE=true` and `SUPPLIER_MODE=live` or a LIVE supplier connection). In mock/test mode mapped variants without codes are out of stock.
+- Low stock everywhere means `available codes <= SiteSettings.low_stock_threshold` (published CODE variants only).
 - Managed Postgres often needs `POSTGRES_SSLMODE=require` (default in production)
 
 Generate encryption key: `openssl rand -hex 32` — back it up; losing it makes stored codes undecryptable.

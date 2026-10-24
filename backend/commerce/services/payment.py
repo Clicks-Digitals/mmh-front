@@ -17,11 +17,12 @@ logger = logging.getLogger("commerce")
 
 
 class PaymentError(Exception):
-    def __init__(self, message: str, status: int = 400, code: str = "payment_error"):
+    def __init__(self, message: str, status: int = 400, code: str = "payment_error", extra: dict | None = None):
         super().__init__(message)
         self.message = message
         self.status = status
         self.code = code
+        self.extra = extra or {}
 
 
 def create_pending_payment(*, order: Order, provider: str = "pending") -> Payment:
@@ -124,6 +125,10 @@ def mark_payment_verified(
     payment.save(update_fields=["status", "external_ref", "raw", "paid_at", "updated_at"])
 
     was_unpaid = order.payment_status != PaymentStatus.PAID
+    # OR-06: other open attempts (e.g. an abandoned PayPal order) can no longer settle.
+    from commerce.services.orders import void_open_payments
+
+    void_open_payments(order, keep_payment_id=payment.id, reason=f"order paid via {payment.provider}")
     if was_unpaid:
         _set_order_paid(order, actor=actor, reason=reason)
         if order.coupon_id:
@@ -208,4 +213,26 @@ def apply_demo_auto_payment(order: Order) -> Payment:
         payment,
         external_ref=f"demo-{secrets.token_hex(4)}",
         provider_payload={"note": "demo auto-pay"},
+    )
+
+
+@transaction.atomic
+def settle_free_order(order: Order) -> Payment:
+    """D6: total is 0 after the coupon -> paid immediately with provider "free", then delivery."""
+    order = Order.objects.select_for_update().get(pk=order.pk)
+    if order.total_fils != 0:
+        raise PaymentError("Only orders with a zero total can be settled for free", status=409, code="not_free")
+    payment = Payment.objects.create(
+        order=order,
+        provider="free",
+        status=PaymentStatus.PENDING,
+        amount_fils=0,
+        currency=order.currency,
+        raw={"free_order": True},
+    )
+    return mark_payment_verified(
+        payment,
+        external_ref=f"free-{order.order_number}",
+        provider_payload={"free_order": True},
+        reason="Free order (total 0 after coupon)",
     )

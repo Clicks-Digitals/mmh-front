@@ -422,7 +422,20 @@ class InventoryAllocationTests(CatalogFixture, TestCase):
         self.assertEqual(top_item["customer_fields"], {"player_id": "PLAYER-77"})
         for key in ("delivery_method", "delivery_contact", "delivered", "delivered_at", "delivery_note", "codes"):
             self.assertIn(key, code_item)
-        self.assertEqual(set(code_item["codes"][0]), {"id", "masked", "status", "source", "delivered_at"})
+        self.assertEqual(
+            set(code_item["codes"][0]),
+            {
+                "id",
+                "masked",
+                "status",
+                "status_label",
+                "source",
+                "delivered_at",
+                "revealed_at",
+                "customer_revealed_at",
+                "revealed_by_customer",
+            },
+        )
 
     def test_resend_email(self):
         self.add_codes(self.v10, 2, pin="777")
@@ -507,7 +520,7 @@ class EmailTests(CatalogFixture, TestCase):
         codes = next(m for m in mail.outbox if "your codes" in m.subject)
         link = f"https://shop.test/order/{order.order_number}?token={order.access_token}"
         self.assertIn(link, paid.body)
-        self.assertIn("10.000 JOD", paid.body)
+        self.assertIn("JOD 10.00", paid.body)
         self.assertEqual(paid.to, ["buyer@example.com"])
         self.assertEqual(paid.from_email, "MMH Test <no-reply@shop.test>")
         self.assertTrue(paid.alternatives and "text/html" in paid.alternatives[0][1])
@@ -865,7 +878,9 @@ class AdminTransitionTests(CatalogFixture, TestCase):
     def test_refund_retires_codes_and_partial_to_full(self):
         self.add_codes(self.v10, 1)
         order = self.paid_order()
-        partial = self._transition(order, payment_status="PARTIALLY_REFUNDED", reason="goodwill")
+        partial = self._transition(
+            order, payment_status="PARTIALLY_REFUNDED", reason="goodwill", refund_amount_fils=2000
+        )
         self.assertEqual(partial.status_code, 200, partial.content)
         self.assertEqual(order.items.get().codes.get().status, DigitalCodeStatus.DELIVERED)
         full = self._transition(order, payment_status="REFUNDED", reason="customer request")
@@ -878,8 +893,10 @@ class AdminTransitionTests(CatalogFixture, TestCase):
             f"/api/v1/orders/{order.order_number}/codes/", {"access_token": order.access_token}, format="json"
         )
         self.assertEqual(reveal.status_code, 409)
-        # Refunded orders are no longer guarded by "refund first"; COMPLETED is still terminal (400, not 409).
-        self.assertEqual(self._transition(order, fulfillment_status="CANCELLED").status_code, 400)
+        # Refunded orders are no longer guarded by "refund first"; a completed order cannot be cancelled.
+        res = self._transition(order, fulfillment_status="CANCELLED")
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.json()["code"], "not_cancellable")
 
 
 @override_settings(**BASE_SETTINGS)
@@ -966,7 +983,7 @@ class CheckoutValidationTests(CatalogFixture, TestCase):
     def test_stock_rules(self):
         DigitalCode.objects.filter(variant=self.v20).delete()
         res = self.post_checkout(items=[{"product_id": self.gift.id, "variant_id": self.v20.id}])
-        self.assertCheckoutError(res, 409, "Out of stock")
+        self.assertCheckoutError(res, 409, "out of stock")
         self.assertEqual(res.json()["code"], "out_of_stock")
         # Two lines of the same variant are summed against stock.
         self.add_codes(self.v20, 1)
@@ -979,10 +996,16 @@ class CheckoutValidationTests(CatalogFixture, TestCase):
         SupplierProductMapping.objects.create(
             supplier=supplier, product=self.gift, variant=self.v20, external_product_id="EXT-20"
         )
-        self.assertEqual(self.post_checkout(items=[line, line]).status_code, 201)
+        # D18: a mock/test supplier mapping does not count as stock...
+        self.assertEqual(self.post_checkout(items=[line, line]).status_code, 409)
+        # ...a live-purchasing one does.
+        from django.db.models import Q
+
+        with patch("catalog.stock._stock_mapping_filter", return_value=Q(ignored=False, supplier__active=True)):
+            self.assertEqual(self.post_checkout(items=[line, line]).status_code, 201)
         # DIRECT_TOPUP respects stock_status.
         ProductVariant.objects.filter(pk=self.t1.pk).update(stock_status=StockStatus.OUT_OF_STOCK)
-        self.assertCheckoutError(self.post_checkout(items=[self.topup_item()]), 409, "Out of stock")
+        self.assertCheckoutError(self.post_checkout(items=[self.topup_item()]), 409, "out of stock")
 
     def test_delivery_method(self):
         bad = self.post_checkout(
@@ -1040,17 +1063,27 @@ class CouponTests(CatalogFixture, TestCase):
         self.assertEqual(clamp["discount_fils"], 10000)
         self.assertEqual(clamp["total_fils"], 0)
 
-    def test_uniform_error_message(self):
+    def test_specific_reasons_for_existing_coupons_generic_for_unknown(self):
+        """OR-17/OR-25: unknown + inactive stay generic; existing coupons say why."""
         now = timezone.now()
         Coupon.objects.create(code="OFF", percent_off="5", active=False)
         Coupon.objects.create(code="OLD", percent_off="5", ends_at=now - timedelta(days=1))
         Coupon.objects.create(code="SOON", percent_off="5", starts_at=now + timedelta(days=1))
         Coupon.objects.create(code="FULL", percent_off="5", max_uses=1, used_count=1)
-        for code in ("MISSING", "OFF", "OLD", "SOON", "FULL"):
+        expected = {
+            "MISSING": "invalid_coupon",
+            "OFF": "invalid_coupon",
+            "OLD": "coupon_expired",
+            "SOON": "coupon_not_started",
+            "FULL": "coupon_limit_reached",
+        }
+        for code, error_code in expected.items():
             res = APIClient().post("/api/v1/coupons/validate/", {"code": code, "subtotal_fils": 10000}, format="json")
             self.assertEqual(res.status_code, 400, code)
-            self.assertEqual(res.json()["detail"], INVALID_COUPON_MESSAGE)
+            self.assertEqual(res.json()["code"], error_code, code)
             self.assertFalse(res.json()["valid"])
+            if error_code == "invalid_coupon":
+                self.assertEqual(res.json()["detail"], INVALID_COUPON_MESSAGE)
 
     def test_validate_endpoint_accepts_fils_and_jod(self):
         Coupon.objects.create(code="TEN", percent_off="10")
@@ -1065,7 +1098,7 @@ class CouponTests(CatalogFixture, TestCase):
         create_storefront_order(data=self.order_data(coupon_code="ONCE"))
         with self.assertRaises(CheckoutError) as ctx:
             create_storefront_order(data=self.order_data(coupon_code="ONCE", email="second@example.com"))
-        self.assertEqual(ctx.exception.message, INVALID_COUPON_MESSAGE)
+        self.assertEqual(ctx.exception.code, "coupon_limit_reached")
         Order.objects.filter(coupon=coupon).update(created_at=timezone.now() - timedelta(hours=2))
         self.assertTrue(validate_coupon("ONCE", subtotal_fils=10000)["valid"])
 
@@ -1254,8 +1287,8 @@ class DashboardTests(CatalogFixture, TestCase):
         self.assertEqual(body["awaiting_delivery"], 1)
         self.assertEqual(body["pending_payment_24h"], 1)
         self.assertEqual(body["pending_orders"], 2)
-        # CODE variants below 3 available: v20 (1), v_hidden (0), draft_variant (0); v10 has 5.
-        self.assertEqual(body["low_stock_variants"], 3)
+        # D24: published CODE variants with available <= 3: v20 (1). v_hidden is unpublished; v10 has 5.
+        self.assertEqual(body["low_stock_variants"], 1)
         self.assertEqual(body["low_stock_threshold"], 3)
         for key in ("revenue_fils", "orders_count", "codes_available", "recent_orders", "top_products"):
             self.assertIn(key, body)

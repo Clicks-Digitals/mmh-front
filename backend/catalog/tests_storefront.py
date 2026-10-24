@@ -142,6 +142,17 @@ class EffectiveStockTests(Base):
         self.assertEqual(body["variants"][0]["stock_status"], "OUT_OF_STOCK")
         self.assertFalse(body["in_stock"])
 
+    def test_mapping_without_live_purchasing_is_not_stock(self):
+        # D18: mock/test/locked suppliers never make a variant sellable.
+        SupplierProductMapping.objects.create(
+            supplier=self.supplier, product=self.product, variant=self.variant, external_product_id="X0"
+        )
+        with override_settings(ONEEPIN_ALLOW_LIVE=False, SUPPLIER_MODE="live"):
+            self.assertEqual(self._public()["variants"][0]["stock_status"], "OUT_OF_STOCK")
+        with override_settings(ONEEPIN_ALLOW_LIVE=True, SUPPLIER_MODE="test"):
+            self.assertEqual(self._public()["variants"][0]["stock_status"], "OUT_OF_STOCK")
+
+    @override_settings(ONEEPIN_ALLOW_LIVE=True, SUPPLIER_MODE="live")
     def test_active_supplier_mapping_makes_in_stock(self):
         mapping = SupplierProductMapping.objects.create(
             supplier=self.supplier, product=self.product, variant=self.variant, external_product_id="X1"

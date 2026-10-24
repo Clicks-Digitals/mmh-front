@@ -48,7 +48,13 @@ class AuthFlowTests(TestCase):
     def test_disabled_user_cannot_login(self):
         self.customer.disabled = True
         self.customer.save(update_fields=["disabled"])
-        self.assertEqual(login(APIClient(), "shopper@example.com", STRONG).status_code, 401)
+        res = login(APIClient(), "shopper@example.com", STRONG)
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.data["code"], "account_disabled")
+        # A wrong password never reveals that the account is disabled.
+        res = login(APIClient(), "shopper@example.com", "wrong-password-1")
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(res.data["code"], "invalid_credentials")
 
     def test_disabled_user_blocked_mid_session(self):
         client = APIClient()
@@ -380,17 +386,36 @@ class EscalationMatrixTests(TestCase):
         self.assertEqual(self._patch(self.admin, self.admin, {"title": "Ops lead"}).status_code, 200)
 
     def test_last_super_admin_protected(self):
-        root = User.objects.create_user(
+        from accounts.admin_views import _other_active_super_admins
+
+        # A superuser demoted to VIEWER is not an effective super admin (D14 / RO-06).
+        demoted = User.objects.create_user(
             email="root@mmh.test", password=STRONG, kind=UserKind.ADMIN, is_staff=True, is_superuser=True
         )
-        AdminProfile.objects.create(user=root, role=AdminRole.VIEWER)
+        AdminProfile.objects.create(user=demoted, role=AdminRole.VIEWER)
+        self.assertEqual(self._patch(demoted, self.super_admin, {"role": AdminRole.ADMIN}).status_code, 403)
+        self.assertEqual(_other_active_super_admins(self.super_admin), 0)
+        # The last SUPER_ADMIN cannot be demoted or disabled.
+        with mock.patch("accounts.admin_views._other_active_super_admins", return_value=0):
+            other = make_admin("sa-x@mmh.test", AdminRole.SUPER_ADMIN)
+            self.assertEqual(self._patch(other, self.super_admin, {"role": AdminRole.ADMIN}).status_code, 400)
+            self.assertEqual(self._patch(other, self.super_admin, {"disabled": True}).status_code, 400)
+        # A superuser without a profile counts as an effective SUPER_ADMIN.
+        root = User.objects.create_user(
+            email="root2@mmh.test", password=STRONG, kind=UserKind.ADMIN, is_staff=True, is_superuser=True
+        )
+        self.assertEqual(_other_active_super_admins(self.super_admin), 2)  # sa-x + root2
         res = self._patch(root, self.super_admin, {"role": AdminRole.ADMIN})
-        self.assertEqual(res.status_code, 400)
-        res = self._patch(root, self.super_admin, {"disabled": True})
-        self.assertEqual(res.status_code, 400)
-        # With a second SUPER_ADMIN it is allowed.
-        other = make_admin("sa2@mmh.test", AdminRole.SUPER_ADMIN)
-        self.assertEqual(self._patch(other, self.super_admin, {"disabled": True}).status_code, 200)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.super_admin.refresh_from_db()
+        self.assertFalse(self.super_admin.is_superuser)
+        self.assertEqual(res.data["role"], AdminRole.ADMIN)
+        # Promoting syncs is_superuser on.
+        res = self._patch(root, self.viewer, {"role": AdminRole.SUPER_ADMIN})
+        self.assertEqual(res.status_code, 200)
+        self.viewer.refresh_from_db()
+        self.assertTrue(self.viewer.is_superuser)
+        self.assertEqual(res.data["permissions"], ["*"])
 
     def test_disable_enable_and_audit(self):
         old_refresh = login(APIClient(), "vw@mmh.test", STRONG).data["refresh"]
@@ -398,7 +423,7 @@ class EscalationMatrixTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.data["disabled"])
         self.assertTrue(AuditLog.objects.filter(action="admin.disabled", entity_id=str(self.viewer.pk)).exists())
-        self.assertEqual(login(APIClient(), "vw@mmh.test", STRONG).status_code, 401)
+        self.assertEqual(login(APIClient(), "vw@mmh.test", STRONG).status_code, 403)
         self.assertEqual(
             APIClient().post("/api/v1/auth/token/refresh/", {"refresh": old_refresh}, format="json").status_code, 401
         )
@@ -437,7 +462,7 @@ class RolePermissionSourceOfTruthTests(TestCase):
         return auth_client(actor).put(f"/api/v1/admin/roles/{role}/permissions/", {"permissions": perms}, format="json")
 
     def test_migration_seeded_defaults(self):
-        self.assertEqual(Permission.objects.count(), 18)
+        self.assertEqual(Permission.objects.count(), 19)
         for role, keys in DEFAULT_ROLE_PERMISSIONS.items():
             if role == AdminRole.SUPER_ADMIN:
                 self.assertFalse(RolePermission.objects.filter(role=role).exists())

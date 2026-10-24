@@ -70,9 +70,13 @@ class PublicPagesAndFaqTests(TestCase):
         self.assertEqual(set(res.json()), {"slug", "title_en", "title_ar", "body_en", "body_ar", "updated_at"})
         self.assertEqual(self.client.get("/api/v1/cms/pages/hidden/").status_code, 404)
         rows = self.client.get("/api/v1/cms/pages/").json()
-        self.assertEqual(rows, [{"slug": "terms", "title_en": "Terms", "title_ar": "الشروط"}])
+        self.assertEqual(
+            rows,
+            [{"slug": "terms", "title_en": "Terms", "title_ar": "الشروط", "show_in_footer": False, "sort_order": 0}],
+        )
 
     def test_faq_fields(self):
+        FAQ.objects.all().delete()  # drop the FAQs seeded by cms migration 0006
         FAQ.objects.create(question_en="Q", answer_en="A", published=True)
         FAQ.objects.create(question_en="Hidden", answer_en="A", published=False)
         rows = self.client.get("/api/v1/cms/faqs/").json()

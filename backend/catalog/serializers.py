@@ -1,20 +1,65 @@
 from __future__ import annotations
 
+import re
+import uuid
+from decimal import Decimal, InvalidOperation
+
 from django.conf import settings
 from django.db import transaction
+from django.utils.text import slugify
 from rest_framework import serializers
 
+from accounts.validators import normalize_digits
 from catalog.models import (
     Category,
+    FieldInputType,
+    FulfillmentType,
     MediaAsset,
     Platform,
     Product,
     ProductFieldDefinition,
+    ProductKind,
     ProductVariant,
+    PublishStatus,
     Region,
     StockStatus,
 )
-from catalog.stock import variant_stock
+from catalog.slugs import key_from_label, unique_slug
+from catalog.stock import available_code_counts, available_quantities, mapping_stock_payload, variant_stock
+
+
+class AutoSlugMixin:
+    """CA-15: a blank/missing ``slug`` on create is derived from ``slug_source`` (unique)."""
+
+    slug_source = "name_en"
+    slug_fallback = "item"
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        slug = (attrs.get("slug") or "").strip()
+        if not slug and (self.instance is None or "slug" in attrs):
+            model = self.Meta.model
+            source = attrs.get(self.slug_source) or getattr(self.instance, self.slug_source, "") or ""
+            attrs["slug"] = unique_slug(
+                model, source, fallback=self.slug_fallback, exclude_pk=getattr(self.instance, "pk", None)
+            )
+        return attrs
+
+
+def _optional_slug_field():
+    return serializers.SlugField(max_length=50, required=False, allow_blank=True)
+
+
+def _check_unique_slug(serializer, value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return value
+    qs = serializer.Meta.model.objects.filter(slug=value)
+    if serializer.instance is not None:
+        qs = qs.exclude(pk=serializer.instance.pk)
+    if qs.exists():
+        raise serializers.ValidationError("This slug is already used")
+    return value
 
 
 def media_absolute_url(request, url: str) -> str:
@@ -25,10 +70,13 @@ def media_absolute_url(request, url: str) -> str:
     return url
 
 
-class CategorySerializer(serializers.ModelSerializer):
-    """Admin category serializer (all storefront fields writable)."""
+class CategorySerializer(AutoSlugMixin, serializers.ModelSerializer):
+    """Admin category serializer (all storefront fields writable; blank slug -> from name_en)."""
 
+    slug_fallback = "category"
+    slug = _optional_slug_field()
     products_count = serializers.IntegerField(read_only=True, required=False)
+    children = serializers.SerializerMethodField()
     parent = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all(), required=False, allow_null=True)
     parent_slug = serializers.CharField(source="parent.slug", read_only=True, allow_null=True, default=None)
 
@@ -44,15 +92,23 @@ class CategorySerializer(serializers.ModelSerializer):
             "artwork_url",
             "status",
             "sort_order",
+            "show_in_menu",
             "name_en",
             "name_ar",
             "description_en",
             "description_ar",
             "products_count",
+            "children",
             "created_at",
             "updated_at",
         )
         read_only_fields = ("created_at", "updated_at")
+
+    def validate_slug(self, value):
+        return _check_unique_slug(self, value)
+
+    def get_children(self, obj) -> list[dict]:
+        return [{"id": c.id, "slug": c.slug, "name_en": c.name_en} for c in obj.children.all()]
 
     def validate_parent(self, parent):
         if parent is None or self.instance is None:
@@ -81,6 +137,7 @@ class PublicCategorySerializer(serializers.ModelSerializer):
             "artwork_key",
             "artwork_url",
             "sort_order",
+            "show_in_menu",
             "name_en",
             "name_ar",
             "description_en",
@@ -106,8 +163,13 @@ class PublicRegionSerializer(serializers.ModelSerializer):
         fields = ("id", "slug", "currency", "locked", "name_en", "name_ar")
 
 
-class PlatformSerializer(serializers.ModelSerializer):
+class PlatformSerializer(AutoSlugMixin, serializers.ModelSerializer):
+    slug_fallback = "platform"
+    slug = _optional_slug_field()
     products_count = serializers.IntegerField(read_only=True, required=False)
+
+    def validate_slug(self, value):
+        return _check_unique_slug(self, value)
 
     class Meta:
         model = Platform
@@ -126,8 +188,13 @@ class PlatformSerializer(serializers.ModelSerializer):
         read_only_fields = ("created_at", "updated_at")
 
 
-class RegionSerializer(serializers.ModelSerializer):
+class RegionSerializer(AutoSlugMixin, serializers.ModelSerializer):
+    slug_fallback = "region"
+    slug = _optional_slug_field()
     variants_count = serializers.IntegerField(read_only=True, required=False)
+
+    def validate_slug(self, value):
+        return _check_unique_slug(self, value)
 
     class Meta:
         model = Region
@@ -147,12 +214,17 @@ class VariantSerializer(serializers.ModelSerializer):
     available_codes = serializers.SerializerMethodField()
     effective_stock_status = serializers.SerializerMethodField()
     available = serializers.SerializerMethodField()
+    available_quantity = serializers.SerializerMethodField()
+    product_name = serializers.CharField(source="product.name_en", read_only=True)
+    fulfillment_type = serializers.CharField(source="product.fulfillment_type", read_only=True)
 
     class Meta:
         model = ProductVariant
         fields = (
             "id",
             "product",
+            "product_name",
+            "fulfillment_type",
             "sku",
             "external_id",
             "denomination",
@@ -179,14 +251,31 @@ class VariantSerializer(serializers.ModelSerializer):
             "available_codes",
             "effective_stock_status",
             "available",
+            "available_quantity",
         )
 
     def _stock(self, obj) -> tuple[str, int]:
         cache = getattr(obj, "_stock_cache", None)
         if cache is None:
-            cache = variant_stock(obj)
+            net = self.context.get("net_available")
+            if net is None or obj.pk not in net:
+                net = available_code_counts([obj.pk])
+            cache = variant_stock(obj, net_available=net)
             obj._stock_cache = cache
         return cache
+
+    def get_available_quantity(self, obj) -> int | None:
+        if obj.product.fulfillment_type != FulfillmentType.CODE:
+            return None
+        return min(self._stock(obj)[1], 99)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # RO-04 / RO-11: roles that only read variants for the code-import picker do not
+        # need purchase costs.
+        if self.context.get("hide_cost"):
+            data.pop("cost_fils", None)
+        return data
 
     def get_available_codes(self, obj) -> int:
         return self._stock(obj)[1]
@@ -213,7 +302,8 @@ class VariantSerializer(serializers.ModelSerializer):
 
             threshold = SiteSettings.load().low_stock_threshold
             self.context["low_stock_threshold"] = threshold
-        return self.get_codes_available(obj) < threshold
+        # D24: low stock means available <= threshold (everywhere).
+        return self.get_codes_available(obj) <= threshold
 
 
 class VariantWriteSerializer(serializers.ModelSerializer):
@@ -225,6 +315,11 @@ class VariantWriteSerializer(serializers.ModelSerializer):
         queryset=Region.objects.all(), required=False, allow_null=True
     )
     delete = serializers.BooleanField(required=False, default=False, write_only=True)
+    # CA-21: optional; derived by fill_variant_defaults() when blank.
+    sku = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    denomination = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    package_value = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    package_currency = serializers.CharField(max_length=8, required=False, allow_blank=True)
 
     class Meta:
         model = ProductVariant
@@ -249,7 +344,7 @@ class VariantWriteSerializer(serializers.ModelSerializer):
             "region",
             "delete",
         )
-        extra_kwargs = {"sku": {"validators": []}}
+
 
     def validate_price_fils(self, value: int) -> int:
         if value is None or value < 0:
@@ -296,44 +391,108 @@ class VariantWriteSerializer(serializers.ModelSerializer):
         return VariantSerializer(fresh, context=self.context).data
 
 
+FIELD_PUBLIC_FIELDS = (
+    "id",
+    "key",
+    "type",
+    "required",
+    "sort_order",
+    "label_en",
+    "label_ar",
+    "placeholder_en",
+    "placeholder_ar",
+    "help_text_en",
+    "help_text_ar",
+    "input_format",
+    "min_length",
+    "max_length",
+    "options",
+)
+
+FIELD_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+
+
 class FieldSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductFieldDefinition
-        fields = (
-            "id",
-            "key",
-            "type",
-            "required",
-            "sort_order",
-            "label_en",
-            "label_ar",
-            "placeholder_en",
-            "placeholder_ar",
-            "help_text_en",
-            "help_text_ar",
-        )
+        fields = FIELD_PUBLIC_FIELDS
+
+
+def normalize_field_options(value) -> list[dict]:
+    """Validate SELECT options: list of ``{value, label_en, label_ar}`` (value derived from label_en)."""
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise serializers.ValidationError("Options must be a list")
+    out, seen = [], set()
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            raise serializers.ValidationError(f"Option {idx + 1} must be an object")
+        label_en = str(raw.get("label_en") or "").strip()
+        label_ar = str(raw.get("label_ar") or "").strip()
+        val = str(raw.get("value") or "").strip()
+        if not label_en:
+            raise serializers.ValidationError(f"Option {idx + 1}: English label is required")
+        if not val:
+            val = key_from_label(label_en, fallback=f"option_{idx + 1}")
+        if len(val) > 120 or len(label_en) > 160 or len(label_ar) > 160:
+            raise serializers.ValidationError(f"Option {idx + 1} is too long")
+        if val in seen:
+            raise serializers.ValidationError(f"Option value '{val}' is used twice")
+        seen.add(val)
+        out.append({"value": val, "label_en": label_en, "label_ar": label_ar})
+    return out
 
 
 class FieldWriteSerializer(serializers.ModelSerializer):
+    """D17 / CA-22. ``key`` is optional: derived from ``label_en`` (lowercase_with_underscores)."""
+
     id = serializers.IntegerField(required=False)
     delete = serializers.BooleanField(required=False, default=False, write_only=True)
+    key = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    options = serializers.JSONField(required=False)
 
     class Meta:
         model = ProductFieldDefinition
-        fields = (
-            "id",
-            "key",
-            "type",
-            "required",
-            "sort_order",
-            "label_en",
-            "label_ar",
-            "placeholder_en",
-            "placeholder_ar",
-            "help_text_en",
-            "help_text_ar",
-            "delete",
-        )
+        fields = FIELD_PUBLIC_FIELDS + ("delete",)
+        # Uniqueness of (product, key) is enforced in ProductWriteSerializer._upsert_fields.
+        validators: list = []
+
+    def validate_key(self, value: str) -> str:
+        value = (value or "").strip()
+        if value and not FIELD_KEY_RE.fullmatch(value):
+            raise serializers.ValidationError(
+                "Key must start with a letter and use only letters, digits and underscores"
+            )
+        return value
+
+    def validate_options(self, value):
+        return normalize_field_options(value)
+
+    def validate(self, attrs):
+        if attrs.get("delete"):
+            return attrs
+        existing = self.instance
+        if existing is None and attrs.get("id"):
+            existing = ProductFieldDefinition.objects.filter(pk=attrs["id"]).first()
+
+        def merged(name, default=None):
+            if name in attrs:
+                return attrs[name]
+            return getattr(existing, name, default) if existing is not None else default
+
+        if existing is None and not (attrs.get("label_en") or "").strip():
+            raise serializers.ValidationError({"label_en": ["English label is required"]})
+        ftype = merged("type", FieldInputType.TEXT)
+        options = merged("options", []) or []
+        if ftype == FieldInputType.SELECT and not options:
+            raise serializers.ValidationError({"options": ["A dropdown field needs at least one option"]})
+        min_len, max_len = merged("min_length"), merged("max_length")
+        if max_len is not None and max_len < 1:
+            raise serializers.ValidationError({"max_length": ["Maximum length must be at least 1"]})
+        if min_len is not None and max_len is not None and min_len > max_len:
+            raise serializers.ValidationError({"max_length": ["Maximum length must be >= minimum length"]})
+        return attrs
 
 
 class ProductListSerializer(serializers.ModelSerializer):
@@ -418,13 +577,8 @@ class ProductListSerializer(serializers.ModelSerializer):
         labels = getattr(obj, "_region_labels", None)
         if labels is not None:
             return labels
-        return sorted(
-            {
-                v.region.name_en
-                for v in obj.variants.select_related("region").all()
-                if v.region_id
-            }
-        )
+        # CA-20: only published variants define the regions shown in lists.
+        return sorted({v.region.name_en for v in obj.variants.all() if v.region_id and v.published})
 
     def get_primary_image_url(self, obj) -> str:
         """Primary uploaded media, else ``image_url``, else "" (never a guessed path)."""
@@ -469,9 +623,11 @@ class ProductDetailSerializer(ProductListSerializer):
     category = CategorySerializer(read_only=True)
     platform = PlatformSerializer(read_only=True)
     supplier_mappings = serializers.SerializerMethodField()
+    warnings = serializers.SerializerMethodField()
 
     class Meta(ProductListSerializer.Meta):
         fields = ProductListSerializer.Meta.fields + (
+            "warnings",
             "description_en",
             "description_ar",
             "instructions_en",
@@ -498,6 +654,13 @@ class ProductDetailSerializer(ProductListSerializer):
             "supplier_mappings",
         )
 
+    def get_warnings(self, obj) -> list[str]:
+        """CA-20: publishing is allowed, but a published product with nothing to buy is flagged."""
+        warnings = []
+        if obj.status == PublishStatus.PUBLISHED and not any(v.published for v in obj.variants.all()):
+            warnings.append("no_published_variants")
+        return warnings
+
     def get_supplier_mappings(self, obj) -> list[dict]:
         rows = []
         qs = obj.supplier_mappings.select_related("supplier", "variant").all()
@@ -515,6 +678,7 @@ class ProductDetailSerializer(ProductListSerializer):
                     "external_name": m.external_name,
                     "ignored": m.ignored,
                     "created_at": m.created_at,
+                    **mapping_stock_payload(m),
                 }
             )
         return rows
@@ -530,6 +694,7 @@ class PublicVariantSerializer(serializers.ModelSerializer):
     region = serializers.SerializerMethodField()
     stock_status = serializers.SerializerMethodField()
     available = serializers.SerializerMethodField()
+    available_quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductVariant
@@ -553,14 +718,34 @@ class PublicVariantSerializer(serializers.ModelSerializer):
             "region_locked",
             "region",
             "available",
+            "available_quantity",
         )
 
     def _status(self, obj) -> str:
         cache = getattr(obj, "_stock_cache", None)
         if cache is None:
-            cache = variant_stock(obj, fulfillment_type=self.context.get("fulfillment_type"))
+            cache = variant_stock(
+                obj,
+                fulfillment_type=self.context.get("fulfillment_type"),
+                net_available=self.context.get("net_available"),
+            )
             obj._stock_cache = cache
         return cache[0]
+
+    def get_available_quantity(self, obj) -> int | None:
+        """D2: CODE variants -> min(sellable codes, 99) (0 when out of stock); top-ups -> null."""
+        ftype = self.context.get("fulfillment_type") or obj.product.fulfillment_type
+        if ftype != FulfillmentType.CODE:
+            return None
+        if self._status(obj) != StockStatus.IN_STOCK:
+            return 0
+        qty = (self.context.get("available_quantity") or {}).get(obj.pk)
+        if qty is None:
+            qty = available_quantities([obj.pk]).get(obj.pk, 0)
+        if qty == 0 and getattr(obj, "_has_supplier_mapping", False):
+            # Supplier-backed (live) stock: the store may sell up to the per-order maximum.
+            return min(obj.max_quantity or 99, 99)
+        return qty
 
     def get_stock_status(self, obj) -> str:
         """Effective status: manual override + available codes / supplier mapping."""
@@ -619,14 +804,33 @@ class PublicProductSerializer(ProductListSerializer):
     def _published_variants(self, obj) -> list[ProductVariant]:
         return [v for v in obj.variants.all() if v.published]
 
+    def _stock_maps(self, obj) -> tuple[dict, dict]:
+        """Reservation-aware counts for this product's CODE variants (batched per list page
+        when the view pre-fills ``net_available`` / ``available_quantity`` in the context)."""
+        net = self.context.setdefault("net_available", {})
+        qty = self.context.setdefault("available_quantity", {})
+        if obj.fulfillment_type == FulfillmentType.CODE:
+            missing = [v.pk for v in self._published_variants(obj) if v.pk not in net]
+            if missing:
+                net.update(available_code_counts(missing))
+                qty.update(available_quantities(missing))
+        return net, qty
+
     def get_variants(self, obj) -> list[dict]:
-        context = {**self.context, "fulfillment_type": obj.fulfillment_type}
+        net, qty = self._stock_maps(obj)
+        context = {
+            **self.context,
+            "fulfillment_type": obj.fulfillment_type,
+            "net_available": net,
+            "available_quantity": qty,
+        }
         return PublicVariantSerializer(self._published_variants(obj), many=True, context=context).data
 
     def get_in_stock(self, obj) -> bool:
+        net, _ = self._stock_maps(obj)
         for v in self._published_variants(obj):
             if getattr(v, "_stock_cache", None) is None:
-                v._stock_cache = variant_stock(v, fulfillment_type=obj.fulfillment_type)
+                v._stock_cache = variant_stock(v, fulfillment_type=obj.fulfillment_type, net_available=net)
             if v._stock_cache[0] == StockStatus.IN_STOCK:
                 return True
         return False
@@ -647,7 +851,77 @@ class PublicProductSerializer(ProductListSerializer):
         return max(prices) / 1000.0 if prices else None
 
 
+_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def number_from_name(name: str) -> Decimal | None:
+    """First number in a variant name: ``"$10"`` -> 10, ``"1,000 V-Bucks"`` -> 1000."""
+    match = _NUMBER_RE.search(normalize_digits(name or ""))
+    if not match:
+        return None
+    try:
+        return Decimal(match.group().replace(",", ""))
+    except InvalidOperation:
+        return None
+
+
+def _plain_number(value: Decimal) -> str:
+    text = format(value.normalize(), "f") if value == value.to_integral() else format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def fill_variant_defaults(item: dict, product: Product, instance: ProductVariant | None = None) -> dict:
+    """CA-21: derive optional variant fields (only on create, or when sent blank on update).
+
+    * ``package_currency``: region currency -> product ``account_currency`` -> ``"USD"``.
+    * ``denomination``: first number in ``name_en`` (``"$25"`` -> 25), else 0.
+    * ``package_value``: the denomination as plain text (``"25"``), else ``name_en``.
+    * ``sku``: ``<product id>-<slug of name_en>`` made unique.
+    """
+    creating = instance is None
+    name = item.get("name_en") or (instance.name_en if instance is not None else "") or ""
+    region = item["region"] if "region" in item else (instance.region if instance is not None else None)
+    if not (item.get("package_currency") or "").strip() and (creating or "package_currency" in item):
+        item["package_currency"] = ((region.currency if region else "") or product.account_currency or "USD").upper()[:8]
+    number = number_from_name(name)
+    if item.get("denomination") is None and (creating or "denomination" in item):
+        item["denomination"] = number if number is not None else Decimal("0")
+    if not (item.get("package_value") or "").strip() and (creating or "package_value" in item):
+        denom = item.get("denomination") if item.get("denomination") is not None else getattr(instance, "denomination", None)
+        if denom:
+            item["package_value"] = _plain_number(Decimal(denom))[:64]
+        else:
+            item["package_value"] = (name or "1")[:64]
+    if creating and not (item.get("sku") or "").strip():
+        base = f"{product.pk}-{slugify(name) or uuid.uuid4().hex[:6]}"[:110]
+        candidate, n = base, 2
+        while ProductVariant.objects.filter(sku=candidate).exists():
+            candidate = f"{base}-{n}"
+            n += 1
+        item["sku"] = candidate
+    elif "sku" in item and not (item.get("sku") or "").strip():
+        item.pop("sku")  # blank on update keeps the existing SKU
+    return item
+
+
+# CA-19: kinds that may use DIRECT_TOPUP fulfillment.
+TOPUP_KINDS = frozenset({ProductKind.DIRECT_TOPUP, ProductKind.GAME_CURRENCY})
+
+
 class ProductWriteSerializer(serializers.ModelSerializer):
+    """Create/update a product with nested variants and fields.
+
+    CA-19 defaults on create: ``id`` from slug, ``slug`` from ``name_en``, ``kind`` GIFT_CARD
+    (DIRECT_TOPUP when the fulfillment is a top-up), ``fulfillment_type`` from kind,
+    ``brand`` from the platform name, ``artwork_key`` optional.
+    """
+
+    id = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    slug = serializers.SlugField(max_length=50, required=False, allow_blank=True)
+    kind = serializers.ChoiceField(choices=ProductKind.choices, required=False)
+    fulfillment_type = serializers.ChoiceField(choices=FulfillmentType.choices, required=False)
+    brand = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    artwork_key = serializers.CharField(max_length=64, required=False, allow_blank=True)
     category_id = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all(), source="category")
     platform_id = serializers.PrimaryKeyRelatedField(queryset=Platform.objects.all(), source="platform")
     variants = VariantWriteSerializer(many=True, required=False)
@@ -698,6 +972,9 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         )
 
     def validate_slug(self, value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            return value
         qs = Product.objects.filter(slug=value)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
@@ -705,10 +982,53 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Slug already exists")
         return value
 
+    def validate_id(self, value: str) -> str:
+        value = (value or "").strip()
+        if self.instance is not None:
+            return value
+        if value and Product.objects.filter(pk=value).exists():
+            raise serializers.ValidationError("A product with this ID already exists")
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        inst = self.instance
+        if inst is not None:
+            attrs.pop("id", None)  # the primary key never changes
+        kind = attrs.get("kind") or (inst.kind if inst is not None else None)
+        fulfillment = attrs.get("fulfillment_type") or (inst.fulfillment_type if inst is not None else None)
+        if inst is None:
+            if not kind:
+                kind = ProductKind.DIRECT_TOPUP if fulfillment == FulfillmentType.DIRECT_TOPUP else ProductKind.GIFT_CARD
+            if not fulfillment:
+                fulfillment = FulfillmentType.DIRECT_TOPUP if kind == ProductKind.DIRECT_TOPUP else FulfillmentType.CODE
+            attrs["kind"], attrs["fulfillment_type"] = kind, fulfillment
+        if fulfillment == FulfillmentType.DIRECT_TOPUP and kind not in TOPUP_KINDS:
+            raise serializers.ValidationError(
+                {"kind": ["Direct top-up fulfillment only fits the Direct top-up or Game currency kinds"]}
+            )
+        if kind == ProductKind.DIRECT_TOPUP and fulfillment != FulfillmentType.DIRECT_TOPUP:
+            raise serializers.ValidationError(
+                {"fulfillment_type": ["Direct top-up products must use Direct top-up fulfillment"]}
+            )
+        if inst is None or "slug" in attrs:
+            if not attrs.get("slug"):
+                source = attrs.get("name_en") or (inst.name_en if inst is not None else "")
+                attrs["slug"] = unique_slug(
+                    Product, source, fallback="product", exclude_pk=getattr(inst, "pk", None)
+                )
+        if inst is None and not attrs.get("id"):
+            attrs["id"] = unique_slug(Product, attrs["slug"], field="pk", max_length=64, fallback="product")
+        if not (attrs.get("brand") or "").strip() and (inst is None or "brand" in attrs):
+            platform = attrs.get("platform") or (inst.platform if inst is not None else None)
+            attrs["brand"] = (platform.name_en if platform else "") or attrs.get("name_en") or ""
+        return attrs
+
     @transaction.atomic
     def create(self, validated_data):
         variants_data = validated_data.pop("variants", [])
         fields_data = validated_data.pop("fields", [])
+        validated_data.setdefault("artwork_key", "")
         product = Product.objects.create(**validated_data)
         self._upsert_variants(product, variants_data)
         self._upsert_fields(product, fields_data)
@@ -755,6 +1075,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                 variant = ProductVariant.objects.filter(product=product, pk=vid).first()
                 if not variant:
                     raise serializers.ValidationError({"variants": f"Variant {vid} not found on product"})
+                fill_variant_defaults(item, product, variant)
                 for attr, value in item.items():
                     setattr(variant, attr, value)
                 try:
@@ -764,6 +1085,11 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                         raise serializers.ValidationError({"variants": "SKU already exists"}) from exc
                     raise
             else:
+                if not (item.get("name_en") or "").strip():
+                    raise serializers.ValidationError({"variants": "Each new variant needs an English name"})
+                if item.get("price_fils") is None:
+                    raise serializers.ValidationError({"variants": "Each new variant needs a selling price"})
+                fill_variant_defaults(item, product)
                 try:
                     ProductVariant.objects.create(product=product, **item)
                 except Exception as exc:
@@ -772,18 +1098,40 @@ class ProductWriteSerializer(serializers.ModelSerializer):
                     raise
 
     def _upsert_fields(self, product: Product, fields_data: list[dict]) -> None:
+        # Deletes first so a removed key can be reused in the same request.
+        for item in fields_data:
+            if item.get("delete") and item.get("id"):
+                ProductFieldDefinition.objects.filter(product=product, pk=item["id"]).delete()
         for item in fields_data:
             item = dict(item)
             delete = item.pop("delete", False)
             fid = item.pop("id", None)
             if delete:
-                if fid:
-                    ProductFieldDefinition.objects.filter(product=product, pk=fid).delete()
                 continue
+            field = None
             if fid:
                 field = ProductFieldDefinition.objects.filter(product=product, pk=fid).first()
                 if not field:
                     raise serializers.ValidationError({"fields": f"Field {fid} not found on product"})
+            taken = set(
+                ProductFieldDefinition.objects.filter(product=product)
+                .exclude(pk=getattr(field, "pk", None))
+                .values_list("key", flat=True)
+            )
+            key = (item.get("key") or "").strip()
+            if not key and (field is None or "key" in item):
+                label = item.get("label_en") or getattr(field, "label_en", "")
+                base = key_from_label(label, fallback="field")
+                key, n = base, 2
+                while key in taken:
+                    key = f"{base}_{n}"[:64]
+                    n += 1
+                item["key"] = key
+            elif key and key in taken:
+                raise serializers.ValidationError({"fields": f"Two fields use the key '{key}'"})
+            if field is not None:
+                if "key" in item and not item["key"]:
+                    item.pop("key")
                 for attr, value in item.items():
                     setattr(field, attr, value)
                 field.save()

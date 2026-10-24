@@ -129,13 +129,30 @@ def assert_order_payable(order: Order) -> None:
         )
 
 
-def create_checkout_order(*, order_number: str, checkout_token: str, user=None) -> dict[str, Any]:
+def create_checkout_order(
+    *, order_number: str, checkout_token: str = "", access_token: str = "", user=None
+) -> dict[str, Any]:
+    """Create (or reuse) the PayPal order for a stored order.
+
+    Auth: the checkout_token returned by checkout, OR (D1 "Complete payment" on an existing
+    unpaid order) the order access_token / the owner's JWT. Codes are reserved for
+    RESERVATION_MINUTES before PayPal is called (D2); not enough stock -> 409 out_of_stock.
+    """
+    from commerce.services.inventory import InventoryError, reserve_order_stock
+
     assert_paypal_ready()
     order = Order.objects.filter(order_number=order_number).first()
     if not order:
         raise PaymentError("Order not found", status=404, code="not_found")
     _assert_access(order, user)
     assert_order_payable(order)
+    if not checkout_token:
+        is_owner = bool(
+            user is not None and getattr(user, "is_authenticated", False) and order.user_id == user.id
+        )
+        if not is_owner and not _token_ok(order.access_token or "", access_token or ""):
+            raise PaymentError("Checkout session is not valid", status=403, code="forbidden")
+        checkout_token = prepare_paypal_checkout(order).checkout_token
 
     with transaction.atomic():
         payment = (
@@ -164,6 +181,10 @@ def create_checkout_order(*, order_number: str, checkout_token: str, user=None) 
                 update_fields=["provider_amount", "currency", "provider_order_id", "raw", "updated_at"]
             )
 
+    try:
+        reserve_order_stock(order)
+    except InventoryError as exc:
+        raise PaymentError(exc.message, status=exc.status, code=exc.code, extra=exc.extra) from exc
     paypal_order_id = _create_or_reuse_remote_order(payment.id)
     logger.info("PayPal order ready order=%s paypal_order_id=%s", order.order_number, paypal_order_id)
     return {"paypal_order_id": paypal_order_id, "payment_status": PaymentStatus.PENDING}
@@ -381,8 +402,11 @@ def refund_paypal_payment(
     *,
     actor=None,
     amount_fils: int | None = None,
+    reason: str = "",
 ) -> Payment:
-    """Full refund when amount_fils is omitted. Partial when a smaller fils amount is given."""
+    """Refund through PayPal. ``amount_fils`` None = everything that remains (D5 ledger)."""
+    from commerce.services.refunds import apply_refund_totals, record_provider_refund, refund_summary
+
     payment = Payment.objects.select_related("order").get(pk=payment.pk)
     if payment.provider != "paypal":
         raise PaymentError("Not a PayPal payment", status=400, code="not_paypal")
@@ -394,18 +418,23 @@ def refund_paypal_payment(
         raise PaymentError("PayPal capture id is missing", status=409, code="missing_capture")
     assert_paypal_ready()
 
+    remaining = refund_summary(payment.order)["remaining_fils"]
+    if remaining <= 0:
+        raise PaymentError("Nothing is left to refund on this order.", status=409, code="nothing_to_refund")
     value: str | None = None
     currency = payment.currency
-    full = amount_fils is None
-    if amount_fils is not None:
-        if amount_fils <= 0 or amount_fils > payment.amount_fils:
+    if amount_fils is None:
+        amount_fils = remaining
+    else:
+        if amount_fils <= 0:
             raise PaymentError("Invalid refund amount", status=400, code="invalid_amount")
+        if amount_fils > remaining:
+            raise PaymentError(
+                "The refund is more than the amount that can still be refunded.",
+                status=400,
+                code="refund_exceeds_remaining",
+            )
         value, currency = quote_paypal_amount(amount_fils, payment.order.currency)
-        if Decimal(value) >= Decimal(payment.provider_amount or "0"):
-            value = None
-            full = True
-        else:
-            full = False
     attempt = len(payment.refunds or []) + 1
     request_id = f"mmh-refund-{payment.order.order_number}-{attempt}-{'full' if value is None else value}"
     try:
@@ -423,19 +452,14 @@ def refund_paypal_payment(
         order = Order.objects.select_for_update().get(pk=payment.order_id)
         _append_refund(payment, body)
         payment.raw_refund_response = _redact(body)
-        refund_status = str(body.get("status") or "")
-        if refund_status == "COMPLETED":
-            full = full or _fully_refunded(payment)
-            payment.status = PaymentStatus.REFUNDED if full else PaymentStatus.PARTIALLY_REFUNDED
-            payment.save(update_fields=["status", "refunds", "raw_refund_response", "updated_at"])
-            if order.payment_status != payment.status:
-                transition_order(order, payment_status=payment.status, actor=actor)
-            completed = True
-        else:
-            payment.save(update_fields=["refunds", "raw_refund_response", "updated_at"])
-            completed = False
+        payment.save(update_fields=["refunds", "raw_refund_response", "updated_at"])
+        record_provider_refund(payment, body, amount_fils=amount_fils, actor=actor, reason=reason)
+        completed = str(body.get("status") or "") == "COMPLETED"
+        if completed:
+            apply_refund_totals(order, actor=actor, provider_full=value is None or _fully_refunded(payment))
     if not completed:
         raise PaymentError("PayPal refund is not complete yet", status=409, code="refund_pending")
+    payment.refresh_from_db()
     logger.info(
         "PayPal refund stored order=%s capture_id=%s refund_id=%s status=%s",
         payment.order.order_number,
@@ -534,6 +558,8 @@ def _mark_authorized(resource: dict[str, Any]) -> None:
 
 
 def _apply_refund_resource(resource: dict[str, Any], *, reversed_payment: bool) -> None:
+    from commerce.services.refunds import apply_refund_totals, record_provider_refund
+
     capture_id = _capture_id_from_refund(resource)
     payment = Payment.objects.filter(provider="paypal", provider_capture_id=capture_id).first() if capture_id else None
     if not payment:
@@ -545,14 +571,28 @@ def _apply_refund_resource(resource: dict[str, Any], *, reversed_payment: bool) 
             return
         _append_refund(payment, resource)
         payment.raw_refund_response = _redact(resource)
-        full = reversed_payment or _fully_refunded(payment)
-        if payment.status in {PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.AUTHORIZED}:
-            payment.status = PaymentStatus.REFUNDED if full else PaymentStatus.PARTIALLY_REFUNDED
-            payment.save(update_fields=["status", "refunds", "raw_refund_response", "updated_at"])
-            if order.payment_status in {PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED} and order.payment_status != payment.status:
-                transition_order(order, payment_status=payment.status)
+        payment.save(update_fields=["refunds", "raw_refund_response", "updated_at"])
+        if payment.status not in {PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.AUTHORIZED}:
+            return
+        refund_id = str(resource.get("id") or "")
+        already_completed = bool(refund_id) and payment.refund_records.filter(
+            provider_refund_id=refund_id, status="COMPLETED"
+        ).exists()
+        refund = record_provider_refund(payment, resource)
+        if refund.status != "COMPLETED" and not reversed_payment:
+            return
+        notify = refund.status == "COMPLETED" and not already_completed
+        if order.payment_status in {PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED}:
+            apply_refund_totals(order, provider_full=reversed_payment or _fully_refunded(payment))
         else:
-            payment.save(update_fields=["refunds", "raw_refund_response", "updated_at"])
+            full = reversed_payment or _fully_refunded(payment)
+            payment.status = PaymentStatus.REFUNDED if full else PaymentStatus.PARTIALLY_REFUNDED
+            payment.save(update_fields=["status", "updated_at"])
+            notify = False
+        if notify:
+            from commerce.notifications import queue_refund_issued
+
+            queue_refund_issued(order.id, refund.id)
 
 
 def _submit_paypal_order(client, payment: Payment, order: Order, attempt: int) -> dict[str, Any]:

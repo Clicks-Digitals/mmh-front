@@ -2,20 +2,27 @@ from __future__ import annotations
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import Sum
-from django.db.models.functions import Coalesce
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, serializers, status, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.authentication import bump_token_version, revoke_all_sessions
+from accounts.customer_stats import customer_order_stats, customer_orders_queryset
 from accounts.drf_permissions import HasAdminPermission, IsAdminUser
 from accounts.models import AdminProfile, AdminRole, CustomerProfile, Permission, RolePermission, UserKind
-from accounts.authentication import revoke_refresh_tokens
-from accounts.permissions import PRIVILEGED_ROLES, is_super_admin, role_permissions, user_permissions, user_role
-from accounts.serializers import run_password_validators
+from accounts.permissions import (
+    PRIVILEGED_ROLES,
+    effective_role,
+    effective_super_admins_qs,
+    is_super_admin,
+    role_label,
+    role_permissions,
+    user_permissions,
+)
+from accounts.serializers import run_password_validators, validate_phone_value
 from audit.services import record_audit
-from commerce.models import Order, PaymentStatus
 
 User = get_user_model()
 
@@ -24,11 +31,15 @@ class AdminCustomerSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(source="user.email", read_only=True)
     name = serializers.CharField(source="user.first_name")
     disabled = serializers.BooleanField(source="user.disabled", read_only=True)
+    orders_count = serializers.SerializerMethodField()
+    guest_orders_count = serializers.SerializerMethodField()
+    total_spent_fils = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomerProfile
         fields = (
             "id",
+            "user_id",
             "email",
             "name",
             "phone",
@@ -36,54 +47,64 @@ class AdminCustomerSerializer(serializers.ModelSerializer):
             "notes",
             "locale",
             "disabled",
+            "orders_count",
+            "guest_orders_count",
+            "total_spent_fils",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("created_at", "updated_at", "email", "disabled")
+        read_only_fields = ("created_at", "updated_at", "email", "disabled", "user_id")
+
+    def _stats(self, obj) -> dict:
+        cache = self.context.setdefault("customer_stats", {})
+        if obj.user_id not in cache:
+            cache.update(customer_order_stats([obj.user]))
+        return cache.get(obj.user_id) or {}
+
+    def get_orders_count(self, obj) -> int:
+        return int(self._stats(obj).get("orders_count", 0))
+
+    def get_guest_orders_count(self, obj) -> int:
+        return int(self._stats(obj).get("guest_orders_count", 0))
+
+    def get_total_spent_fils(self, obj) -> int:
+        return int(self._stats(obj).get("total_spent_fils", 0))
 
 
 class AdminCustomerDetailSerializer(AdminCustomerSerializer):
-    orders_count = serializers.SerializerMethodField()
-    total_spent_fils = serializers.SerializerMethodField()
     recent_orders = serializers.SerializerMethodField()
 
     class Meta(AdminCustomerSerializer.Meta):
-        fields = AdminCustomerSerializer.Meta.fields + (
-            "orders_count",
-            "total_spent_fils",
-            "recent_orders",
-        )
-
-    def get_orders_count(self, obj):
-        return Order.objects.filter(user=obj.user).count()
-
-    def get_total_spent_fils(self, obj):
-        return (
-            Order.objects.filter(user=obj.user, payment_status=PaymentStatus.PAID).aggregate(
-                total=Coalesce(Sum("total_fils"), 0)
-            )["total"]
-            or 0
-        )
+        fields = AdminCustomerSerializer.Meta.fields + ("recent_orders",)
 
     def get_recent_orders(self, obj):
-        orders = Order.objects.filter(user=obj.user).order_by("-created_at")[:10]
+        orders = customer_orders_queryset(obj.user).order_by("-created_at")[:20]
         return [
             {
                 "id": o.id,
                 "order_number": o.order_number,
+                "email": o.email,
                 "total_fils": o.total_fils,
                 "payment_status": o.payment_status,
                 "fulfillment_status": o.fulfillment_status,
                 "created_at": o.created_at,
+                # Guest checkout with the same email (not linked to the account).
+                "is_guest": o.user_id is None,
             }
             for o in orders
         ]
 
 
 class AdminCustomerPatchSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(source="user.first_name", required=False, max_length=150)
+    disabled = serializers.BooleanField(source="user.disabled", required=False)
+
     class Meta:
         model = CustomerProfile
-        fields = ("phone", "status", "notes")
+        fields = ("phone", "status", "notes", "name", "disabled")
+
+    def validate_phone(self, value):
+        return validate_phone_value(value)
 
 
 class CustomerListView(generics.ListAPIView):
@@ -91,11 +112,37 @@ class CustomerListView(generics.ListAPIView):
     admin_permission = "customers.read"
     serializer_class = AdminCustomerSerializer
     queryset = CustomerProfile.objects.select_related("user").order_by("-created_at")
-    search_fields = ["user__email", "user__first_name", "phone"]
+    search_fields = ["user__email", "user__first_name", "user__last_name", "phone"]
     filterset_fields = ["status"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        disabled = (self.request.query_params.get("disabled") or "").lower()
+        if disabled in {"true", "1", "yes"}:
+            qs = qs.filter(user__disabled=True)
+        elif disabled in {"false", "0", "no"}:
+            qs = qs.filter(user__disabled=False)
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = page if page is not None else list(queryset)
+        context = self.get_serializer_context()
+        context["customer_stats"] = customer_order_stats([p.user for p in rows])
+        data = self.get_serializer_class()(rows, many=True, context=context).data
+        if page is not None:
+            return self.get_paginated_response(data)
+        return Response(data)
 
 
 class CustomerDetailView(generics.RetrieveUpdateAPIView):
+    """GET detail (+ guest orders by email); PATCH ``{phone?, status?, notes?, name?, disabled?}``.
+
+    Disabling a customer blocks login (403 ``account_disabled``), kills every session
+    (access + refresh tokens) and blocks checkout.
+    """
+
     permission_classes = [IsAdminUser, HasAdminPermission]
     queryset = CustomerProfile.objects.select_related("user")
     http_method_names = ["get", "patch", "head", "options"]
@@ -109,15 +156,49 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
             return AdminCustomerPatchSerializer
         return AdminCustomerDetailSerializer
 
-    def perform_update(self, serializer):
-        serializer.save()
-        record_audit(
-            self.request.user,
-            "customer.updated",
-            entity_type="CustomerProfile",
-            entity_id=serializer.instance.pk,
-            meta={"fields": sorted(serializer.validated_data.keys())},
-        )
+    def update(self, request, *args, **kwargs):
+        profile = self.get_object()
+        serializer = AdminCustomerPatchSerializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        user_data = data.pop("user", {}) or {}
+        user = profile.user
+        was_disabled = user.disabled
+        with transaction.atomic():
+            for attr, value in data.items():
+                setattr(profile, attr, value)
+            if data:
+                profile.save()
+            user_fields = []
+            if "first_name" in user_data and user_data["first_name"] != user.first_name:
+                user.first_name = user_data["first_name"]
+                user_fields.append("first_name")
+            if "disabled" in user_data and user_data["disabled"] != user.disabled:
+                user.disabled = user_data["disabled"]
+                user_fields.append("disabled")
+            if user_fields:
+                user.save(update_fields=user_fields)
+            if user.disabled and not was_disabled:
+                revoke_all_sessions(user)
+        fields = sorted(set(data) | {("name" if k == "first_name" else k) for k in user_data})
+        if fields:
+            record_audit(
+                request.user,
+                "customer.updated",
+                entity_type="CustomerProfile",
+                entity_id=profile.pk,
+                meta={"fields": fields, "email": user.email, "name": user.get_full_name()},
+            )
+        if user.disabled != was_disabled:
+            record_audit(
+                request.user,
+                "customer.disabled" if user.disabled else "customer.enabled",
+                entity_type="User",
+                entity_id=user.pk,
+                meta={"email": user.email, "name": user.get_full_name(), "customer_id": profile.pk},
+            )
+        profile = self.get_queryset().get(pk=profile.pk)
+        return Response(AdminCustomerDetailSerializer(profile, context=self.get_serializer_context()).data)
 
 
 # ---------------------------------------------------------------------------
@@ -135,19 +216,22 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
 
 
 def _is_privileged_target(user) -> bool:
-    return bool(user.is_superuser or user_role(user) in PRIVILEGED_ROLES)
+    return effective_role(user) in PRIVILEGED_ROLES
 
 
 def _other_active_super_admins(user) -> int:
-    return (
-        AdminProfile.objects.filter(role=AdminRole.SUPER_ADMIN, user__disabled=False, user__is_active=True)
-        .exclude(user=user)
-        .count()
-    )
+    """Effective SUPER_ADMINs (role, or superuser without a profile) other than ``user``."""
+    return effective_super_admins_qs().exclude(pk=user.pk).count()
+
+
+def _target_meta(user) -> dict:
+    role = effective_role(user)
+    return {"email": user.email, "name": user.get_full_name(), "role": role, "role_label": role_label(role)}
 
 
 class AdminUserSerializer(serializers.ModelSerializer):
     role = serializers.SerializerMethodField()
+    role_label = serializers.SerializerMethodField()
     title = serializers.SerializerMethodField()
     permissions = serializers.SerializerMethodField()
 
@@ -161,6 +245,7 @@ class AdminUserSerializer(serializers.ModelSerializer):
             "kind",
             "disabled",
             "role",
+            "role_label",
             "title",
             "permissions",
             "date_joined",
@@ -169,10 +254,10 @@ class AdminUserSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_role(self, obj):
-        role = user_role(obj)
-        if role is None and obj.is_superuser:
-            return AdminRole.SUPER_ADMIN
-        return role
+        return effective_role(obj)
+
+    def get_role_label(self, obj):
+        return role_label(effective_role(obj))
 
     def get_title(self, obj):
         profile = getattr(obj, "admin_profile", None)
@@ -208,6 +293,8 @@ class CreateAdminSerializer(serializers.Serializer):
             first_name=validated_data["full_name"],
             kind=UserKind.ADMIN,
             is_staff=True,
+            # D14: is_superuser mirrors the SUPER_ADMIN role.
+            is_superuser=validated_data["role"] == AdminRole.SUPER_ADMIN,
         )
         AdminProfile.objects.create(
             user=user,
@@ -243,7 +330,33 @@ class AdministratorViewSet(viewsets.ViewSet):
         )
 
     def list(self, request):
-        return Response(AdminUserSerializer(self.get_queryset(), many=True).data)
+        """``?search=`` (email / first / last name), ``?role=``, ``?disabled=true|false``.
+
+        Plain array by default; paginated ``{count, next, previous, results}`` when ``page``
+        or ``page_size`` is supplied (RO-08).
+        """
+        qs = self.get_queryset()
+        term = (request.query_params.get("search") or request.query_params.get("q") or "").strip()
+        if term:
+            qs = qs.filter(Q(email__icontains=term) | Q(first_name__icontains=term) | Q(last_name__icontains=term))
+        role = (request.query_params.get("role") or "").strip().upper()
+        if role:
+            if role == AdminRole.SUPER_ADMIN:
+                qs = qs.filter(Q(admin_profile__role=role) | Q(is_superuser=True, admin_profile__isnull=True))
+            else:
+                qs = qs.filter(admin_profile__role=role)
+        disabled = (request.query_params.get("disabled") or "").lower()
+        if disabled in {"true", "1", "yes"}:
+            qs = qs.filter(disabled=True)
+        elif disabled in {"false", "0", "no"}:
+            qs = qs.filter(disabled=False)
+        if "page" in request.query_params or "page_size" in request.query_params:
+            from config.pagination import BoundedPageNumberPagination
+
+            paginator = BoundedPageNumberPagination()
+            page = paginator.paginate_queryset(qs, request, view=self)
+            return paginator.get_paginated_response(AdminUserSerializer(page, many=True).data)
+        return Response(AdminUserSerializer(qs, many=True).data)
 
     def retrieve(self, request, pk=None):
         user = get_object_or_404(self.get_queryset(), pk=pk)
@@ -259,13 +372,7 @@ class AdministratorViewSet(viewsets.ViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
         user = serializer.save()
-        record_audit(
-            request.user,
-            "admin.created",
-            entity_type="User",
-            entity_id=user.pk,
-            meta={"email": user.email, "role": role},
-        )
+        record_audit(request.user, "admin.created", entity_type="User", entity_id=user.pk, meta=_target_meta(user))
         return Response(AdminUserSerializer(user).data, status=status.HTTP_201_CREATED)
 
     def update(self, request, pk=None):
@@ -279,7 +386,7 @@ class AdministratorViewSet(viewsets.ViewSet):
         actor = request.user
         actor_is_super = is_super_admin(actor)
         is_self = target.pk == actor.pk
-        current_role = user_role(target) or (AdminRole.SUPER_ADMIN if target.is_superuser else None)
+        current_role = effective_role(target)
 
         def forbidden(detail: str, code: str = "forbidden"):
             return Response({"detail": detail, "code": code}, status=status.HTTP_403_FORBIDDEN)
@@ -328,7 +435,12 @@ class AdministratorViewSet(viewsets.ViewSet):
                 target.save(update_fields=user_fields)
             profile_fields: list[str] = []
             if role_change:
-                changes["role"] = {"from": current_role, "to": data["role"]}
+                changes["role"] = {
+                    "from": current_role,
+                    "to": data["role"],
+                    "from_label": role_label(current_role),
+                    "to_label": role_label(data["role"]),
+                }
                 profile.role = data["role"]
                 profile_fields.append("role")
             if "title" in data and data["title"] != profile.title:
@@ -337,23 +449,32 @@ class AdministratorViewSet(viewsets.ViewSet):
                 changes["title"] = True
             if profile_fields:
                 profile.save(update_fields=profile_fields + ["updated_at"])
+            # D14: keep is_superuser in sync with the SUPER_ADMIN role.
+            want_superuser = profile.role == AdminRole.SUPER_ADMIN
+            if target.is_superuser != want_superuser:
+                target.is_superuser = want_superuser
+                target.save(update_fields=["is_superuser"])
+            # D14: these invalidate existing access tokens immediately.
             if (disabled_changed and target.disabled) or "password" in data:
-                revoke_refresh_tokens(target)
+                revoke_all_sessions(target)
+            elif role_change:
+                bump_token_version(target)
 
+        target_meta = {"email": target.email, "name": target.get_full_name()}
         if changes:
-            record_audit(actor, "admin.updated", entity_type="User", entity_id=target.pk, meta=changes)
+            record_audit(
+                actor, "admin.updated", entity_type="User", entity_id=target.pk, meta={**target_meta, **changes}
+            )
         if disabled_changed:
             record_audit(
                 actor,
                 "admin.disabled" if target.disabled else "admin.enabled",
                 entity_type="User",
                 entity_id=target.pk,
-                meta={"email": target.email},
+                meta=_target_meta(target),
             )
         if "password" in data:
-            record_audit(
-                actor, "admin.password_reset", entity_type="User", entity_id=target.pk, meta={"email": target.email}
-            )
+            record_audit(actor, "admin.password_reset", entity_type="User", entity_id=target.pk, meta=_target_meta(target))
         target = self.get_queryset().get(pk=target.pk)
         return Response(AdminUserSerializer(target).data)
 
@@ -426,6 +547,11 @@ class RolePermissionsUpdateView(APIView):
             "role.permissions_updated",
             entity_type="Role",
             entity_id=role,
-            meta={"role": role, "added": sorted(set(wanted) - before), "removed": sorted(before - set(wanted))},
+            meta={
+                "role": role,
+                "role_label": role_label(role),
+                "added": sorted(set(wanted) - before),
+                "removed": sorted(before - set(wanted)),
+            },
         )
         return Response({"role": role, "permissions": wanted})

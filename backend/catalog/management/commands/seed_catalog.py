@@ -175,7 +175,7 @@ CATALOG = [
         "price": 8.5,
         "trending": True,
         "bestseller": True,
-        "fields": [("playerId", "Player ID", "معرّف اللاعب")],
+        "fields": [("playerId", "Player ID", "معرّف اللاعب", "numeric", 6, 12)],
         "denoms": [("60", "60 UC", 60, "UC", 1.5, None), ("325", "325 UC", 325, "UC", 4.9, None), ("660", "660 UC", 660, "UC", 8.5, 9.9)],
     },
     {
@@ -191,7 +191,7 @@ CATALOG = [
         "name_en": "Free Fire Diamonds",
         "name_ar": "جواهر فري فاير",
         "price": 4.5,
-        "fields": [("playerId", "Player ID", "معرّف اللاعب")],
+        "fields": [("playerId", "Player ID", "معرّف اللاعب", "numeric", 6, 12)],
         "denoms": [("100", "100 Diamonds", 100, "DM", 1.9, None), ("310", "310 Diamonds", 310, "DM", 4.5, None)],
     },
     {
@@ -207,7 +207,10 @@ CATALOG = [
         "name_en": "Mobile Legends Diamonds",
         "name_ar": "ماسات موبايل ليجندز",
         "price": 3.9,
-        "fields": [("userId", "User ID", "معرّف المستخدم"), ("zoneId", "Zone ID", "معرّف المنطقة")],
+        "fields": [
+            ("userId", "User ID", "معرّف المستخدم", "numeric", 5, 12),
+            ("zoneId", "Zone ID", "معرّف المنطقة", "numeric", 3, 6),
+        ],
         "denoms": [("86", "86 Diamonds", 86, "DM", 1.9, None), ("172", "172 Diamonds", 172, "DM", 3.9, None)],
     },
     {
@@ -215,7 +218,7 @@ CATALOG = [
         "slug": "valorant-points",
         "kind": ProductKind.GAME_CURRENCY,
         "fulfillment": FulfillmentType.CODE,
-        "category": "game-top-ups",
+        "category": "game-currencies",
         "platform": "valorant",
         "brand": "Valorant",
         "artwork": "card-valorant",
@@ -230,7 +233,7 @@ CATALOG = [
         "slug": "fortnite-v-bucks",
         "kind": ProductKind.GAME_CURRENCY,
         "fulfillment": FulfillmentType.CODE,
-        "category": "game-top-ups",
+        "category": "game-currencies",
         "platform": "fortnite",
         "brand": "Fortnite",
         "artwork": "digital",
@@ -245,7 +248,7 @@ CATALOG = [
         "slug": "ea-sports-fc-points",
         "kind": ProductKind.GAME_CURRENCY,
         "fulfillment": FulfillmentType.CODE,
-        "category": "game-top-ups",
+        "category": "game-currencies",
         "platform": "ea",
         "brand": "EA Sports FC",
         "artwork": "card-ea",
@@ -260,7 +263,7 @@ CATALOG = [
         "slug": "league-of-legends-card",
         "kind": ProductKind.GAME_CURRENCY,
         "fulfillment": FulfillmentType.CODE,
-        "category": "game-top-ups",
+        "category": "game-currencies",
         "platform": "riot",
         "brand": "League of Legends",
         "artwork": "digital",
@@ -289,6 +292,46 @@ CATALOG = [
 ]
 
 
+# ST-16: Arabic variant labels (same values as catalog migration 0005).
+VARIANT_NAMES_AR = {
+    "psn-store-10": "10 دولار",
+    "psn-store-25": "25 دولار",
+    "psn-store-50": "50 دولار",
+    "steam-wallet-10": "10 دولار",
+    "steam-wallet-20": "20 دولار",
+    "steam-wallet-50": "50 دولار",
+    "xbox-gift-10": "10 دولار",
+    "xbox-gift-25": "25 دولار",
+    "xbox-gift-50": "50 دولار",
+    "nintendo-eshop-10": "10 دولار",
+    "nintendo-eshop-20": "20 دولار",
+    "apple-gift-25": "25 دولار",
+    "apple-gift-50": "50 دولار",
+    "google-play-10": "10 دولار",
+    "google-play-25": "25 دولار",
+    "google-play-50": "50 دولار",
+    "razer-gold-10": "10 دولار",
+    "razer-gold-20": "20 دولار",
+    "roblox-card-10": "10 دولار / روبوكس",
+    "roblox-card-25": "25 دولار / روبوكس",
+    "pubg-uc-60": "60 شدة",
+    "pubg-uc-325": "325 شدة",
+    "pubg-uc-660": "660 شدة",
+    "free-fire-100": "100 جوهرة",
+    "free-fire-310": "310 جوهرة",
+    "mlbb-diamonds-86": "86 ماسة",
+    "mlbb-diamonds-172": "172 ماسة",
+    "valorant-points-475": "475 نقطة فالورانت",
+    "valorant-points-1000": "1000 نقطة فالورانت",
+    "fortnite-vbucks-1000": "1,000 في-باكس",
+    "ea-fc-points-500": "500 نقطة",
+    "ea-fc-points-1050": "1050 نقطة",
+    "lol-card-10": "10 دولار",
+    "ps-plus-essential-3m": "إسنشال - 3 أشهر",
+    "ps-plus-extra-12m": "إكسترا - 12 شهرًا",
+}
+
+
 class Command(BaseCommand):
     help = "Seed MMH catalog, demo users, coupons, and mock supplier"
 
@@ -313,6 +356,7 @@ class Command(BaseCommand):
         categories = {
             "gift-cards": ("Gift cards", "بطاقات الهدايا", "/gift-cards"),
             "game-top-ups": ("Game top-ups", "شحن الألعاب", "/game-top-ups"),
+            "game-currencies": ("Game currencies", "عملات الألعاب", "/category/game-currencies"),
             "subscriptions": ("Subscriptions", "الاشتراكات", "/category/subscriptions"),
         }
         cat_objs = {}
@@ -325,6 +369,7 @@ class Command(BaseCommand):
                     "href": href,
                     "status": PublishStatus.PUBLISHED,
                     "sort_order": i,
+                    "show_in_menu": True,
                 },
             )
 
@@ -401,6 +446,7 @@ class Command(BaseCommand):
             )
             ProductFieldDefinition.objects.filter(product=product).delete()
             for idx, field in enumerate(item.get("fields") or []):
+                input_format, min_len, max_len = field[3:6] if len(field) >= 6 else ("text", None, None)
                 ProductFieldDefinition.objects.create(
                     product=product,
                     key=field[0],
@@ -410,6 +456,9 @@ class Command(BaseCommand):
                     label_ar=field[2],
                     placeholder_en=f"Enter {field[1]}",
                     placeholder_ar=f"أدخل {field[2]}",
+                    input_format=input_format,
+                    min_length=min_len,
+                    max_length=max_len,
                 )
             default_region = region_objs["global"] if item["fulfillment"] == FulfillmentType.DIRECT_TOPUP else region_objs["us"]
             keep_skus: list[str] = []
@@ -432,7 +481,7 @@ class Command(BaseCommand):
                         "sort_order": sort,
                         "published": True,
                         "name_en": label,
-                        "name_ar": label,
+                        "name_ar": VARIANT_NAMES_AR.get(sku, label),
                     },
                 )
             # Drop unused demo variants only when they are not referenced by orders.

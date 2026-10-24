@@ -7,7 +7,7 @@ from django.test import TestCase, override_settings
 from accounts.models import AdminRole
 from accounts.tests_admin import auth_client, make_admin, seed_permissions
 from audit.models import AuditLog
-from suppliers.models import Supplier, SupplierConnection, SupplierOrder, SupplierWebhookEvent
+from suppliers.models import SupplierApiLog, Supplier, SupplierConnection, SupplierOrder, SupplierWebhookEvent
 from suppliers.provider import BalanceResult, SupplierError
 
 STATUS_KEYS = {
@@ -21,6 +21,8 @@ STATUS_KEYS = {
     "last_balance_currency",
     "last_checked_at",
     "live_locked",
+    "credentials_configured",
+    "live_purchasing",
 }
 
 
@@ -100,6 +102,17 @@ class AdminSupplierEndpointTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(set(res.data), STATUS_KEYS)
 
+    def test_ping_without_credentials_is_not_ok(self):
+        with override_settings(ONEEPIN_EMAIL="", ONEEPIN_PASSWORD=""):
+            res = auth_client(self.admin).post("/api/v1/admin/1epin/ping/")
+        self.assertEqual(res.status_code, 409)
+        self.assertFalse(res.data["ok"])
+        self.assertEqual(res.data["code"], "not_configured")
+        self.assertIn("ONEEPIN_EMAIL", res.data["message"])
+        self.assertFalse(res.data["credentials_configured"])
+        self.assertTrue(SupplierApiLog.objects.filter(action="ping", ok=False).exists())
+
+    @override_settings(ONEEPIN_EMAIL="ops@mmh.test", ONEEPIN_PASSWORD="secret")
     def test_ping_returns_status_shape_plus_message(self):
         res = auth_client(self.admin).post("/api/v1/admin/1epin/ping/")
         self.assertEqual(res.status_code, 200)
@@ -123,6 +136,14 @@ class AdminSupplierEndpointTests(TestCase):
         connection = Supplier.objects.get(slug="1epin").connection
         self.assertIsNone(connection.last_checked_at)
 
+    def test_balance_refresh_in_mock_mode_is_not_ok(self):
+        with override_settings(SUPPLIER_MODE="mock"):
+            res = auth_client(self.admin).post("/api/v1/admin/1epin/balance/refresh/")
+        self.assertEqual(res.status_code, 409)
+        self.assertFalse(res.data["ok"])
+        self.assertEqual(res.data["detail"], "Balance is not available in test mode")
+
+    @override_settings(SUPPLIER_MODE="test")
     def test_balance_refresh_stores_and_get_returns_cache(self):
         self.assertEqual(auth_client(self.viewer).post("/api/v1/admin/1epin/balance/refresh/").status_code, 403)
         provider = mock.Mock()
@@ -139,6 +160,7 @@ class AdminSupplierEndpointTests(TestCase):
         self.assertTrue(cached.data["ok"])
         self.assertTrue(cached.data["cached"])
 
+    @override_settings(SUPPLIER_MODE="test")
     def test_balance_refresh_failure_502(self):
         with mock.patch("suppliers.views.get_supplier_provider", side_effect=SupplierError("1Epin HTTP 500")):
             res = auth_client(self.admin).post("/api/v1/admin/1epin/balance/refresh/")

@@ -44,7 +44,8 @@ from catalog.serializers import (
     VariantSerializer,
     VariantWriteSerializer,
 )
-from catalog.stock import annotate_stock
+from accounts.permissions import has_permission
+from catalog.stock import annotate_stock, available_code_counts, available_quantities, mapping_stock_payload, variant_stock
 from config.pagination import LargePageNumberPagination
 from catalog.services.media import (
     MediaUploadError,
@@ -206,7 +207,8 @@ class ProductFilter(filters.FilterSet):
         if value in {"out_of_stock", "out-of-stock", "outofstock"}:
             return qs.filter(_codes_available=0)
         if value in {"low_stock", "low-stock", "lowstock"}:
-            return qs.filter(_codes_available__gt=0, _codes_available__lt=threshold)
+            # D24: available <= threshold (still in stock).
+            return qs.filter(_codes_available__gt=0, _codes_available__lte=threshold)
         return queryset
 
     def filter_q(self, queryset, name, value):
@@ -221,13 +223,20 @@ class ProductFilter(filters.FilterSet):
 
 
 class CategoryListView(generics.ListAPIView):
+    """Published categories ordered by sort_order, name. ``?menu=1`` -> only show_in_menu ones."""
+
     permission_classes = [AllowAny]
     serializer_class = PublicCategorySerializer
-    queryset = Category.objects.filter(status=PublishStatus.PUBLISHED).select_related("parent").order_by(
-        "sort_order", "slug"
-    )
     pagination_class = None
     filter_backends: list = []
+
+    def get_queryset(self):
+        qs = Category.objects.filter(status=PublishStatus.PUBLISHED).select_related("parent").order_by(
+            "sort_order", "name_en", "slug"
+        )
+        if (self.request.query_params.get("menu") or "").lower() in {"1", "true", "yes"}:
+            qs = qs.filter(show_in_menu=True)
+        return qs
 
 
 class PlatformListView(generics.ListAPIView):
@@ -261,6 +270,20 @@ def _public_product_queryset():
     )
 
 
+def _public_stock_context(products) -> dict:
+    """Batch reservation-aware counts for every published CODE variant on a page."""
+    ids = [
+        v.pk
+        for p in products
+        if p.fulfillment_type == "CODE"
+        for v in p.variants.all()
+        if v.published
+    ]
+    if not ids:
+        return {"net_available": {}, "available_quantity": {}}
+    return {"net_available": available_code_counts(ids), "available_quantity": available_quantities(ids)}
+
+
 class ProductListView(generics.ListAPIView):
     permission_classes = [AllowAny]
     serializer_class = PublicProductSerializer
@@ -271,6 +294,16 @@ class ProductListView(generics.ListAPIView):
 
     def get_queryset(self):
         return _public_product_queryset()
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = list(page if page is not None else queryset)
+        context = {**self.get_serializer_context(), **_public_stock_context(rows)}
+        data = PublicProductSerializer(rows, many=True, context=context).data
+        if page is not None:
+            return self.get_paginated_response(data)
+        return Response(data)
 
 
 class ProductDetailView(generics.RetrieveAPIView):
@@ -286,14 +319,35 @@ class AdminCategoryViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, view
     audit_prefix = "catalog.category"
     permission_classes = [IsAdminUser, HasAdminPermission]
     serializer_class = CategorySerializer
-    queryset = Category.objects.select_related("parent").annotate(products_count=Count("products")).all()
+    queryset = (
+        Category.objects.select_related("parent")
+        .prefetch_related("children")
+        .annotate(products_count=Count("products"))
+        .order_by("sort_order", "name_en", "slug")
+    )
     search_fields = ["slug", "name_en", "name_ar"]
-    ordering_fields = ["sort_order", "slug", "created_at"]
-    filterset_fields = ["status"]
+    ordering_fields = ["sort_order", "slug", "created_at", "name_en"]
+    filterset_fields = ["status", "show_in_menu", "parent"]
 
     def get_permissions(self):
         self.admin_permission = "catalog.read" if self.action in {"list", "retrieve"} else "catalog.write"
         return super().get_permissions()
+
+    def destroy(self, request, *args, **kwargs):
+        """D20 / CA-16: a category that still has sub-categories cannot be deleted (409)."""
+        category = self.get_object()
+        children = list(category.children.order_by("sort_order", "name_en"))
+        if children:
+            names = ", ".join(c.name_en for c in children)
+            return Response(
+                {
+                    "detail": f"Move or delete its sub-categories first: {names}.",
+                    "code": "has_children",
+                    "children": [{"id": c.id, "slug": c.slug, "name_en": c.name_en} for c in children],
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class AdminPlatformViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, viewsets.ModelViewSet):
@@ -339,8 +393,9 @@ def _product_admin_queryset():
                 filter=Q(variants__digital_codes__status=DigitalCodeStatus.AVAILABLE),
                 distinct=True,
             ),
-            price_min_fils=Min("variants__price_fils"),
-            price_max_fils=Max("variants__price_fils"),
+            # CA-20: price range from published variants only.
+            price_min_fils=Min("variants__price_fils", filter=Q(variants__published=True)),
+            price_max_fils=Max("variants__price_fils", filter=Q(variants__published=True)),
         )
     )
 
@@ -357,7 +412,8 @@ class AdminProductViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in {"list", "retrieve"}:
-            self.admin_permission = "catalog.read"
+            # RO-04: the code-import picker (codes.manage) reads product lists too.
+            self.admin_permission = ("catalog.read", "codes.manage")
         elif self.action == "create_mapping":
             self.admin_permission = "suppliers.write"
         else:
@@ -525,6 +581,10 @@ class AdminProductViewSet(viewsets.ModelViewSet):
                     placeholder_ar=f.placeholder_ar,
                     help_text_en=f.help_text_en,
                     help_text_ar=f.help_text_ar,
+                    input_format=f.input_format,
+                    min_length=f.min_length,
+                    max_length=f.max_length,
+                    options=list(f.options or []),
                 )
             if copy_mappings:
                 for m in product.supplier_mappings.all():
@@ -634,6 +694,7 @@ class AdminProductViewSet(viewsets.ModelViewSet):
                 "external_product_id": mapping.external_product_id,
                 "external_name": mapping.external_name,
                 "ignored": mapping.ignored,
+                **mapping_stock_payload(mapping),
             },
             status=201,
         )
@@ -725,6 +786,7 @@ class AdminSupplierMappingDetailView(APIView):
                 "external_product_id": mapping.external_product_id,
                 "external_name": mapping.external_name,
                 "ignored": mapping.ignored,
+                **mapping_stock_payload(mapping),
             }
         )
 
@@ -757,8 +819,26 @@ class AdminVariantViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, views
         return annotate_stock(_variant_code_queryset())
 
     def get_permissions(self):
-        self.admin_permission = "catalog.read" if self.action in {"list", "retrieve"} else "catalog.write"
+        if self.action in {"list", "retrieve"}:
+            # RO-04 / RO-11: code import pickers and the codes page read variants too.
+            self.admin_permission = ("catalog.read", "codes.read", "codes.manage")
+        else:
+            self.admin_permission = "catalog.write"
         return super().get_permissions()
+
+    def get_queryset(self):
+        qs = annotate_stock(_variant_code_queryset()).order_by("product_id", "sort_order", "price_fils", "id")
+        ftype = (self.request.query_params.get("fulfillment_type") or "").upper()
+        if ftype:
+            qs = qs.filter(product__fulfillment_type=ftype)
+        return qs
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        user = getattr(self.request, "user", None)
+        if user is not None and user.is_authenticated and not has_permission(user, "catalog.read"):
+            context["hide_cost"] = True
+        return context
 
     def get_serializer_class(self):
         if self.action in {"create", "update", "partial_update"}:
@@ -769,15 +849,22 @@ class AdminVariantViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, views
         return {"sku": instance.sku, "product_id": instance.product_id}
 
     def perform_create(self, serializer):
-        if not serializer.validated_data.get("product"):
+        from catalog.serializers import fill_variant_defaults
+
+        product = serializer.validated_data.get("product")
+        if not product:
             raise ValidationError({"product": ["This field is required."]})
         serializer.validated_data.pop("delete", None)
         serializer.validated_data.pop("id", None)
+        fill_variant_defaults(serializer.validated_data, product)
         super().perform_create(serializer)
 
     def perform_update(self, serializer):
+        from catalog.serializers import fill_variant_defaults
+
         serializer.validated_data.pop("delete", None)
         serializer.validated_data.pop("id", None)
+        fill_variant_defaults(serializer.validated_data, serializer.instance.product, serializer.instance)
         super().perform_update(serializer)
 
     def perform_destroy(self, instance):
@@ -791,10 +878,20 @@ class AdminInventoryView(APIView):
     admin_permission = "codes.read"
 
     def get(self, request):
+        """D24: low stock = published CODE variants (of non-archived products) with
+        ``codes_available <= low_stock_threshold``; each row carries ``effective_stock_status``."""
         settings_obj = SiteSettings.load()
         threshold = settings_obj.low_stock_threshold
-        annotated = _variant_code_queryset()
-        low_stock = list(annotated.filter(codes_available__lt=threshold).order_by("codes_available", "sku")[:100])
+        tracked = annotate_stock(_variant_code_queryset()).filter(
+            published=True, product__fulfillment_type="CODE"
+        ).exclude(product__status=PublishStatus.ARCHIVED)
+        low_qs = tracked.filter(codes_available__lte=threshold)
+        low_stock_count = low_qs.count()
+        low_stock = list(low_qs.order_by("codes_available", "sku")[:100])
+        net = available_code_counts([v.pk for v in low_stock])
+        tracked_rows = list(tracked)
+        tracked_net = available_code_counts([v.pk for v in tracked_rows])
+        effective = [variant_stock(v, net_available=tracked_net)[0] for v in tracked_rows]
         code_counts = {
             "available": DigitalCode.objects.filter(status=DigitalCodeStatus.AVAILABLE).count(),
             "reserved": DigitalCode.objects.filter(status=DigitalCodeStatus.RESERVED).count(),
@@ -808,6 +905,12 @@ class AdminInventoryView(APIView):
                     "variants_total": ProductVariant.objects.count(),
                     "out_of_stock": ProductVariant.objects.filter(stock_status=StockStatus.OUT_OF_STOCK).count(),
                     "in_stock": ProductVariant.objects.filter(stock_status=StockStatus.IN_STOCK).count(),
+                    # D24: published CODE variants by effective (sellable) status.
+                    "tracked_variants": len(tracked_rows),
+                    "effective_in_stock": sum(1 for e in effective if e == StockStatus.IN_STOCK),
+                    "effective_out_of_stock": sum(1 for e in effective if e == StockStatus.OUT_OF_STOCK),
+                    "low_stock": low_stock_count,
+                    "low_stock_rule": "available <= threshold",
                     "codes_available": code_counts["available"],
                     "codes_reserved": code_counts["reserved"],
                     "codes_delivered": code_counts["delivered"],
@@ -815,7 +918,9 @@ class AdminInventoryView(APIView):
                     "codes_total": code_counts["total"],
                     "low_stock_threshold": threshold,
                 },
-                "low_stock_variants": VariantSerializer(low_stock, many=True).data,
+                "low_stock_variants": VariantSerializer(
+                    low_stock, many=True, context={"net_available": net, "low_stock_threshold": threshold}
+                ).data,
             }
         )
 

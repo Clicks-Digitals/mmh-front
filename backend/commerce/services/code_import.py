@@ -16,6 +16,7 @@ from django.utils import timezone
 from catalog.models import ProductVariant, StockStatus
 from commerce.crypto import (
     CodeCryptoError,
+    code_identity,
     decrypt_blob,
     encode_code_payload,
     encrypt_blob,
@@ -55,6 +56,8 @@ class ParsedRow:
     sku: str | None = None
     variant_id: int | None = None
     fingerprint: str = ""
+    identity: str = ""
+    duplicate: bool = False
     variant: ProductVariant | None = None
     error: str | None = None
 
@@ -261,40 +264,49 @@ def validate_rows(
         if not row.error:
             try:
                 row.fingerprint = fingerprint_code(code, pin)
+                row.identity = code_identity(code) or ""
             except Exception:
                 row.error = "Could not fingerprint code"
             else:
-                if row.fingerprint in file_fingerprints:
-                    row.error = f"Duplicate code in file (same as row {file_fingerprints[row.fingerprint]})"
-                    result.duplicate_rows += 1
+                # D10: the same CODE text is a duplicate whatever its PIN.
+                if row.identity in file_fingerprints:
+                    row.error = f"Duplicate code in this file (same code as row {file_fingerprints[row.identity]})"
+                    row.duplicate = True
                 else:
-                    file_fingerprints[row.fingerprint] = idx
+                    file_fingerprints[row.identity] = idx
 
         parsed.append(row)
 
-    # DB duplicate check in bulk
-    fps = [r.fingerprint for r in parsed if r.fingerprint and not r.error]
-    existing: set[str] = set()
-    if fps:
-        # Chunk to avoid oversized IN clauses
-        chunk_size = 2000
-        for i in range(0, len(fps), chunk_size):
-            chunk = fps[i : i + chunk_size]
-            existing.update(
-                DigitalCode.objects.filter(code_fingerprint__in=chunk).values_list(
-                    "code_fingerprint", flat=True
-                )
-            )
+    # DB duplicate check in bulk (code identity, plus the legacy code+PIN fingerprint)
+    from commerce.services.inventory import code_location, find_existing_codes
+
+    clean = [r for r in parsed if r.fingerprint and not r.error]
+    by_identity = find_existing_codes(r.identity for r in clean)
+    legacy: dict[str, DigitalCode] = {}
+    fps = [r.fingerprint for r in clean if r.identity not in by_identity]
+    for i in range(0, len(fps), 2000):
+        for code_obj in DigitalCode.objects.filter(code_fingerprint__in=fps[i : i + 2000]).select_related(
+            "variant", "variant__product", "order_item", "order_item__order"
+        ):
+            legacy[code_obj.code_fingerprint] = code_obj
 
     for row in parsed:
-        if row.error:
-            result.failed_rows += 1
-            result.error_report.append({"row": row.row_number, "error": row.error, "sku": row.sku or ""})
-        elif row.fingerprint in existing:
-            row.error = "Duplicate code already exists"
+        existing = None
+        if not row.error:
+            existing = by_identity.get(row.identity) or legacy.get(row.fingerprint)
+        if existing is not None:
+            row.error = f"Duplicate: this code {code_location(existing)}"
+            row.duplicate = True
+        if row.error and row.duplicate:
             result.duplicate_rows += 1
+            result.error_report.append(
+                {"row": row.row_number, "error": row.error, "sku": row.sku or "", "type": "duplicate"}
+            )
+        elif row.error:
             result.failed_rows += 1
-            result.error_report.append({"row": row.row_number, "error": row.error, "sku": row.sku or ""})
+            result.error_report.append(
+                {"row": row.row_number, "error": row.error, "sku": row.sku or "", "type": "invalid"}
+            )
         else:
             result.valid_rows += 1
 
@@ -306,7 +318,8 @@ def validate_rows(
                     "variant_id": row.variant_id,
                     "code_masked": mask_code(row.code) if row.code else "",
                     "pin_masked": mask_code(row.pin) if row.pin else "",
-                    "status": "ok" if not row.error else "error",
+                    # "ready" = will be imported on confirm; nothing is in stock before confirm.
+                    "status": "ready" if not row.error else ("duplicate" if row.duplicate else "error"),
                     "error": row.error or "",
                 }
             )
@@ -395,6 +408,7 @@ def confirm_import(*, batch_id: int, actor) -> CodeImportBatch:
                 status=DigitalCodeStatus.AVAILABLE,
                 source=DigitalCodeSource.CSV_IMPORT,
                 code_fingerprint=row.fingerprint,
+                code_identity=row.identity or None,
                 import_batch=batch,
                 imported_by=actor,
                 ciphertext=ciphertext,
@@ -412,7 +426,8 @@ def confirm_import(*, batch_id: int, actor) -> CodeImportBatch:
 
         imported = DigitalCode.objects.filter(import_batch=batch).count()
 
-        if imported > 0 and validation.failed_rows == 0 and imported >= validation.valid_rows:
+        rejected = validation.failed_rows + validation.duplicate_rows
+        if imported > 0 and rejected == 0 and imported >= validation.valid_rows:
             status = CodeImportBatchStatus.COMPLETED
         elif imported > 0:
             status = CodeImportBatchStatus.PARTIAL
@@ -447,6 +462,14 @@ def confirm_import(*, batch_id: int, actor) -> CodeImportBatch:
         )
 
     sync_variant_stock(variant_ids)
+    # D3: hand the new stock to paid orders that were waiting for it.
+    from commerce.services.inventory import deliver_waiting_orders
+
+    waiting = deliver_waiting_orders(variant_ids, actor=actor)
+    if waiting["delivered"]:
+        batch.auto_delivered_orders = waiting["delivered"]
+        batch.save(update_fields=["auto_delivered_orders"])
+    batch.waiting_orders = waiting
     return batch
 
 
@@ -462,21 +485,27 @@ def create_manual_code(*, variant_id: int, code: str, pin: str | None, actor) ->
         raise CodeImportError("Code exceeds maximum length")
     if pin and len(pin) > MAX_PIN_LEN:
         raise CodeImportError("PIN exceeds maximum length")
+    from commerce.services.inventory import deliver_waiting_orders, duplicate_code_message
+
+    duplicate = duplicate_code_message(code, pin)
+    if duplicate:
+        raise CodeImportError(duplicate, status=409)
     fp = fingerprint_code(code, pin)
-    if DigitalCode.objects.filter(code_fingerprint=fp).exists():
-        raise CodeImportError("Duplicate code already exists")
     ciphertext, nonce, _ = encrypt_code(_encode_payload(code, pin))
     obj = DigitalCode.objects.create(
         variant=variant,
         status=DigitalCodeStatus.AVAILABLE,
         source=DigitalCodeSource.MANUAL,
         code_fingerprint=fp,
+        code_identity=code_identity(code),
         imported_by=actor,
         ciphertext=ciphertext,
         nonce=nonce,
         masked=mask_code(code),
     )
     sync_variant_stock({variant.id})
+    obj.waiting_orders = deliver_waiting_orders({variant.id}, actor=actor)
+    obj.refresh_from_db()
     return obj
 
 
@@ -495,7 +524,15 @@ def deactivate_code(*, code_id: int, actor) -> DigitalCode:
 
 def template_csv(mode: str) -> str:
     if mode == CodeImportMode.ADVANCED:
-        return "sku,code,pin\nPSN-10-US,SAMPLE-CODE-001,1234\nPSN-20-US,SAMPLE-CODE-002,\n"
+        from catalog.models import FulfillmentType
+
+        skus = list(
+            ProductVariant.objects.filter(product__fulfillment_type=FulfillmentType.CODE, published=True)
+            .order_by("product__sort_order", "sort_order", "id")
+            .values_list("sku", flat=True)[:2]
+        ) or ["YOUR-SKU-1", "YOUR-SKU-2"]
+        second = skus[1] if len(skus) > 1 else skus[0]
+        return f"sku,code,pin\n{skus[0]},SAMPLE-CODE-001,1234\n{second},SAMPLE-CODE-002,\n"
     return "code,pin\nSAMPLE-CODE-001,1234\nSAMPLE-CODE-002,\n"
 
 

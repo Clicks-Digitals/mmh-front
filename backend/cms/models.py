@@ -54,7 +54,13 @@ class ContentPage(models.Model):
     body_en = models.TextField()
     body_ar = models.TextField(blank=True)
     published = models.BooleanField(default=True)
+    # D19: listed in the storefront footer (every published page is reachable at /pages/<slug>).
+    show_in_footer = models.BooleanField(default=False)
+    sort_order = models.IntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["sort_order", "slug"]
 
 
 class SiteSettings(models.Model):
