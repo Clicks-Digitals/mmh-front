@@ -488,3 +488,22 @@ nextjs-portal {
 [dir="rtl"] .rtl-flip {
   transform: scaleX(-1);
 }
+
+/* Admin panel is a light UI: keep browser widgets/autofill light and fill the page background. */
+.clicks-shell {
+  color-scheme: light;
+}
+
+body:has(.clicks-shell) {
+  background: #f4f6fa;
+}
+
+.clicks-shell input:-webkit-autofill,
+.clicks-shell input:-webkit-autofill:hover,
+.clicks-shell input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #1c2434;
+  caret-color: #1c2434;
+  -webkit-box-shadow: 0 0 0 1000px #ffffff inset;
+  box-shadow: 0 0 0 1000px #ffffff inset;
+  transition: background-color 9999s ease-out 0s;
+}
