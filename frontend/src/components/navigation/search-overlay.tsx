@@ -9,7 +9,8 @@ import { FOCUS_RING, ICON_HIT } from "@/components/ui/control";
 import { CATEGORIES, HOME_CATEGORIES } from "@/data/categories";
 import { TRENDING_SEARCHES } from "@/data/navigation";
 import { catalog, searchProducts } from "@/data/products";
-import { hrefHasProducts, productsForListing } from "@/lib/listing";
+import { categoryImageCandidates } from "@/lib/category-image";
+import { hrefHasProducts } from "@/lib/listing";
 import { categoryMatchesQuery } from "@/lib/search";
 import { useLanguage } from "@/context/language-context";
 import { useUi } from "@/context/ui-context";
@@ -45,11 +46,8 @@ export function SearchOverlay() {
   const hydrated = useHydrated();
   // ST-30: the shortcut hint matches the keyboard (⌘K on Apple devices, Ctrl K elsewhere).
   const shortcutLabel = hydrated && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K";
-  /** A real picture for a category tile: its own artwork, else the first product's image. */
-  const categoryImage = (category: Category) =>
-    category.artworkUrl ||
-    productsForListing(category.slug, catalog(), getSnapshotCategories()).find((product) => product.images[0])?.images[0] ||
-    undefined;
+  /** Real pictures for a category tile (own artwork → linked / listed product image → bundled art). */
+  const categoryImage = (category: Category) => categoryImageCandidates(category, catalog(), getSnapshotCategories());
 
   const closeSearch = () => {
     setSearchOpen(false);
@@ -143,11 +141,11 @@ export function SearchOverlay() {
             aria-label={t("nav.search")}
           />
           {query ? (
-            <button type="button" className={cn("text-xs text-muted hover:text-fg", FOCUS_RING, "rounded-md px-2 py-1")} onClick={() => setQuery("")}>
+            <button type="button" className={cn("shrink-0 whitespace-nowrap text-xs text-muted hover:text-fg", FOCUS_RING, "rounded-md px-2 py-1")} onClick={() => setQuery("")}>
               {t("search.clear")}
             </button>
           ) : (
-            <kbd className="hidden rounded-md border border-line bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted sm:inline" dir="ltr">
+            <kbd className="hidden shrink-0 whitespace-nowrap rounded-md border border-line bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted sm:inline" dir="ltr">
               {shortcutLabel}
             </kbd>
           )}
@@ -213,6 +211,7 @@ export function SearchOverlay() {
                         src={categoryImage(category)}
                         alt=""
                         artworkKey={category.artworkKey}
+                        fit="contain"
                         className="aspect-[16/10] w-full"
                       />
                       <p className="px-3 py-2.5 text-sm font-medium group-hover:text-gold">
@@ -273,8 +272,8 @@ export function SearchOverlay() {
                           closeSearch();
                         }}
                       >
-                        <div className="h-14 w-14 overflow-hidden rounded-[10px] border border-line">
-                          <ProductCover product={product} compact className="h-full w-full [&_img]:p-1" />
+                        <div className="h-14 w-14 shrink-0 overflow-hidden rounded-[10px] border border-line bg-[#17182B]">
+                          <ProductCover product={product} compact className="h-full w-full [&_img]:object-contain [&_img]:p-1" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-medium">{locale === "ar" ? product.nameAr : product.name}</p>

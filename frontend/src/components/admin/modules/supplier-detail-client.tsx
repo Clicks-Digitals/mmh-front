@@ -24,6 +24,7 @@ import {
 } from "@/lib/api/admin";
 import Link from "next/link";
 import { useState } from "react";
+import { VariantName } from "@/components/admin/ui/variant-name";
 
 export function SupplierDetailClient({ id }: { id: string }) {
   const toast = useAdminToast();
@@ -176,8 +177,17 @@ export function SupplierDetailClient({ id }: { id: string }) {
               <tbody>
                 {mappings.map((m) => (
                   <tr key={String(m.id)} className="border-t border-[var(--clicks-border)]">
-                    <td className="px-3 py-2 font-mono text-xs">{m.product}</td>
-                    <td className="px-3 py-2 font-mono text-xs">{m.variant ?? "Product-level"}</td>
+                    <td className="px-3 py-2 text-xs">
+                      {m.product_name || m.product}
+                      {m.product_name ? <span className="block font-mono text-[11px] text-[var(--clicks-muted)]">{m.product}</span> : null}
+                    </td>
+                    <td className="px-3 py-2">
+                      {m.variant == null ? (
+                        <span className="text-xs">Product-level</span>
+                      ) : (
+                        <VariantName productName={m.product_name} variantName={m.variant_name} sku={m.variant_sku ?? String(m.variant)} />
+                      )}
+                    </td>
                     <td className="px-3 py-2 font-mono text-xs">{m.external_product_id}</td>
                     <td className="px-3 py-2 text-xs">{m.external_name || "—"}</td>
                     <td className="px-3 py-2">

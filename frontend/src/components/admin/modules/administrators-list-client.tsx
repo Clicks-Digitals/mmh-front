@@ -28,8 +28,9 @@ import {
 } from "@/components/admin/lib/roles";
 import { formatAdminDateTime } from "@/lib/admin/format";
 import { useAdminQuery } from "@/hooks/use-admin-query";
+import { useAdminUrlState } from "@/hooks/use-admin-url-state";
 import { asList, createAdministrator, updateAdministrator } from "@/lib/api/admin";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 const emptyCreate = { email: "", password: "", full_name: "", role: "VIEWER", title: "" };
 const CREATE_FIELDS = ["email", "password", "full_name", "role", "title"];
@@ -82,24 +83,19 @@ function RoleSelect({
   );
 }
 
-export function AdministratorsListClient({ initialSearch = "" }: { initialSearch?: string }) {
+const LIST_DEFAULTS = { search: "", role: "", page: "1" };
+
+/** Search, role filter and page live in the URL (?search=, ?role=, ?page=) so links like ?search=email work. */
+export function AdministratorsListClient() {
   const toast = useAdminToast();
   const { can, role: myRole, userId } = useAdminAccess();
   const canWrite = can("admins.write");
   const roles = assignableRoles(myRole);
 
-  const [searchInput, setSearchInput] = useState(initialSearch);
-  const [search, setSearch] = useState(initialSearch);
-  const [roleFilter, setRoleFilter] = useState("");
-  const [page, setPage] = useState(1);
-
-  useEffect(() => {
-    const t = window.setTimeout(() => {
-      setSearch(searchInput.trim());
-      setPage(1);
-    }, 350);
-    return () => window.clearTimeout(t);
-  }, [searchInput]);
+  const list = useAdminUrlState(LIST_DEFAULTS);
+  const search = list.debounced.search.trim();
+  const roleFilter = list.debounced.role;
+  const page = Number(list.debounced.page) || 1;
 
   const { data, loading, error, reload, token } = useAdminQuery(
     async (tok) =>
@@ -246,26 +242,19 @@ export function AdministratorsListClient({ initialSearch = "" }: { initialSearch
         }
       />
       <Filters
-        search={searchInput}
-        onSearchChange={setSearchInput}
+        search={list.state.search}
+        onSearchChange={(v) => list.set({ search: v })}
         searchPlaceholder="Name or e-mail…"
         filters={[
           {
             key: "role",
             label: "Role",
-            value: roleFilter,
-            onChange: (v) => {
-              setRoleFilter(v);
-              setPage(1);
-            },
+            value: list.state.role,
+            onChange: (v) => list.set({ role: v }),
             options: [{ value: "", label: "Any role" }, ...ADMIN_ROLES.map((r) => ({ value: r, label: roleLabel(r) }))],
           },
         ]}
-        onClear={() => {
-          setSearchInput("");
-          setRoleFilter("");
-          setPage(1);
-        }}
+        onClear={list.reset}
       />
       <OpsTable<AdminUserRow>
         rows={rows}
@@ -319,7 +308,12 @@ export function AdministratorsListClient({ initialSearch = "" }: { initialSearch
             : []),
         ]}
       />
-      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={data?.count ?? 0} onPageChange={setPage} />
+      <Pagination
+        page={list.page}
+        pageSize={ADMIN_LIST_PAGE_SIZE}
+        total={data?.count ?? 0}
+        onPageChange={(p) => list.set({ page: String(p) })}
+      />
 
       <AdminModal open={createOpen} onClose={() => setCreateOpen(false)} title="New staff account">
         <div className="space-y-3">

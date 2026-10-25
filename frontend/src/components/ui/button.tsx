@@ -17,11 +17,11 @@ interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onC
 
 const variants: Record<Variant, string> = {
   primary: "bg-gold text-elevated hover:bg-amber active:bg-gold-deep disabled:bg-gold/32 disabled:text-elevated/58 font-semibold",
-  secondary: "bg-brand text-fg hover:bg-accent active:bg-brand-deep",
+  secondary: "bg-brand text-fg hover:bg-accent active:bg-brand-deep disabled:bg-brand/40 disabled:text-muted disabled:opacity-60",
   ghost: "bg-transparent text-muted hover:bg-brand/16 hover:text-fg active:bg-brand/20",
   gold: "bg-gold text-elevated hover:bg-amber font-semibold active:bg-gold-deep disabled:bg-gold/32 disabled:text-elevated/58",
   danger: "bg-danger/15 text-danger hover:bg-danger/25",
-  outline: "border border-gold/55 bg-transparent text-gold hover:border-gold hover:bg-gold/8",
+  outline: "border border-gold/55 bg-transparent text-gold hover:border-gold hover:bg-gold/8 disabled:border-line disabled:bg-transparent disabled:text-muted disabled:opacity-60",
 };
 
 const sizes: Record<Size, string> = {

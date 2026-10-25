@@ -17,6 +17,7 @@ import { downloadCodeImportErrors, getCodeImport, listCodeImports, type CodeImpo
 import { formatAdminDateTime } from "@/lib/admin/format";
 import Link from "next/link";
 import { useState } from "react";
+import { VariantName } from "@/components/admin/ui/variant-name";
 
 export function CodeImportsListClient() {
   const { can } = useAdminAccess();
@@ -78,7 +79,12 @@ export function CodeImportsListClient() {
     {
       key: "variant",
       header: "Variant",
-      render: (r) => (r.mode === "ADVANCED" ? "Several (from the file)" : <span className="font-mono text-xs">{r.variant_sku || "—"}</span>),
+      render: (r) =>
+        r.mode === "ADVANCED" ? (
+          "Several (from the file)"
+        ) : (
+          <VariantName productName={r.product_name} variantName={r.variant_name} sku={r.variant_sku} />
+        ),
     },
     { key: "rows", header: "Rows in file", className: "tabular-nums", render: (r) => r.total_rows },
     { key: "imported", header: "Imported", className: "tabular-nums", render: (r) => r.imported_rows },
@@ -173,7 +179,13 @@ export function CodeImportsListClient() {
               </div>
               <div>
                 <dt className="text-[11px] text-[var(--clicks-muted)]">Variant</dt>
-                <dd className="font-mono text-xs">{detail.mode === "ADVANCED" ? "Several (from the file)" : detail.variant_sku || "—"}</dd>
+                <dd>
+                  {detail.mode === "ADVANCED" ? (
+                    "Several (from the file)"
+                  ) : (
+                    <VariantName productName={detail.product_name} variantName={detail.variant_name} sku={detail.variant_sku} />
+                  )}
+                </dd>
               </div>
               <div>
                 <dt className="text-[11px] text-[var(--clicks-muted)]">Rows in file</dt>

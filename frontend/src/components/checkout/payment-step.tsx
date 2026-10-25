@@ -9,7 +9,7 @@ import { createPayPalOrder } from "@/lib/api/paypal";
 import { estimatePayPalAmount } from "@/lib/coupon";
 import { couponReasonKey, type CouponReason } from "@/lib/coupon-storage";
 import { checkoutFingerprint, resolveAttempt, type CheckoutAttempt } from "@/lib/idempotency";
-import { parseStockLines, stockLineName, type StockLine } from "@/lib/stock-errors";
+import { parseStockLines, stockLineMessage, type StockLine } from "@/lib/stock-errors";
 import type { CheckoutErrorCode, CheckoutResult } from "@/server/actions/checkout";
 import type { Locale } from "@/types";
 import { useRef, useState } from "react";
@@ -118,15 +118,10 @@ export function StockLinesList({ lines }: { lines?: StockLine[] }) {
   if (!lines?.length) return null;
   return (
     <ul className="mt-2 list-disc space-y-1 ps-5">
-      {lines.map((line) => (
-        <li key={`${line.productId}-${line.variantId ?? ""}`}>
-          {t(line.available > 0 ? "stock.lineOnlyN" : "stock.lineNone", {
-            name: stockLineName(line, locale),
-            count: line.available,
-            requested: line.requested,
-          })}
-        </li>
-      ))}
+      {lines.map((line) => {
+        const message = stockLineMessage(line, locale);
+        return <li key={`${line.productId}-${line.variantId ?? ""}`}>{t(message.key, message.values)}</li>;
+      })}
     </ul>
   );
 }

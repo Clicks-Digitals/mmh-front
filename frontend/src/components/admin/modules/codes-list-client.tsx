@@ -26,6 +26,8 @@ import {
 } from "@/lib/api/admin";
 import Link from "next/link";
 import { useState } from "react";
+import { VariantName } from "@/components/admin/ui/variant-name";
+import { variantOptionLabel } from "@/components/admin/lib/variants";
 
 const STATUSES = [
   { value: "", label: "Any status" },
@@ -38,9 +40,8 @@ const STATUSES = [
 const SOURCE_LABEL: Record<string, string> = { CSV_IMPORT: "File import", MANUAL: "Added by hand", SUPPLIER: "Supplier" };
 
 /** CA-11 / RO-11: only code variants have code stock; one paginated request set, reused. */
-export function codeVariantLabel(v: Pick<AdminVariant, "sku" | "name_en" | "product_name">): string {
-  const name = [v.product_name, v.name_en].filter(Boolean).join(" — ");
-  return name ? `${name} (${v.sku})` : v.sku;
+export function codeVariantLabel(v: Partial<Pick<AdminVariant, "sku" | "name_en" | "product_name">>): string {
+  return variantOptionLabel(v);
 }
 
 /** Filters come from the URL (?variant=, ?status=, ?search=), so links from products/inventory work. */
@@ -93,12 +94,7 @@ export function CodesListClient() {
     {
       key: "variant",
       header: "Variant",
-      render: (r) => (
-        <div>
-          <p className="text-xs">{r.variant_name || "—"}</p>
-          {r.variant_sku ? <p className="font-mono text-[11px] text-[var(--clicks-muted)]">{r.variant_sku}</p> : null}
-        </div>
-      ),
+      render: (r) => <VariantName productName={r.product_name} variantName={r.variant_name} sku={r.variant_sku} />,
     },
     {
       key: "order",

@@ -15,6 +15,7 @@ import {
   auditActionLabel,
   auditEntityHref,
   auditEntityText,
+  auditMetaRows,
   summarizeAuditMeta,
 } from "@/components/admin/lib/audit";
 import { localInputToIso } from "@/components/admin/lib/datetime";
@@ -168,11 +169,11 @@ export function AuditListClient({
               const href = auditEntityHref(r);
               const text = auditEntityText(r);
               return href ? (
-                <Link href={href} className="text-xs text-[var(--clicks-blue)]">
+                <Link href={href} className="break-words text-xs text-[var(--clicks-blue)]">
                   {text}
                 </Link>
               ) : (
-                <span className="text-xs">{text}</span>
+                <span className="break-words text-xs">{text}</span>
               );
             },
           },
@@ -185,7 +186,7 @@ export function AuditListClient({
               return summary ? (
                 <button
                   type="button"
-                  className="max-w-[360px] truncate text-start text-xs text-[var(--clicks-muted)] hover:text-[var(--clicks-blue)]"
+                  className="block w-full max-w-full whitespace-normal break-words text-start text-xs text-[var(--clicks-muted)] hover:text-[var(--clicks-blue)] md:max-w-[360px] md:truncate md:whitespace-nowrap"
                   title="Show all details"
                   onClick={() => setDetail(r)}
                 >
@@ -214,20 +215,17 @@ export function AuditListClient({
         wide
       >
         {detail ? (
-          <dl className="space-y-2 text-sm">
-            <div className="grid gap-1 sm:grid-cols-[160px_1fr]">
-              <dt className="text-xs font-semibold text-[var(--clicks-muted)]">item</dt>
-              <dd className="text-xs">{auditEntityText(detail)}</dd>
+          <dl className="min-w-0 space-y-2 text-sm">
+            <div className="grid min-w-0 gap-0.5 sm:grid-cols-[160px_minmax(0,1fr)] sm:gap-3">
+              <dt className="text-xs font-semibold text-[var(--clicks-muted)]">Item</dt>
+              <dd className="min-w-0 break-words text-xs">{auditEntityText(detail)}</dd>
             </div>
-            {Object.entries(readableMeta(detail.meta)).map(([key, value]) => (
-              <div key={key} className="grid gap-1 sm:grid-cols-[160px_1fr]">
-                <dt className="text-xs font-semibold text-[var(--clicks-muted)]">{key.replaceAll("_", " ")}</dt>
-                <dd className="break-all font-mono text-xs">
-                  {typeof value === "object" && value !== null ? JSON.stringify(value, null, 1) : String(value)}
-                </dd>
+            {auditMetaRows(readableMeta(detail.meta)).map((row) => (
+              <div key={row.key} className="grid min-w-0 gap-0.5 sm:grid-cols-[160px_minmax(0,1fr)] sm:gap-3">
+                <dt className="text-xs font-semibold text-[var(--clicks-muted)]">{row.label}</dt>
+                <dd className="min-w-0 whitespace-pre-wrap break-words text-xs [overflow-wrap:anywhere]">{row.value}</dd>
               </div>
             ))}
-            <p className="pt-2 font-mono text-[10px] text-[var(--clicks-muted)]">{detail.action}</p>
           </dl>
         ) : null}
       </AdminModal>

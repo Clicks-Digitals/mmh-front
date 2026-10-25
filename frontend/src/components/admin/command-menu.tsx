@@ -18,6 +18,7 @@ import { cn } from "@/lib/cn";
 import { type PermissionKey } from "@/server/auth/permissions";
 import { Loader2, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { storePagePath } from "@/components/admin/lib/content-pages";
 
 type CommandItem = { href: string; label: string; permission?: PermissionKey; keywords?: string };
 
@@ -179,7 +180,7 @@ export function AdminCommandMenu() {
               id: `content:${p.slug}`,
               group: "content" as const,
               label: p.title_en,
-              hint: `/${p.slug}`,
+              hint: storePagePath(p.slug),
               href: `/admin/pages?search=${encodeURIComponent(p.slug)}`,
             })),
           ),

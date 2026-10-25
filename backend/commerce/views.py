@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 import csv
 import io
 import secrets
@@ -142,6 +144,16 @@ class CheckoutSerializer(serializers.Serializer):
     delivery_method = serializers.CharField(required=False, allow_blank=True, max_length=32)
     locale = serializers.ChoiceField(choices=["en", "ar"], required=False, default="en")
     items = CheckoutItemSerializer(many=True, allow_empty=False, max_length=MAX_LINES)
+
+    def validate_phone(self, value: str) -> str:
+        """Same rules as the store / account phone: Arabic-Indic and Persian digits are
+        converted to ASCII before the numeric checks (ST-11 API parity)."""
+        from accounts.validators import normalize_phone
+
+        try:
+            return normalize_phone(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
 
     def validate_payment_provider(self, value: str) -> str:
         value = (value or "").strip().lower()
@@ -444,10 +456,12 @@ class MyOrdersView(generics.ListAPIView):
 def _customer_can_access(request, order: Order, *, token: str | None = None, allow_email: bool = True) -> bool:
     if _is_owner(order, request.user):
         return True
-    if order.user_id:
-        return False
+    # The e-mailed access token works for every order (also account orders opened
+    # while signed out); the e-mail-only lookup stays limited to guest orders.
     if _token_matches(order, token):
         return True
+    if order.user_id:
+        return False
     if not allow_email:
         return False
     email = (request.query_params.get("email") or "").strip().lower()
@@ -457,8 +471,9 @@ def _customer_can_access(request, order: Order, *, token: str | None = None, all
 class OrderDetailView(APIView):
     """Order lookup.
 
-    * Order of a registered customer: only that customer (JWT).
-    * Guest order: ``?email=`` matching the order e-mail, or ``?access_token=`` (alias ``?token=``).
+    * Any order: ``?access_token=`` (alias ``?token=``) from the order e-mail.
+    * Order of a registered customer: also that customer (JWT).
+    * Guest order: also ``?email=`` matching the order e-mail.
     Everything else is a 404 so order numbers cannot be probed.
     """
 
@@ -596,6 +611,7 @@ class AdminMaskedCodeSerializer(serializers.ModelSerializer):
     variant_sku = serializers.CharField(source="variant.sku", read_only=True, allow_null=True)
     variant_name = serializers.CharField(source="variant.name_en", read_only=True, allow_null=True)
     product_id = serializers.CharField(source="variant.product_id", read_only=True, allow_null=True)
+    product_name = serializers.CharField(source="variant.product.name_en", read_only=True, allow_null=True)
     revealed_by_email = serializers.CharField(source="revealed_by.email", read_only=True, allow_null=True)
     revealed_by_customer = serializers.SerializerMethodField()
     status_label = serializers.SerializerMethodField()
@@ -612,6 +628,7 @@ class AdminMaskedCodeSerializer(serializers.ModelSerializer):
             "variant_sku",
             "variant_name",
             "product_id",
+            "product_name",
             "order_item",
             "order_number",
             "created_at",
@@ -849,10 +866,12 @@ class AdminOrderSerializer(serializers.ModelSerializer):
     def get_actions(self, obj: Order) -> dict:
         actions = order_actions(obj)
         summary = self._summary(obj)
-        if obj.payment_status not in PAID_UNREFUNDED:
+        if obj.payment_status == PaymentStatus.REFUNDED or (
+            obj.payment_status in PAID_UNREFUNDED and summary["remaining_fils"] <= 0
+        ):
+            refund_reason = "Nothing left to refund"
+        elif obj.payment_status not in PAID_UNREFUNDED:
             refund_reason = "Only paid orders can be refunded."
-        elif summary["remaining_fils"] <= 0:
-            refund_reason = "Nothing is left to refund."
         else:
             refund_reason = ""
         actions["refund"] = {
@@ -1195,6 +1214,7 @@ class AdminDashboardView(APIView):
     admin_permission = "orders.read"
 
     def get(self, request):
+        from catalog.views import effective_out_of_stock_count
         from cms.models import SiteSettings
 
         threshold = SiteSettings.load().low_stock_threshold
@@ -1236,7 +1256,9 @@ class AdminDashboardView(APIView):
             ).count(),
             "low_stock_variants": _low_stock_variant_count(threshold),
             "low_stock_threshold": threshold,
-            "out_of_stock_variants": ProductVariant.objects.filter(stock_status=StockStatus.OUT_OF_STOCK).count(),
+            # Same rule as the Inventory page: published CODE variants of non-archived
+            # products whose effective (sellable) stock is out.
+            "out_of_stock_variants": effective_out_of_stock_count(),
             "pending_orders": Order.objects.filter(payment_status=PaymentStatus.PENDING).count(),
             "pending_payment_24h": Order.objects.filter(
                 payment_status=PaymentStatus.PENDING, created_at__gte=now - timedelta(hours=24)
@@ -1255,7 +1277,7 @@ class AdminDashboardView(APIView):
                 "pending_orders": "payment_status=PENDING",
                 "manual_review": "fulfillment_status=MANUAL_REVIEW",
                 "failed_fulfillment": "fulfillment_status=FAILED",
-                "today": f"created_from={today_start.isoformat()}",
+                "today": urlencode({"created_from": today_start.isoformat()}),
             },
         }
         # RO-10: the activity feed is audit data.
@@ -1916,7 +1938,9 @@ class AdminCouponViewSet(viewsets.ModelViewSet):
 class CodeImportBatchSerializer(serializers.ModelSerializer):
     uploaded_by_email = serializers.CharField(source="uploaded_by.email", read_only=True, allow_null=True)
     variant_sku = serializers.CharField(source="variant.sku", read_only=True, allow_null=True)
+    variant_name = serializers.CharField(source="variant.name_en", read_only=True, allow_null=True)
     product_id = serializers.CharField(source="variant.product_id", read_only=True, allow_null=True)
+    product_name = serializers.CharField(source="variant.product.name_en", read_only=True, allow_null=True)
 
     class Meta:
         model = CodeImportBatch
@@ -1927,7 +1951,9 @@ class CodeImportBatchSerializer(serializers.ModelSerializer):
             "status",
             "variant",
             "variant_sku",
+            "variant_name",
             "product_id",
+            "product_name",
             "uploaded_by",
             "uploaded_by_email",
             "total_rows",

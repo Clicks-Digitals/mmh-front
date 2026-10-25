@@ -406,7 +406,7 @@ export function CategoriesListClient() {
             <span>
               <span className="font-medium">Show in the store&apos;s top menu</span>
               <span className="block text-[11px] text-[var(--clicks-muted)]">
-                Adds the category to the header menu, the mobile menu and the home page category tiles (only while it is published).
+                Adds the category to the header menu, the mobile menu and the home page category tiles (only while it is published and has products).
               </span>
             </span>
           </label>

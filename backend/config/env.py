@@ -72,5 +72,6 @@ def email_settings(environ: Mapping[str, str]) -> dict:
             }
         )
     else:
-        conf["EMAIL_BACKEND"] = "django.core.mail.backends.console.EmailBackend"
+        # UTF-8 safe console output (Arabic e-mails on Windows consoles).
+        conf["EMAIL_BACKEND"] = "config.mail.EmailBackend"
     return conf

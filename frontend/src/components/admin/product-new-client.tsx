@@ -21,6 +21,7 @@ import { ApiError } from "@/lib/api/client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { categoryTreeOptions } from "@/components/admin/lib/category-tree";
 
 const EMPTY = {
   name_en: "",
@@ -233,10 +234,9 @@ export function ProductNewClient() {
                   onChange={(e) => set({ category_id: e.target.value })}
                 >
                   <option value="">{metaLoading ? "Loading…" : "Choose a category…"}</option>
-                  {categories.map((c) => (
+                  {categoryTreeOptions(categories).map(({ category: c, label }) => (
                     <option key={String(c.id)} value={String(c.id)}>
-                      {c.name_en}
-                      {c.status !== "PUBLISHED" ? ` (${c.status.toLowerCase()})` : ""}
+                      {label}
                     </option>
                   ))}
                 </select>

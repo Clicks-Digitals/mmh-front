@@ -28,6 +28,43 @@ export function fulfillmentStatusLabel(status: string | null | undefined): strin
   return FULFILLMENT_STATUS_LABELS[status] ?? status.replaceAll("_", " ").toLowerCase();
 }
 
+/* ─── Payment providers (one wording everywhere: orders, payments, order page) ─── */
+
+export const PAYMENT_PROVIDER_LABELS: Record<string, string> = {
+  paypal: "PayPal",
+  free: "Free order",
+  manual: "Manual",
+};
+
+export const PAYMENT_PROVIDER_OPTIONS: Array<{ value: string; label: string }> = Object.entries(PAYMENT_PROVIDER_LABELS).map(
+  ([value, label]) => ({ value, label }),
+);
+
+/** "paypal" -> "PayPal", "free" -> "Free order", "manual" -> "Manual"; unknown values are capitalised. */
+export function paymentProviderLabel(provider: string | null | undefined): string {
+  if (!provider) return "—";
+  const key = provider.toLowerCase();
+  if (PAYMENT_PROVIDER_LABELS[key]) return PAYMENT_PROVIDER_LABELS[key];
+  const spaced = provider.replaceAll("_", " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/** Sentence for "how was this order paid" on the order page. */
+export function paidWithText(provider: string | null | undefined): string {
+  switch ((provider ?? "").toLowerCase()) {
+    case "":
+      return "—";
+    case "paypal":
+      return "PayPal";
+    case "manual":
+      return "Paid manually (outside PayPal)";
+    case "free":
+      return "Free order (nothing to pay)";
+    default:
+      return paymentProviderLabel(provider);
+  }
+}
+
 export type TransitionKind = "payment" | "fulfillment";
 
 /** Action-style button label for a transition target. */
@@ -203,6 +240,75 @@ export function deliveryStateTone(state: string | null | undefined): "success" |
   if (state === "delivered") return "success";
   if (state === "retired_refunded") return "neutral";
   return "warning";
+}
+
+type ItemDeliveryLike = {
+  delivery_state?: string | null;
+  delivery_state_label?: string | null;
+  delivered?: boolean | null;
+  delivered_at?: string | null;
+  codes?: Array<{ delivered_at?: string | null }> | null;
+};
+
+type OrderStatusLike = { payment_status?: string | null; fulfillment_status?: string | null };
+
+export type ItemDeliverySummary = {
+  /** Badge text. */
+  label: string;
+  tone: "success" | "warning" | "neutral";
+  /** "x of y codes delivered · n still to deliver · m in stock" line. */
+  showStats: boolean;
+  /** Attach code / Mark delivered buttons. */
+  showActions: boolean;
+  /** When the (now retired) codes had been delivered, for "were delivered <date>". */
+  deliveredAt: string | null;
+  state: string;
+};
+
+export function isOrderCancelled(order: OrderStatusLike): boolean {
+  return order.fulfillment_status === "CANCELLED" || order.payment_status === "CANCELLED";
+}
+
+/** Latest delivery time of an item: its own `delivered_at`, else the newest code delivery. */
+export function itemDeliveredAt(item: ItemDeliveryLike): string | null {
+  if (item.delivered_at) return item.delivered_at;
+  const times = (item.codes ?? []).map((c) => c.delivered_at).filter((t): t is string => Boolean(t));
+  times.sort();
+  return times.length ? times[times.length - 1] : null;
+}
+
+/**
+ * What the order page shows for one item (OR-23): refunded items whose codes were retired
+ * say so instead of "0 of 2 codes delivered", and cancelled orders show "Cancelled"
+ * without delivery stats or actions.
+ */
+export function itemDeliverySummary(item: ItemDeliveryLike, order: OrderStatusLike): ItemDeliverySummary {
+  const state = item.delivery_state ?? (item.delivered ? "delivered" : "pending");
+  if (state === "retired_refunded") {
+    return {
+      label: "Refunded · codes retired",
+      tone: "neutral",
+      showStats: false,
+      showActions: false,
+      deliveredAt: itemDeliveredAt(item),
+      state,
+    };
+  }
+  if (isOrderCancelled(order) && state !== "delivered") {
+    return { label: "Cancelled", tone: "neutral", showStats: false, showActions: false, deliveredAt: null, state: "cancelled" };
+  }
+  const refunded = order.payment_status === "REFUNDED";
+  if (refunded && state !== "delivered") {
+    return { label: "Refunded", tone: "neutral", showStats: false, showActions: false, deliveredAt: null, state: "refunded" };
+  }
+  return {
+    label: item.delivery_state_label || (state === "delivered" ? "Delivered" : state === "partial" ? "Partly delivered" : "Not delivered"),
+    tone: deliveryStateTone(state),
+    showStats: true,
+    showActions: !isOrderCancelled(order) && !refunded && !item.delivered,
+    deliveredAt: state === "delivered" ? itemDeliveredAt(item) : null,
+    state,
+  };
 }
 
 type FieldDetailLike = { key: string; label_en?: string | null; value?: unknown; value_label_en?: string | null };

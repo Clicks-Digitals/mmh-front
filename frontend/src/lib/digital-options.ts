@@ -42,3 +42,14 @@ export function matchDenominationId(product: Product, regionId: string, currentI
   }
   return visible.find((item) => item.inStock !== false)?.id ?? visible[0]?.id ?? "";
 }
+
+/**
+ * Whether a variant can be bought right now: not flagged out of stock and, for stock-tracked
+ * CODE variants, at least one sellable unit (`availableQuantity` 0 = none; null/undefined = not
+ * tracked, e.g. top-ups).
+ */
+export function denominationSellable(denomination: DigitalDenomination | undefined | null): boolean {
+  if (!denomination) return false;
+  if (denomination.inStock === false) return false;
+  return !(typeof denomination.availableQuantity === "number" && denomination.availableQuantity <= 0);
+}

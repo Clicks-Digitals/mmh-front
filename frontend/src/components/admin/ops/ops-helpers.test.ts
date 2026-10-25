@@ -188,7 +188,7 @@ describe("errors without raw field prefixes (RO-13, OR-24)", () => {
       detail: { code: ["A coupon with this code already exists"] },
       code: "validation_error",
     });
-    expect(adminFieldErrors(err)).toEqual({ code: "A coupon with this code already exists" });
+    expect(adminFieldErrors(err)).toEqual({ code: "A coupon with this code already exists." });
     expect(adminErrorSummary(err, "x", ["code"])).toBe("Please fix the highlighted fields.");
   });
   it("shows the message without the key", () => {

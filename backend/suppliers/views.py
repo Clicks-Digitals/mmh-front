@@ -80,6 +80,9 @@ class SupplierWriteSerializer(AutoSlugMixin, serializers.ModelSerializer):
 
 
 class SupplierMappingSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source="product.name_en", read_only=True, allow_null=True)
+    variant_name = serializers.CharField(source="variant.name_en", read_only=True, allow_null=True, default=None)
+    variant_sku = serializers.CharField(source="variant.sku", read_only=True, allow_null=True, default=None)
     counts_as_stock = serializers.SerializerMethodField()
     counts_as_stock_reason = serializers.SerializerMethodField()
     counts_as_stock_message = serializers.SerializerMethodField()
@@ -89,7 +92,10 @@ class SupplierMappingSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "product",
+            "product_name",
             "variant",
+            "variant_name",
+            "variant_sku",
             "external_product_id",
             "external_name",
             "ignored",

@@ -41,7 +41,7 @@ class EnvHelperTests(SimpleTestCase):
 
     def test_email_settings(self):
         console = env.email_settings({})
-        self.assertEqual(console["EMAIL_BACKEND"], "django.core.mail.backends.console.EmailBackend")
+        self.assertEqual(console["EMAIL_BACKEND"], "config.mail.EmailBackend")
         self.assertFalse(console["EMAIL_CONFIGURED"])
         self.assertEqual(console["DEFAULT_FROM_EMAIL"], "MMH <no-reply@mmhcard.com>")
         smtp = env.email_settings(

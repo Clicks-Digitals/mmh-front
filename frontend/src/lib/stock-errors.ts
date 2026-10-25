@@ -44,3 +44,18 @@ export function stockLineName(line: StockLine, locale: Locale): string {
   const variant = locale === "ar" ? line.variantNameAr : line.variantName;
   return variant ? `${product} · ${variant}` : product;
 }
+
+/**
+ * Translation key + every placeholder value for one failing line, so all callers
+ * (checkout, order "Complete payment") render "{name}: only {count} left (you asked for {requested})."
+ * without leaving a literal placeholder behind.
+ */
+export function stockLineMessage(
+  line: StockLine,
+  locale: Locale,
+): { key: "stock.lineOnlyN" | "stock.lineNone"; values: Record<string, string | number> } {
+  return {
+    key: line.available > 0 ? "stock.lineOnlyN" : "stock.lineNone",
+    values: { name: stockLineName(line, locale), count: line.available, requested: line.requested, available: line.available },
+  };
+}

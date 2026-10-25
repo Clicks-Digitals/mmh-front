@@ -1,5 +1,6 @@
 import type { AdminFieldOption, AdminProduct, AdminProductField, AdminVariant } from "@/lib/api/admin";
 import { filsToJodInput, jodInputToFils } from "@/components/admin/lib/money";
+import { friendlyValidationMessage } from "@/components/admin/lib/validation-messages";
 import { FIELD_KEY_PATTERN, fieldKeyFromLabel, isValidSlug } from "@/components/admin/lib/slugify";
 
 /* ─── Badges (D26) ─── */
@@ -654,7 +655,7 @@ export function publishWarnings(
 
 function firstMessage(value: unknown): string | undefined {
   if (value == null) return undefined;
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return friendlyValidationMessage(value);
   if (Array.isArray(value)) {
     for (const item of value) {
       const msg = firstMessage(item);
@@ -690,9 +691,9 @@ export function nestedListErrors(body: unknown, key: string): { rows: Record<num
   const value = validationSource(body)[key];
   const rows: Record<number, Record<string, string>> = {};
   if (value == null) return { rows };
-  if (typeof value === "string") return { rows, message: value };
+  if (typeof value === "string") return { rows, message: friendlyValidationMessage(value) };
   if (Array.isArray(value)) {
-    if (value.every((v) => typeof v === "string")) return { rows, message: value[0] as string | undefined };
+    if (value.every((v) => typeof v === "string")) return { rows, message: firstMessage(value) };
     value.forEach((item, index) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return;
       const out: Record<string, string> = {};

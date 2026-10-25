@@ -177,7 +177,7 @@ export const { handlers, auth, signIn, signOut, unstable_update } = NextAuth({
 
         let token: Awaited<ReturnType<typeof djangoLogin>>;
         try {
-          token = await djangoLogin(email, password);
+          token = await djangoLogin(email, password, portal === "admin" ? "admin" : undefined);
         } catch (error) {
           throw loginFailure(error);
         }

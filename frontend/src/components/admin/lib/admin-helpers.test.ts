@@ -137,9 +137,9 @@ describe("audit formatting", () => {
   });
   it("summarizes meta", () => {
     expect(summarizeAuditMeta({ order_number: "MMH-1", reason: "bank transfer" })).toBe(
-      "order number: MMH-1 · reason: bank transfer",
+      "Order: MMH-1 · Reason: bank transfer",
     );
-    expect(summarizeAuditMeta({ changes: { store_name: { from: "A", to: "B" } } })).toBe("store name: A → B");
+    expect(summarizeAuditMeta({ changes: { store_name: { from: "A", to: "B" } } })).toBe("Store name: A → B");
   });
 });
 

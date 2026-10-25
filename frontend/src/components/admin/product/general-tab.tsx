@@ -12,6 +12,7 @@ import {
   type GeneralForm,
 } from "@/components/admin/lib/product-form";
 import type { AdminCategory, AdminPlatform } from "@/lib/api/admin";
+import { categoryTreeOptions } from "@/components/admin/lib/category-tree";
 
 type Props = {
   form: GeneralForm;
@@ -136,10 +137,9 @@ export function GeneralTab({ form, errors, disabled, categories, platforms, onCh
         >
           <select {...text("category_id")}>
             <option value="">Choose a category…</option>
-            {categories.map((c) => (
+            {categoryTreeOptions(categories).map(({ category: c, label }) => (
               <option key={String(c.id)} value={String(c.id)}>
-                {c.name_en}
-                {c.status !== "PUBLISHED" ? ` (${c.status.toLowerCase()})` : ""}
+                {label}
               </option>
             ))}
           </select>
@@ -260,7 +260,7 @@ export function GeneralTab({ form, errors, disabled, categories, platforms, onCh
         </FormField>
       </Section>
 
-      <Section title="Pictures" description="Upload photos in the Media tab — the main (primary) photo is used on product cards.">
+      <Section title="Photos" description="Upload photos in the “Photos” tab — the main (primary) photo is used on product cards.">
         <FormField
           label="Built-in artwork (optional)"
           htmlFor="pg-artwork_key"
@@ -274,7 +274,7 @@ export function GeneralTab({ form, errors, disabled, categories, platforms, onCh
           label="External picture link (optional)"
           htmlFor="pg-image_url"
           optional
-          hint="Only if the picture is hosted elsewhere. Uploaded photos (Media tab) always take priority."
+          hint="Only if the picture is hosted elsewhere. Uploaded photos (Photos tab) always take priority."
           error={errors.image_url}
         >
           <input {...text("image_url", { mono: true })} />

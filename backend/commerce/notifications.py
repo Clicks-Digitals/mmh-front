@@ -47,13 +47,15 @@ COPY = {
         "paid_next_mixed_account": "Your codes will appear in your account and on your order page, and we will top up the account you entered. We will e-mail you as each item is delivered.",
         "paid_next_mixed_guest": "Your codes will appear on your order page, and we will top up the account you entered. We will e-mail you as each item is delivered.",
         "track": "Track your order: {link}",
-        "free_intro": "Thank you! Your order {number} is confirmed (total {total}).",
+        "free_subject": "Order {number}: your free order is confirmed",
+        "free_title": "Your free order is confirmed — order {number}",
+        "free_intro": "Thank you! Your free order {number} is confirmed — there is nothing to pay (total {total}).",
         "codes_subject": "Order {number}: your codes",
         "codes_title": "Your codes — order {number}",
         "codes_intro": "Your codes for order {number} are ready.",
-        "partial_subject": "Order {number}: {ready} of {total} codes ready",
-        "partial_title": "{ready} of {total} codes ready — order {number}",
-        "partial_intro": "{ready} of your {total} codes for order {number} are ready. The rest is on the way — we will e-mail you again as soon as they are ready.",
+        "partial_subject": "Order {number}: {ready} of your {total} codes {verb} ready",
+        "partial_title": "{ready} of your {total} codes {verb} ready — order {number}",
+        "partial_intro": "{ready} of your {total} codes for order {number} {verb} ready. The rest is on the way — we will e-mail you again as soon as they are ready.",
         "code": "Code",
         "pin": "PIN",
         "keep_private": "Keep these codes private. You can view them any time on your order page.",
@@ -92,13 +94,15 @@ COPY = {
         "paid_next_mixed_account": "ستظهر أكوادك في حسابك وفي صفحة الطلب، وسنشحن الحساب الذي أدخلته. سنراسلك عند تسليم كل منتج.",
         "paid_next_mixed_guest": "ستظهر أكوادك في صفحة الطلب، وسنشحن الحساب الذي أدخلته. سنراسلك عند تسليم كل منتج.",
         "track": "تابع طلبك: {link}",
-        "free_intro": "شكراً لك! تم تأكيد طلبك {number} (الإجمالي {total}).",
+        "free_subject": "الطلب {number}: تم تأكيد طلبك المجاني",
+        "free_title": "تم تأكيد طلبك المجاني — الطلب {number}",
+        "free_intro": "شكراً لك! تم تأكيد طلبك المجاني {number} — لا يوجد أي مبلغ للدفع (الإجمالي {total}).",
         "codes_subject": "الطلب {number}: أكوادك",
         "codes_title": "أكوادك — الطلب {number}",
         "codes_intro": "أكوادك للطلب {number} جاهزة.",
-        "partial_subject": "الطلب {number}: {ready} من {total} أكواد جاهزة",
-        "partial_title": "{ready} من {total} أكواد جاهزة — الطلب {number}",
-        "partial_intro": "{ready} من أصل {total} أكواد للطلب {number} جاهزة. الباقي في الطريق — سنراسلك مرة أخرى فور جاهزيتها.",
+        "partial_subject": "الطلب {number}: جاهز الآن {ready_phrase} من أصل {total_phrase}",
+        "partial_title": "جاهز الآن {ready_phrase} من أصل {total_phrase} — الطلب {number}",
+        "partial_intro": "جاهز الآن {ready_phrase} من أصل {total_phrase} في طلبك {number}. الباقي في الطريق — سنراسلك مرة أخرى فور جاهزيتها.",
         "code": "الكود",
         "pin": "الرقم السري",
         "keep_private": "احتفظ بهذه الأكواد بشكل خاص. يمكنك عرضها في أي وقت من صفحة الطلب.",
@@ -129,6 +133,28 @@ def _locale(order) -> str:
 
 def _t(order, key: str, **kwargs) -> str:
     return COPY[_locale(order)][key].format(**kwargs)
+
+
+def _ar_codes(n: int, *, genitive: bool = False) -> str:
+    """Arabic counted noun for "code": 1 كود واحد, 2 كودان/كودين, 3-10 أكواد, 11+ كوداً."""
+    if n == 1:
+        return "كود واحد"
+    if n == 2:
+        return "كودين" if genitive else "كودان"
+    if 3 <= n <= 10:
+        return f"{n} أكواد"
+    return f"{n} كوداً"
+
+
+def partial_progress_kwargs(ready: int, total: int) -> dict:
+    """Placeholders for the partial-delivery copy with correct EN verb / AR number agreement."""
+    return {
+        "ready": ready,
+        "total": total,
+        "verb": "is" if ready == 1 else "are",
+        "ready_phrase": _ar_codes(ready),
+        "total_phrase": _ar_codes(total, genitive=True),
+    }
 
 
 def _money(order, fils: int) -> str:
@@ -246,9 +272,10 @@ def send_order_paid_email(order_id: int) -> bool:
         next_key = "paid_next_topup"
     else:
         next_key = "paid_next_codes_guest" if guest else "paid_next_codes_account"
+    free = order.total_fils == 0
     intro = (
         _t(order, "free_intro", number=order.order_number, total=_money(order, 0))
-        if order.total_fils == 0
+        if free
         else _t(order, "paid_intro", number=order.order_number)
     )
     lines = [f"- {item_title(order, i)} x{i.quantity}: {_money(order, i.line_total_fils)}" for i in items]
@@ -279,14 +306,14 @@ def send_order_paid_email(order_id: int) -> bool:
     )
     html = _html_page(
         order,
-        _t(order, "paid_title", number=order.order_number),
+        _t(order, "free_title" if free else "paid_title", number=order.order_number),
         f"<p>{escape(_t(order, 'hi', name=order.full_name))} {escape(intro)}</p>"
         f"<table style=\"width:100%;border-collapse:collapse\">{rows}</table>"
         f"<p>{escape(_t(order, next_key))}</p>",
         link,
     )
     return _send(
-        _t(order, "paid_subject", number=order.order_number),
+        _t(order, "free_subject" if free else "paid_subject", number=order.order_number),
         text,
         html,
         order.email,
@@ -344,9 +371,10 @@ def send_codes_delivered_email(order_id: int) -> bool:
     link = order_link(order)
     number = order.order_number
     if partial:
-        subject = _t(order, "partial_subject", number=number, ready=ready, total=total)
-        title = _t(order, "partial_title", number=number, ready=ready, total=total)
-        intro = _t(order, "partial_intro", number=number, ready=ready, total=total)
+        progress = partial_progress_kwargs(ready, total)
+        subject = _t(order, "partial_subject", number=number, **progress)
+        title = _t(order, "partial_title", number=number, **progress)
+        intro = _t(order, "partial_intro", number=number, **progress)
     else:
         subject = _t(order, "codes_subject", number=number)
         title = _t(order, "codes_title", number=number)

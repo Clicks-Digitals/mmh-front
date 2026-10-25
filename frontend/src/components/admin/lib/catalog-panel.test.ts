@@ -227,9 +227,9 @@ describe("product editor helpers", () => {
 
   it("maps server validation errors to tabs and rows", () => {
     const body = { detail: { id: ["A product with this ID already exists"], category: ["Invalid"], variants: [{}, { sku: ["SKU already exists"] }] }, code: "validation_error" };
-    expect(generalServerErrors(body)).toEqual({ id: "A product with this ID already exists", category_id: "Invalid" });
-    expect(nestedListErrors(body, "variants").rows).toEqual({ 1: { sku: "SKU already exists" } });
-    expect(nestedListErrors({ detail: { variants: "SKU already exists" } }, "variants").message).toBe("SKU already exists");
+    expect(generalServerErrors(body)).toEqual({ id: "Another product already uses this product ID.", category_id: "Invalid" });
+    expect(nestedListErrors(body, "variants").rows).toEqual({ 1: { sku: "Another product option already uses this SKU." } });
+    expect(nestedListErrors({ detail: { variants: "SKU already exists" } }, "variants").message).toBe("Another product option already uses this SKU.");
   });
 });
 

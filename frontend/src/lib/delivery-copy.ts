@@ -36,3 +36,17 @@ export function stripInstantClaims(text: string | null | undefined): string {
     .replace(/\s{2,}/g, " ")
     .trim();
 }
+
+export type CartDeliveryNoteKey = "cart.digitalNote" | "cart.topupNote" | "cart.mixedNote";
+
+/**
+ * ST-19: cart / drawer delivery note depends on what is in the cart — codes only, top-ups only
+ * (DIRECT_TOPUP, sent to the entered player ID) or a mix. Unknown/empty → codes copy.
+ */
+export function cartDeliveryNoteKey(fulfillmentTypes: ReadonlyArray<string | null | undefined>): CartDeliveryNoteKey {
+  const known = fulfillmentTypes.filter((type): type is string => Boolean(type)).map((type) => type.toLowerCase());
+  if (!known.length) return "cart.digitalNote";
+  const topups = known.filter((type) => type === "direct_topup").length;
+  if (topups === 0) return "cart.digitalNote";
+  return topups === known.length ? "cart.topupNote" : "cart.mixedNote";
+}

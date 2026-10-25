@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/context/language-context";
 import { usePayPalConfig } from "@/hooks/use-paypal-config";
 import type { OrderView } from "@/lib/orders";
-import { stockLineName, type StockLine } from "@/lib/stock-errors";
+import { stockLineMessage, type StockLine } from "@/lib/stock-errors";
 import { useState } from "react";
 
 /**
@@ -74,11 +74,10 @@ export function UnpaidOrderActions({
       ) : null}
       {lines.length ? (
         <ul className="mt-2 space-y-1 text-sm text-danger">
-          {lines.map((line) => (
-            <li key={`${line.productId}-${line.variantId ?? ""}`}>
-              {t(line.available > 0 ? "stock.lineOnlyN" : "stock.lineNone", { name: stockLineName(line, locale), count: line.available })}
-            </li>
-          ))}
+          {lines.map((line) => {
+            const message = stockLineMessage(line, locale);
+            return <li key={`${line.productId}-${line.variantId ?? ""}`}>{t(message.key, message.values)}</li>;
+          })}
         </ul>
       ) : null}
       {paying && order.canPay ? (

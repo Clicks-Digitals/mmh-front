@@ -58,7 +58,7 @@ def _check_unique_slug(serializer, value: str) -> str:
     if serializer.instance is not None:
         qs = qs.exclude(pk=serializer.instance.pk)
     if qs.exists():
-        raise serializers.ValidationError("This slug is already used")
+        raise serializers.ValidationError("Another item already uses this web address.")
     return value
 
 
@@ -674,6 +674,7 @@ class ProductDetailSerializer(ProductListSerializer):
                     "product": m.product_id,
                     "variant": m.variant_id,
                     "variant_sku": m.variant.sku if m.variant_id else None,
+                    "variant_name": m.variant.name_en if m.variant_id else None,
                     "external_product_id": m.external_product_id,
                     "external_name": m.external_name,
                     "ignored": m.ignored,
@@ -970,6 +971,9 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             "variants",
             "fields",
         )
+        # validate_slug / validate_id give plain-language duplicate messages; drop the
+        # default "product with this slug already exists." UniqueValidators.
+        extra_kwargs = {"slug": {"validators": []}, "id": {"validators": []}}
 
     def validate_slug(self, value: str) -> str:
         value = (value or "").strip()
@@ -979,7 +983,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
-            raise serializers.ValidationError("Slug already exists")
+            raise serializers.ValidationError("Another product already uses this web address.")
         return value
 
     def validate_id(self, value: str) -> str:

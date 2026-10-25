@@ -144,7 +144,10 @@ def create_checkout_order(
     order = Order.objects.filter(order_number=order_number).first()
     if not order:
         raise PaymentError("Order not found", status=404, code="not_found")
-    _assert_access(order, user)
+    # The e-mailed access token works for every order, also account orders opened while
+    # signed out or in another account's session (same rule as the order page).
+    if not _token_ok(order.access_token or "", access_token or ""):
+        _assert_access(order, user)
     assert_order_payable(order)
     if not checkout_token:
         is_owner = bool(

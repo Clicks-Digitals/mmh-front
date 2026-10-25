@@ -129,6 +129,35 @@ def actor_label(entry) -> str:
     return f"{name} ({actor.email})" if name else (actor.email or f"User #{actor.pk}")
 
 
+def variant_display_name(product_name: str, variant_name: str) -> str:
+    """'PUBG Mobile – 60 UC'; either part may be missing."""
+    product_name = (product_name or "").strip()
+    variant_name = (variant_name or "").strip()
+    if product_name and variant_name:
+        return f"{product_name} – {variant_name}"
+    return product_name or variant_name
+
+
+def _variant_label(entity_id, meta: dict) -> str:
+    """Product option target as '<product> – <option>' (one id, or a few comma-joined ids)."""
+    from catalog.models import ProductVariant
+
+    ids = [part for part in str(entity_id or "").split(",") if part.strip().isdigit()]
+    if ids:
+        variants = {
+            str(v.pk): variant_display_name(v.product.name_en, v.name_en)
+            for v in ProductVariant.objects.select_related("product").filter(pk__in=ids[:20]).only("name_en", "product__name_en")
+        }
+        names = [variants[i] for i in ids if i in variants]
+        if len(ids) == 1 and names:
+            return names[0]
+        if names:
+            shown = ", ".join(names[:3])
+            return f"{shown} +{len(ids) - 3} more" if len(ids) > 3 else shown
+    from_meta = variant_display_name(str(meta.get("product_name") or meta.get("product_name_en") or ""), str(meta.get("name_en") or meta.get("variant_name") or ""))
+    return from_meta
+
+
 def entity_label(entry) -> str:
     """Readable target, e.g. 'Order 1A2B3C4D5E6F', 'Coupon SAVE10', 'User jane@example.com'."""
     meta = entry.meta or {}
@@ -145,6 +174,10 @@ def entity_label(entry) -> str:
         return f"{label} (order {order_number})" if order_number else label
     if kind == "CodeImportBatch" and meta.get("filename"):
         return f"Code import {meta['filename']}"
+    if kind == "ProductVariant":
+        label = _variant_label(entry.entity_id, meta)
+        if label:
+            return label
     for key in ("email", "target_email", "user_email"):
         if meta.get(key) and kind == "User":
             return f"User {meta[key]}"

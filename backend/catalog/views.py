@@ -873,6 +873,24 @@ class AdminVariantViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, views
         super().perform_destroy(instance)
 
 
+def tracked_code_variants_queryset():
+    """D24 inventory rule: published CODE variants of non-archived products."""
+    return annotate_stock(_variant_code_queryset()).filter(
+        published=True, product__fulfillment_type="CODE"
+    ).exclude(product__status=PublishStatus.ARCHIVED)
+
+
+def tracked_variant_effective_statuses() -> tuple[list, list[str]]:
+    """(tracked variants, their effective sellable stock status) — shared by Inventory and the dashboard."""
+    tracked_rows = list(tracked_code_variants_queryset())
+    tracked_net = available_code_counts([v.pk for v in tracked_rows])
+    return tracked_rows, [variant_stock(v, net_available=tracked_net)[0] for v in tracked_rows]
+
+
+def effective_out_of_stock_count() -> int:
+    return sum(1 for status_ in tracked_variant_effective_statuses()[1] if status_ == StockStatus.OUT_OF_STOCK)
+
+
 class AdminInventoryView(APIView):
     permission_classes = [IsAdminUser, HasAdminPermission]
     admin_permission = "codes.read"
@@ -882,16 +900,12 @@ class AdminInventoryView(APIView):
         ``codes_available <= low_stock_threshold``; each row carries ``effective_stock_status``."""
         settings_obj = SiteSettings.load()
         threshold = settings_obj.low_stock_threshold
-        tracked = annotate_stock(_variant_code_queryset()).filter(
-            published=True, product__fulfillment_type="CODE"
-        ).exclude(product__status=PublishStatus.ARCHIVED)
+        tracked = tracked_code_variants_queryset()
         low_qs = tracked.filter(codes_available__lte=threshold)
         low_stock_count = low_qs.count()
         low_stock = list(low_qs.order_by("codes_available", "sku")[:100])
         net = available_code_counts([v.pk for v in low_stock])
-        tracked_rows = list(tracked)
-        tracked_net = available_code_counts([v.pk for v in tracked_rows])
-        effective = [variant_stock(v, net_available=tracked_net)[0] for v in tracked_rows]
+        tracked_rows, effective = tracked_variant_effective_statuses()
         code_counts = {
             "available": DigitalCode.objects.filter(status=DigitalCodeStatus.AVAILABLE).count(),
             "reserved": DigitalCode.objects.filter(status=DigitalCodeStatus.RESERVED).count(),

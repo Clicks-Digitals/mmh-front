@@ -530,6 +530,7 @@ function ProductEditor({
           suppliers={lookups.suppliers}
           variants={variantRows}
           canMap={canMap}
+          productName={product.name_en}
         />
       ) : null}
 

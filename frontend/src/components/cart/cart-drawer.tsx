@@ -11,6 +11,7 @@ import { useLanguage } from "@/context/language-context";
 import { useUi } from "@/context/ui-context";
 import { getProductById } from "@/data/products";
 import { useEscape, useScrollLock } from "@/hooks/use-overlay";
+import { cartDeliveryNoteKey } from "@/lib/delivery-copy";
 import { cartHasRegionLocked, lineLimits, lineProblem, lineProblemKey, linePrice, maskAccountValue } from "@/lib/cart";
 import { useToast } from "@/context/toast-context";
 import { X } from "lucide-react";
@@ -19,7 +20,7 @@ import { useEffect, useRef } from "react";
 
 export function CartDrawer() {
   const { cartOpen, setCartOpen } = useUi();
-  const { items, updateQty, removeItem, subtotal, total, discount, totalFils, hydrated } = useCart();
+  const { items, updateQty, removeItem, subtotal, total, discount, totalFils, freeOrder, hydrated } = useCart();
   const { push } = useToast();
   const { t, locale } = useLanguage();
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -99,7 +100,7 @@ export function CartDrawer() {
                     </div>
                   );
                 })}
-                <p className="text-xs text-muted">{t("cart.digitalNote")}</p>
+                <p className="text-xs text-muted">{t(cartDeliveryNoteKey(items.map((item) => getProductById(item.productId)?.fulfillmentType)))}</p>
               </section>
             </div>
           )}
@@ -110,13 +111,13 @@ export function CartDrawer() {
               <span className="text-muted">{t("cart.subtotal")}</span>
               <Price amount={subtotal} locale={locale} />
             </div>
-            {discount > 0 ? (
+            {discount > 0 || freeOrder ? (
               <div className="mb-4 flex items-center justify-between text-sm font-semibold">
                 <span>{t("cart.total")}</span>
-                <Price amount={total} locale={locale} />
+                {freeOrder ? <span className="text-success">{t("order.free")}</span> : <Price amount={total} locale={locale} />}
               </div>
             ) : null}
-            <UsdEstimate totalFils={totalFils} className="mb-3 text-xs text-muted" />
+            {freeOrder ? null : <UsdEstimate totalFils={totalFils} className="mb-3 text-xs text-muted" />}
             <Button className="w-full" href="/checkout" onClick={() => setCartOpen(false)}>
               {t("cart.checkout")}
             </Button>

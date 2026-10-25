@@ -147,6 +147,7 @@ export type AdminSupplierMapping = {
   product?: string;
   variant?: number | string | null;
   variant_sku?: string | null;
+  variant_name?: string | null;
   external_product_id: string;
   external_name?: string;
   ignored?: boolean;
@@ -382,6 +383,7 @@ export type DigitalCodeRow = {
   variant_sku?: string;
   variant_name?: string;
   product_id?: string | null;
+  product_name?: string | null;
   order_item?: number | string | null;
   order_number?: string | null;
   revealed_at?: string | null;
@@ -410,7 +412,9 @@ export type CodeImportBatch = {
   status: string;
   variant?: number | null;
   variant_sku?: string | null;
+  variant_name?: string | null;
   product_id?: string | null;
+  product_name?: string | null;
   uploaded_by?: number | null;
   uploaded_by_email?: string | null;
   total_rows: number;
@@ -477,7 +481,10 @@ export type Supplier = {
 export type SupplierMappingRow = {
   id: number | string;
   product: string;
+  product_name?: string | null;
   variant?: number | string | null;
+  variant_name?: string | null;
+  variant_sku?: string | null;
   external_product_id: string;
   external_name?: string;
   ignored?: boolean;

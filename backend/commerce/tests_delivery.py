@@ -621,7 +621,9 @@ class CustomerAccessTests(CatalogFixture, TestCase):
         token = res.json()["access_token"]
         url = f"/api/v1/orders/{number}/"
         self.assertEqual(APIClient().get(url + "?email=owner@example.com").status_code, 404)
-        self.assertEqual(APIClient().get(url + f"?email=owner@example.com&access_token={token}").status_code, 404)
+        # The e-mailed access token opens the order page for account orders too (signed out).
+        self.assertEqual(APIClient().get(url + f"?access_token={token}").status_code, 200)
+        self.assertEqual(APIClient().get(url + "?access_token=wrong").status_code, 404)
         self.assertEqual(auth_client(self.other).get(url + "?email=owner@example.com").status_code, 404)
         self.assertEqual(auth_client(self.customer).get(url).status_code, 200)
         mine = auth_client(self.customer).get("/api/v1/orders/mine/")

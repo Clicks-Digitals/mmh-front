@@ -10,14 +10,24 @@ import { X } from "lucide-react";
 import { catalog as liveCatalog } from "@/data/products";
 import { getSnapshotCategories, getSnapshotMenuCategories } from "@/lib/catalog-snapshot";
 import { hrefHasProducts } from "@/lib/listing";
-import { buildMenu } from "@/lib/nav-menu";
+import { categoryImageCandidates } from "@/lib/category-image";
+import { buildMenu, type MenuEntry } from "@/lib/nav-menu";
 import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 
 const hasProducts = (href: string) => hrefHasProducts(href, liveCatalog(), getSnapshotCategories());
 
-type TileChild = { href: string; label: string; image?: string; artworkKey: string };
-type CategoryItem = { id: string; label: string; image?: string; artworkKey: string; children: TileChild[] };
+type TileImage = string | string[] | undefined;
+type TileChild = { href: string; label: string; image?: TileImage; artworkKey: string };
+type CategoryItem = { id: string; label: string; image?: TileImage; artworkKey: string; children: TileChild[] };
+
+/** Real artwork for a menu entry (own artwork → product image → bundled art) before the placeholder. */
+const entryImages = (entry: MenuEntry) =>
+  categoryImageCandidates(
+    { slug: entry.slug, href: entry.href, artworkKey: entry.artworkKey, artworkUrl: entry.artworkUrl, name: entry.label, nameAr: entry.labelAr },
+    liveCatalog(),
+    getSnapshotCategories(),
+  );
 
 /**
  * D20: home category tiles come from the admin menu categories (sorted); the built-in set is the
@@ -33,13 +43,13 @@ function homeTiles(t: (key: string) => string, locale: "en" | "ar"): CategoryIte
             ...entry.children.map((child) => ({
               href: child.href,
               label: locale === "ar" ? child.labelAr : child.label,
-              image: child.artworkUrl,
+              image: entryImages(child),
               artworkKey: child.artworkKey,
             })),
-            { href: entry.href, label: t("nav.viewAll"), image: entry.artworkUrl, artworkKey: entry.artworkKey },
+            { href: entry.href, label: t("nav.viewAll"), image: entryImages(entry), artworkKey: entry.artworkKey },
           ]
-        : [{ href: entry.href, label, image: entry.artworkUrl, artworkKey: entry.artworkKey }];
-      return { id: entry.slug, label, image: entry.artworkUrl, artworkKey: entry.artworkKey, children };
+        : [{ href: entry.href, label, image: entryImages(entry), artworkKey: entry.artworkKey }];
+      return { id: entry.slug, label, image: entryImages(entry), artworkKey: entry.artworkKey, children };
     });
   }
   return HOME_CATEGORY_SWIPER.map((item) => ({

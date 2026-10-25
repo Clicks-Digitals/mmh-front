@@ -101,6 +101,13 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
     username_field = User.EMAIL_FIELD
     token_class = VersionedRefreshToken
 
+    def _portal(self) -> str:
+        data = getattr(self, "initial_data", None) or {}
+        try:
+            return str(data.get("portal") or "").strip().lower()
+        except AttributeError:
+            return ""
+
     def validate(self, attrs):
         email = attrs.get(self.username_field, "")
         password = attrs.get("password", "")
@@ -109,6 +116,15 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         ip = client_ip(request) if request is not None else ""
         if user is None:
             User().set_password(password)  # equalise timing with the known-user path
+            # RO-17: failed attempts on the admin portal are recorded even for unknown e-mails
+            # (the panel login sends portal="admin"); store logins are never audited.
+            if self._portal() == "admin":
+                _audit(
+                    None,
+                    "auth.login_failed",
+                    None,
+                    {"email": str(email or "").strip().lower()[:254], "ip": ip, "reason": "unknown_email"},
+                )
             raise InvalidCredentials()
         if not user.check_password(password):
             if is_staff_account(user):

@@ -41,7 +41,7 @@ export function AdminModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-start justify-between gap-3">
-          <div>
+          <div className="min-w-0 break-words">
             <h2 id="admin-modal-title" className="text-base font-semibold text-[var(--clicks-navy)]">
               {title}
             </h2>

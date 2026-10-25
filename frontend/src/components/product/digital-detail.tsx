@@ -23,7 +23,7 @@ import { useWishlist } from "@/context/wishlist-context";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { getSnapshotCategories } from "@/lib/catalog-snapshot";
 import { discountPercent, formatJod } from "@/lib/format";
-import { defaultRegionId, denominationsForRegion, matchDenominationId } from "@/lib/digital-options";
+import { defaultRegionId, denominationSellable, denominationsForRegion, matchDenominationId } from "@/lib/digital-options";
 import { clampQuantity, lowStockCount, quantityLimits } from "@/lib/quantity";
 import { STORAGE_KEYS } from "@/lib/storage";
 import { customerFieldError, firstInvalidField, normalizeFieldValue } from "@/lib/validation";
@@ -55,7 +55,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
   const initialRegion = defaultRegionId(options.regions);
   const [regionId, setRegionId] = useState(initialRegion);
   const [denominationId, setDenominationId] = useState(
-    () => denominationsForRegion(product, initialRegion).find((item) => item.inStock !== false)?.id ?? "",
+    () => denominationsForRegion(product, initialRegion).find(denominationSellable)?.id ?? "",
   );
   const [fields, setFields] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
@@ -89,18 +89,20 @@ export function DigitalProductDetail({ product }: { product: Product }) {
   const region = options.regions.find((item) => item.id === regionId);
   const limits = quantityLimits(denomination?.minQuantity, denomination?.maxQuantity, denomination?.availableQuantity);
   const left = lowStockCount(denomination?.availableQuantity);
-  const qty = clampQuantity(qtyWanted, limits);
   const sale = discountPercent(denomination?.priceJod ?? product.priceJod, denomination?.compareAtPriceJod);
   const fieldErrors = Object.fromEntries(
     options.requiredCustomerFields.map((field) => [field.id, customerFieldError(field, fields[field.id] ?? "")]),
   );
   const fieldsOk = Object.values(fieldErrors).every((error) => error === null);
-  const productInStock = product.inStock && options.denominations.some((item) => item.inStock !== false);
-  const stockOk = Boolean(denomination) && denomination?.inStock !== false && product.inStock;
+  const productInStock = product.inStock && options.denominations.some(denominationSellable);
+  const stockOk = product.inStock && denominationSellable(denomination);
+  // Sold out: the whole product, or the option the customer picked (available_quantity 0 / stock_status).
+  const soldOut = !productInStock || (Boolean(denomination) && !stockOk);
+  const qty = soldOut ? 0 : clampQuantity(qtyWanted, limits);
   const ready = Boolean(regionId && denomination && fieldsOk && stockOk);
 
   const unitPrice = denomination?.priceJod ?? product.priceJod;
-  const price = Math.round(unitPrice * 1000 * qty) / 1000;
+  const price = Math.round(unitPrice * 1000 * Math.max(qty, 1)) / 1000;
   const platformName = locale === "ar" ? options.platformLabelAr : options.platformLabel;
   const showBrand = product.brand.trim().toLowerCase() !== platformName.trim().toLowerCase();
   const productName = locale === "ar" ? product.nameAr : product.name;
@@ -219,6 +221,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
           onChange={changeQty}
           min={limits.min}
           max={limits.max}
+          disabled={soldOut}
           onLimit={(max) => setQtyNotice(t("product.qtyMax", { max }))}
         />
         <button
@@ -230,7 +233,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
           <Heart className={cn("h-4 w-4", wished && "fill-gold")} />
         </button>
       </div>
-      {qtyNotice ? <p className="text-xs text-amber">{qtyNotice}</p> : null}
+      {qtyNotice && !soldOut ? <p className="text-xs text-amber">{qtyNotice}</p> : null}
       {left && stockOk ? <p className="text-xs font-medium text-amber">{t("stock.onlyNLeft", { count: left })}</p> : null}
 
       <div className="flex items-center justify-between gap-3 rounded-xl bg-brand-deep px-4 py-3.5 text-white">
@@ -240,7 +243,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
         </span>
         <Price
           amount={price}
-          compareAt={denomination?.compareAtPriceJod ? denomination.compareAtPriceJod * qty : undefined}
+          compareAt={denomination?.compareAtPriceJod ? denomination.compareAtPriceJod * Math.max(qty, 1) : undefined}
           locale={locale}
           size="lg"
           className="[&>span:first-child]:text-gold [&>span:last-child]:text-white/50"
@@ -248,7 +251,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
       </div>
 
       {nextStep ? (
-        <p id="product-buy-hint" className={cn("text-xs", attempted || !productInStock ? "text-danger" : "text-muted")}>
+        <p id="product-buy-hint" className={cn("text-xs", attempted || soldOut ? "text-danger" : "text-muted")}>
           {nextStep}
         </p>
       ) : (
@@ -262,9 +265,9 @@ export function DigitalProductDetail({ product }: { product: Product }) {
           aria-describedby={nextStep ? "product-buy-hint" : undefined}
           onClick={addToCart}
         >
-          {stockOk ? t("product.add") : t("product.outOfStock")}
+          {soldOut ? t("product.outOfStock") : t("product.add")}
         </Button>
-        <Button className="min-h-12 flex-1" variant="outline" disabled={!stockOk} onClick={startBuyNow}>
+        <Button className="min-h-12 flex-1" variant="outline" disabled={!stockOk} aria-disabled={!stockOk} onClick={startBuyNow}>
           {t("product.buyNow")}
         </Button>
       </div>
@@ -331,7 +334,14 @@ export function DigitalProductDetail({ product }: { product: Product }) {
           {!hasConfigurableOptions ? (
             <div className="mt-6 space-y-5 rounded-2xl border border-line bg-card p-4 sm:p-5">
               <div>
-                <p className="text-sm font-medium text-fg">{t("product.simpleBuy")}</p>
+                {soldOut ? (
+                  <>
+                    <p className="text-sm font-semibold text-danger">{t("product.outOfStock")}</p>
+                    <p className="mt-1 text-sm text-muted">{t("product.soldOutBody")}</p>
+                  </>
+                ) : (
+                  <p className="text-sm font-medium text-fg">{t("product.simpleBuy")}</p>
+                )}
                 {denomLabel ? (
                   <p className="mt-2 text-sm text-muted">
                     {t("product.fixedAmount")}: <span className="font-semibold text-fg">{denomLabel}</span>
@@ -393,7 +403,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                         {visibleDenoms.map((item) => {
                           const selected = denominationId === item.id;
-                          const out = item.inStock === false;
+                          const out = !denominationSellable(item);
                           return (
                             <button
                               key={item.id}
@@ -538,13 +548,14 @@ export function DigitalProductDetail({ product }: { product: Product }) {
               onChange={changeQty}
               min={limits.min}
               max={limits.max}
+              disabled={soldOut}
               onLimit={(max) => setQtyNotice(t("product.qtyMax", { max }))}
             />
           </div>
           <Button className="min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" disabled={!stockOk} onClick={addToCart}>
-            {stockOk ? t("product.add") : t("product.outOfStock")}
+            {soldOut ? t("product.outOfStock") : t("product.add")}
           </Button>
-          <Button className="min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" variant="secondary" disabled={!stockOk} onClick={startBuyNow}>
+          <Button className="min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" variant="secondary" disabled={!stockOk} aria-disabled={!stockOk} onClick={startBuyNow}>
             {t("product.buyNow")}
           </Button>
         </div>

@@ -23,7 +23,7 @@ export function normalizePhone(value: string): string {
   if (/^07\d{8}$/.test(compact)) return `+962${compact.slice(1)}`;
   if (/^9627\d{8}$/.test(compact)) return `+${compact}`;
   const digits = compact.replace(/^\+/, "");
-  if (!/^\d{7,15}$/.test(digits)) return "";
+  if (!/^\d{8,15}$/.test(digits)) return "";
   // Jordanian numbers given with the country code must be a valid mobile/landline length.
   if (digits.startsWith("962") && !/^962\d{8,9}$/.test(digits)) return "";
   // Reject placeholder-like sequences (all the same digit).

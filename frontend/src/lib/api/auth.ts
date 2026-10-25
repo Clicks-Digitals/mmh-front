@@ -13,10 +13,11 @@ export type TokenResponse = {
   };
 };
 
-export function login(email: string, password: string) {
+/** `portal: "admin"` lets the backend audit failed panel logins (also for unknown e-mails). */
+export function login(email: string, password: string, portal?: "admin" | "store") {
   return apiFetch<TokenResponse>("/auth/token/", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify(portal ? { email, password, portal } : { email, password }),
   });
 }
 

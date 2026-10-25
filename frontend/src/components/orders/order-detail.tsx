@@ -98,7 +98,7 @@ export function ItemDelivery({
   order: OrderView;
   revealed?: RevealedCodes[string];
 }) {
-  const { t } = useLanguage();
+  const { t, locale } = useLanguage();
   const paid = isPaid(order);
   const closed = isClosed(order);
 
@@ -120,7 +120,13 @@ export function ItemDelivery({
   }
 
   if (item.deliveryState === "retired_refunded" || order.status === "refunded") {
-    return <p className="mt-2 text-xs text-muted">{t("order.codesRetired")}</p>;
+    return (
+      <p className="mt-2 text-xs text-muted">
+        {item.deliveredAt
+          ? t("order.codesRetiredOn", { date: formatDate(item.deliveredAt, locale) })
+          : t("order.codesRetired")}
+      </p>
+    );
   }
   if (closed) return null;
 

@@ -12,18 +12,21 @@ import { Pagination } from "@/components/admin/ui/pagination";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorSummary } from "@/components/admin/lib/errors";
 import { formatJod } from "@/components/admin/lib/money";
-import { nextOrdering, orderHref, paymentStatusLabel, PAYMENT_STATUS_LABELS } from "@/components/admin/lib/orders";
+import {
+  nextOrdering,
+  orderHref,
+  paymentProviderLabel,
+  paymentStatusLabel,
+  PAYMENT_PROVIDER_OPTIONS,
+  PAYMENT_STATUS_LABELS,
+} from "@/components/admin/lib/orders";
 import { formatAdminDateTime } from "@/lib/admin/format";
 import { useAdminQuery } from "@/hooks/use-admin-query";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useAdminUrlState } from "@/hooks/use-admin-url-state";
+import { useState } from "react";
 
-const PROVIDERS = [
-  { value: "", label: "Any provider" },
-  { value: "paypal", label: "PayPal" },
-  { value: "manual", label: "Manual" },
-  { value: "free", label: "Free order" },
-];
+const PROVIDERS = [{ value: "", label: "Any provider" }, ...PAYMENT_PROVIDER_OPTIONS];
 
 const SORT_OPTIONS = [
   { value: "-created_at", label: "Newest first" },
@@ -32,53 +35,41 @@ const SORT_OPTIONS = [
   { value: "-amount_fils", label: "Highest amount" },
 ];
 
-function providerText(provider: string) {
-  return PROVIDERS.find((p) => p.value === provider)?.label ?? provider;
-}
+const DEFAULTS = {
+  search: "",
+  status: "",
+  provider: "",
+  date_from: "",
+  date_to: "",
+  include_voided: "",
+  ordering: "-created_at",
+  page: "1",
+};
 
 export function PaymentsListClient() {
   const toast = useAdminToast();
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("");
-  const [provider, setProvider] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [includeVoided, setIncludeVoided] = useState(false);
-  const [ordering, setOrdering] = useState("-created_at");
-  const [page, setPage] = useState(1);
+  // Filters, search, sorting and page live in the URL (like the orders list).
+  const { state, debounced, set, reset, page } = useAdminUrlState(DEFAULTS);
   const [exporting, setExporting] = useState(false);
-
-  useEffect(() => {
-    const t = window.setTimeout(() => {
-      setSearch(searchInput.trim());
-      setPage(1);
-    }, 350);
-    return () => window.clearTimeout(t);
-  }, [searchInput]);
+  const ordering = state.ordering || "-created_at";
 
   const filters = {
-    search: search || undefined,
-    status: status || undefined,
-    provider: provider || undefined,
-    date_from: dateFrom || undefined,
-    date_to: dateTo || undefined,
-    include_voided: includeVoided ? 1 : undefined,
-    ordering,
+    search: debounced.search.trim() || undefined,
+    status: debounced.status || undefined,
+    provider: debounced.provider || undefined,
+    date_from: debounced.date_from || undefined,
+    date_to: debounced.date_to || undefined,
+    include_voided: debounced.include_voided ? 1 : undefined,
+    ordering: debounced.ordering || "-created_at",
   };
+  const debouncedPage = Number(debounced.page) || 1;
   const { data, loading, error, reload, token } = useAdminQuery(
-    (tok) => listPaymentRows(tok, { ...filters, page, page_size: ADMIN_LIST_PAGE_SIZE }),
-    [filters, page],
+    (tok) => listPaymentRows(tok, { ...filters, page: debouncedPage, page_size: ADMIN_LIST_PAGE_SIZE }),
+    [filters, debouncedPage],
   );
   const rows = data?.results ?? [];
-  const dateError = dateFrom && dateTo && dateTo < dateFrom ? "The end date is before the start date." : "";
-
-  function change<T>(setter: (v: T) => void) {
-    return (v: T) => {
-      setter(v);
-      setPage(1);
-    };
-  }
+  const dateError =
+    state.date_from && state.date_to && state.date_to < state.date_from ? "The end date is before the start date." : "";
 
   async function exportCsv() {
     if (!token) return;
@@ -119,54 +110,56 @@ export function PaymentsListClient() {
         }
       />
       <Filters
-        search={searchInput}
-        onSearchChange={setSearchInput}
+        search={state.search}
+        onSearchChange={(v) => set({ search: v })}
         searchPlaceholder="Order number, e-mail or PayPal id…"
         filters={[
           {
             key: "status",
             label: "Status",
-            value: status,
-            onChange: change(setStatus),
+            value: state.status,
+            onChange: (v) => set({ status: v }),
             options: [
               { value: "", label: "Any status" },
               ...Object.entries(PAYMENT_STATUS_LABELS).map(([value, label]) => ({ value, label })),
             ],
           },
-          { key: "provider", label: "Provider", value: provider, onChange: change(setProvider), options: PROVIDERS },
+          {
+            key: "provider",
+            label: "Provider",
+            value: state.provider,
+            onChange: (v) => set({ provider: v }),
+            options: PROVIDERS,
+          },
         ]}
-        onClear={() => {
-          setSearchInput("");
-          setStatus("");
-          setProvider("");
-          setDateFrom("");
-          setDateTo("");
-          setIncludeVoided(false);
-          setPage(1);
-        }}
+        onClear={reset}
       />
       <div className="-mt-2 mb-3 flex flex-wrap items-end gap-3 text-[12px]">
         <label className="flex flex-col gap-1 text-[var(--clicks-muted)]">
           Started from
-          <input type="date" className="admin-input h-9 w-auto" value={dateFrom} onChange={(e) => change(setDateFrom)(e.target.value)} />
+          <input type="date" className="admin-input h-9 w-auto" value={state.date_from} onChange={(e) => set({ date_from: e.target.value })} />
         </label>
         <label className="flex flex-col gap-1 text-[var(--clicks-muted)]">
           Until
-          <input type="date" className="admin-input h-9 w-auto" value={dateTo} onChange={(e) => change(setDateTo)(e.target.value)} />
+          <input type="date" className="admin-input h-9 w-auto" value={state.date_to} onChange={(e) => set({ date_to: e.target.value })} />
         </label>
         <label className="flex items-center gap-2 pb-2 text-[var(--clicks-text)]">
-          <input type="checkbox" checked={includeVoided} onChange={(e) => change(setIncludeVoided)(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={Boolean(state.include_voided)}
+            onChange={(e) => set({ include_voided: e.target.checked ? "1" : "" })}
+          />
           Show voided attempts
         </label>
         {dateError ? <p className="pb-2 text-[var(--clicks-error)]">{dateError}</p> : null}
       </div>
-      <MobileSortSelect ordering={ordering} options={SORT_OPTIONS} onChange={change(setOrdering)} />
+      <MobileSortSelect ordering={ordering} options={SORT_OPTIONS} onChange={(v) => set({ ordering: v })} />
       <OpsTable<OrderPayment>
         rows={rows}
         loading={loading && !data}
         rowKey={(r) => String(r.id)}
         ordering={ordering}
-        onSort={(field) => change(setOrdering)(nextOrdering(ordering, field))}
+        onSort={(field) => set({ ordering: nextOrdering(ordering, field) })}
         empty={<EmptyState title="No payments match" description="Try another filter or date range." />}
         error={error ? <ErrorState message={error} onRetry={reload} /> : null}
         columns={[
@@ -183,7 +176,7 @@ export function PaymentsListClient() {
                 "—"
               ),
           },
-          { key: "provider", header: "Provider", sortField: "provider", render: (r) => providerText(r.provider) },
+          { key: "provider", header: "Provider", sortField: "provider", render: (r) => paymentProviderLabel(r.provider) },
           {
             key: "status",
             header: "Status",
@@ -235,7 +228,7 @@ export function PaymentsListClient() {
           },
         ]}
       />
-      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={data?.count ?? 0} onPageChange={setPage} />
+      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={data?.count ?? 0} onPageChange={(p) => set({ page: String(p) })} />
     </div>
   );
 }

@@ -23,6 +23,7 @@ import {
   linePrice,
 } from "@/lib/cart";
 import { formatDiscount } from "@/lib/coupon";
+import { cartDeliveryNoteKey } from "@/lib/delivery-copy";
 import { lowStockCount } from "@/lib/quantity";
 import { customerFieldsValid, normalizeFieldValue } from "@/lib/validation";
 import type { CartItem, Product } from "@/types";
@@ -75,7 +76,7 @@ function LineEditor({ item, product, onDone }: { item: CartItem; product: Produc
 }
 
 export function CartPageView() {
-  const { items, updateQty, removeItem, subtotal, total, discountFils, totalFils, promoCode, hydrated } = useCart();
+  const { items, updateQty, removeItem, subtotal, total, discountFils, totalFils, promoCode, freeOrder, hydrated } = useCart();
   const { add: addToWishlist } = useWishlist();
   const { t, locale } = useLanguage();
   const { push } = useToast();
@@ -93,6 +94,7 @@ export function CartPageView() {
   const regionLocked = cartHasRegionLocked(items);
   const problems = items.map((item) => lineProblem(item, getProductById(item.productId)));
   const blocked = problems.some(Boolean);
+  const noteKey = cartDeliveryNoteKey(items.map((item) => getProductById(item.productId)?.fulfillmentType));
 
   return (
     <div className="container-mmh grid gap-8 py-8 lg:grid-cols-[1.2fr_0.8fr] lg:gap-10 lg:py-10">
@@ -174,7 +176,7 @@ export function CartPageView() {
               </div>
             );
           })}
-          <p className="text-sm text-muted">{t("cart.digitalNote")}</p>
+          <p className="text-sm text-muted">{t(noteKey)}</p>
         </section>
       </div>
       <aside className="h-fit rounded-[14px] border border-line bg-elevated p-5 lg:sticky lg:top-24">
@@ -196,12 +198,10 @@ export function CartPageView() {
           ) : null}
           <div className="flex justify-between border-t border-line pt-3 font-semibold">
             <dt>{t("cart.total")}</dt>
-            <dd>
-              <Price amount={total} locale={locale} />
-            </dd>
+            <dd>{freeOrder ? <span className="text-success">{t("order.free")}</span> : <Price amount={total} locale={locale} />}</dd>
           </div>
         </dl>
-        <UsdEstimate totalFils={totalFils} className="mt-2 text-xs text-muted" />
+        {freeOrder ? null : <UsdEstimate totalFils={totalFils} className="mt-2 text-xs text-muted" />}
         <CouponBox />
         <Button className="mt-5 w-full" href={blocked ? undefined : "/checkout"} disabled={blocked}>
           {t("cart.checkout")}

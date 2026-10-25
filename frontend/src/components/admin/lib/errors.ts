@@ -1,4 +1,5 @@
 import { ApiError } from "@/lib/api/client";
+import { friendlyValidationMessage, isStandaloneMessage } from "@/components/admin/lib/validation-messages";
 
 /** Field label overrides for backend validation keys. */
 const FIELD_LABELS: Record<string, string> = {
@@ -13,12 +14,12 @@ function humanizeField(key: string): string {
 
 function flattenMessages(value: unknown): string[] {
   if (value == null) return [];
-  if (typeof value === "string") return [value];
+  if (typeof value === "string") return [friendlyValidationMessage(value)];
   if (Array.isArray(value)) return value.flatMap(flattenMessages);
   if (typeof value === "object") {
     return Object.entries(value as Record<string, unknown>).flatMap(([key, inner]) => {
       const label = humanizeField(key);
-      return flattenMessages(inner).map((msg) => (label ? `${label}: ${msg}` : msg));
+      return flattenMessages(inner).map((msg) => (label && !isStandaloneMessage(msg) ? `${label}: ${msg}` : msg));
     });
   }
   return [String(value)];
@@ -52,7 +53,7 @@ export function messageFromErrorBody(body: unknown, fallback: string): string {
   if (typeof body === "string") return body.trim() && body.length < 300 ? body : fallback;
   if (typeof body !== "object") return fallback;
   const record = body as Record<string, unknown>;
-  if (typeof record.detail === "string" && record.detail) return record.detail;
+  if (typeof record.detail === "string" && record.detail) return friendlyValidationMessage(record.detail);
   if (record.detail && typeof record.detail === "object") {
     const messages = flattenMessages(record.detail);
     if (messages.length) return messages.join(" · ");
@@ -113,7 +114,7 @@ export function adminErrorSummary(err: unknown, fallback = "Something went wrong
     const body = err.body;
     if (body && typeof body === "object") {
       const record = body as Record<string, unknown>;
-      if (typeof record.detail === "string" && record.detail) return record.detail;
+      if (typeof record.detail === "string" && record.detail) return friendlyValidationMessage(record.detail);
       const fields = fieldErrorsFromBody(body);
       const keys = Object.keys(fields).filter((k) => k !== "non_field_errors");
       if (keys.length && keys.every((k) => inlineFields.includes(k))) return "Please fix the highlighted fields.";

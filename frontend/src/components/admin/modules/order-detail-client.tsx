@@ -27,7 +27,13 @@ import { ErrorState } from "@/components/admin/ui/error-state";
 import { FormField, adminInputClass, adminTextareaClass } from "@/components/admin/ui/form-field";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
-import { summarizeAuditMeta } from "@/components/admin/lib/audit";
+import {
+  auditActionLabel,
+  auditMetaKeyLabel,
+  formatAuditValue,
+  isInternalMetaKey,
+  summarizeAuditMeta,
+} from "@/components/admin/lib/audit";
 import { adminErrorSummary, errorCode } from "@/components/admin/lib/errors";
 import { formatJod, formatJodDiscount, jodInputToFils } from "@/components/admin/lib/money";
 import {
@@ -36,11 +42,14 @@ import {
   codeStatusTone,
   customerStatusLabel,
   deliveryMethodLabel,
-  deliveryStateTone,
   fulfillmentButtons,
   fulfillmentStatusLabel,
   isPaidLike,
+  isOrderCancelled,
+  itemDeliverySummary,
   itemFieldRows,
+  paidWithText,
+  paymentProviderLabel,
   paymentStatusLabel,
   refundViaText,
   splitPaymentActions,
@@ -65,13 +74,6 @@ type StatusDraft = {
 };
 
 type RefundDraft = { mode: "all" | "part"; amount: string; reason: string; manual: boolean };
-
-const PROVIDER_LABELS: Record<string, string> = { paypal: "PayPal", manual: "Manual", free: "Free order (no payment)" };
-
-function providerLabel(provider: string | null | undefined): string {
-  if (!provider) return "—";
-  return PROVIDER_LABELS[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
-}
 
 function statusDescription(kind: "payment" | "fulfillment", status: string): string {
   if (kind === "payment") {
@@ -178,11 +180,9 @@ function ItemCard({
 }) {
   const isCode = item.fulfillment_type === "CODE";
   const paid = isPaidLike(order.payment_status);
-  const closed = order.fulfillment_status === "CANCELLED" || order.payment_status === "REFUNDED";
   const fields = itemFieldRows(item);
   const showMethod = item.show_delivery_method ?? isCode;
-  const state = item.delivery_state ?? (item.delivered ? "delivered" : "pending");
-  const stateLabel = item.delivery_state_label ?? (item.delivered ? "Delivered" : "Not delivered");
+  const summary = itemDeliverySummary(item, order);
   const delivered = item.codes_delivered ?? (item.codes ?? []).filter((c) => c.status !== "UNAVAILABLE").length;
   const notPaidReason = "Available once the order is paid.";
 
@@ -201,11 +201,16 @@ function ItemCard({
           </p>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <Badge tone="info">{isCode ? "Code" : "Direct top-up"}</Badge>
-            <Badge tone={deliveryStateTone(state)}>
-              {stateLabel}
-              {state === "delivered" && item.delivered_at ? ` ${formatAdminDateTime(item.delivered_at)}` : ""}
+            <Badge tone={summary.tone}>
+              {summary.label}
+              {summary.state === "delivered" && summary.deliveredAt ? ` ${formatAdminDateTime(summary.deliveredAt)}` : ""}
             </Badge>
-            {isCode ? (
+            {summary.state === "retired_refunded" && summary.deliveredAt ? (
+              <span className="text-[11px] text-[var(--clicks-muted)]">
+                (were delivered {formatAdminDateTime(summary.deliveredAt)})
+              </span>
+            ) : null}
+            {isCode && summary.showStats ? (
               <span className="text-[11px] text-[var(--clicks-muted)]">
                 {delivered} of {item.quantity} code{item.quantity === 1 ? "" : "s"} delivered
                 {item.codes_pending ? ` · ${item.codes_pending} still to deliver` : ""}
@@ -218,7 +223,7 @@ function ItemCard({
         </div>
         <div className="text-end">
           <p className="font-medium tabular-nums">{formatJod(item.line_total_fils ?? item.unit_price_fils * item.quantity)}</p>
-          {canFulfill && !closed && !item.delivered ? (
+          {canFulfill && summary.showActions ? (
             <div className="mt-2 flex flex-wrap justify-end gap-1.5">
               <ActionButton
                 small
@@ -285,19 +290,18 @@ function historyDetail(entry: OrderHistoryEntry): string {
   if (typeof meta.amount === "string") parts.push(meta.amount);
   if (meta.changes && typeof meta.changes === "object") {
     for (const [field, change] of Object.entries(meta.changes as Record<string, unknown>)) {
-      if (typeof change !== "string") continue;
-      const [from, to] = change.split("→");
-      const label = field === "payment_status" ? paymentStatusLabel : fulfillmentStatusLabel;
-      parts.push(`${field === "payment_status" ? "Payment" : "Delivery"}: ${label(from)} → ${label(to)}`);
+      if (change == null || isInternalMetaKey(field)) continue;
+      parts.push(`${auditMetaKeyLabel(field)}: ${formatAuditValue(change, field)}`);
     }
   }
+  if (typeof meta.via === "string" && meta.via) parts.push(`Via: ${formatAuditValue(meta.via, "via")}`);
   if (typeof meta.reason === "string" && meta.reason) parts.push(`Reason: ${meta.reason}`);
   if (typeof meta.masked === "string" && entry.action !== "orders.transition") parts.push(meta.masked);
   if (parts.length) return parts.join(" · ");
   if (entry.action === "orders.staff_notes") return "";
   return summarizeAuditMeta(
     Object.fromEntries(
-      Object.entries(meta).filter(([k]) => !["order_number", "email", "before", "after", "code_ids", "order_item_id"].includes(k)),
+      Object.entries(meta).filter(([k]) => !["order_number", "email"].includes(k)),
     ),
     3,
   );
@@ -331,11 +335,11 @@ function OrderHistory({ orderKey, reloadKey, canAudit, orderNumber }: { orderKey
             return (
               <li key={String(entry.id)} className="relative">
                 <span className="absolute -start-[21px] top-1.5 h-2 w-2 rounded-full bg-[var(--clicks-blue)]" aria-hidden />
-                <p className="font-medium text-[var(--clicks-navy)]">{entry.label || entry.action}</p>
+                <p className="font-medium text-[var(--clicks-navy)]">{entry.label || auditActionLabel(entry.action)}</p>
                 <p className="text-[11px] text-[var(--clicks-muted)]">
                   {formatAdminDateTime(entry.created_at)} · {entry.actor_name || entry.actor_email || "System"}
                 </p>
-                {detail ? <p className="mt-0.5 text-xs text-[var(--clicks-text)]">{detail}</p> : null}
+                {detail ? <p className="mt-0.5 break-words text-xs text-[var(--clicks-text)]">{detail}</p> : null}
               </li>
             );
           })}
@@ -500,7 +504,7 @@ export function OrderDetailClient({ id }: { id: string }) {
   const items = order.items ?? [];
   const actions = order.actions;
   const paid = isPaidLike(order.payment_status);
-  const cancelled = order.fulfillment_status === "CANCELLED" || order.payment_status === "CANCELLED";
+  const cancelled = isOrderCancelled(order);
   const undeliveredCodeItems = items.filter((i) => i.fulfillment_type === "CODE" && !i.delivered);
   const summary = order.refund_summary;
   const refund = actions?.refund;
@@ -682,7 +686,7 @@ export function OrderDetailClient({ id }: { id: string }) {
                 {order.payments.map((p) => (
                   <li key={String(p.id)} className={`flex items-start justify-between gap-3 py-2 ${p.voided ? "opacity-60" : ""}`}>
                     <div className="min-w-0 text-xs text-[var(--clicks-muted)]">
-                      <p className="text-sm font-medium text-[var(--clicks-navy)]">{providerLabel(p.provider)}</p>
+                      <p className="text-sm font-medium text-[var(--clicks-navy)]">{paymentProviderLabel(p.provider)}</p>
                       {p.provider_amount ? (
                         <p>
                           Charged {p.provider_currency || p.currency || ""} {p.provider_amount}
@@ -772,7 +776,7 @@ export function OrderDetailClient({ id }: { id: string }) {
               />
               {refundedFils ? <Row label="Refunded" value={formatJodDiscount(refundedFils)} /> : null}
               {paid ? <Row label="Can still be refunded" value={formatJod(remainingFils)} /> : null}
-              {order.payment_provider ? <Row label="Paid with" value={providerLabel(order.payment_provider)} /> : null}
+              {order.payment_provider ? <Row label="Payment" value={paidWithText(order.payment_provider)} /> : null}
             </dl>
           </section>
 

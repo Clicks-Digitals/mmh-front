@@ -151,7 +151,7 @@ function attention(stats: DashboardData, canInventory: boolean) {
       href: canInventory ? "/admin/inventory" : "/admin/orders",
       icon: Boxes,
       tone: "amber",
-      title: `${plural(stats.low_stock_variants, "product option")} low on codes`,
+      title: `${plural(stats.low_stock_variants, "published code variant")} low on stock`,
       body: `${stats.low_stock_threshold ?? "Only a few"} or fewer codes left — import more`,
     });
   }
@@ -161,8 +161,9 @@ function attention(stats: DashboardData, canInventory: boolean) {
       href: canInventory ? "/admin/inventory" : "/admin/orders",
       icon: PackageX,
       tone: "red",
-      title: `${plural(stats.out_of_stock_variants, "product option")} set to out of stock`,
-      body: "Customers cannot buy these",
+      // Same rule and wording as the Inventory page ("published code variant(s) out of stock").
+      title: `${plural(stats.out_of_stock_variants, "published code variant")} out of stock`,
+      body: "Customers cannot buy these until more codes are imported",
     });
   }
   return cards;

@@ -16,6 +16,8 @@ import {
   type Supplier,
 } from "@/lib/api/admin";
 import { useState } from "react";
+import { VariantName } from "@/components/admin/ui/variant-name";
+import { variantOptionLabel } from "@/components/admin/lib/variants";
 
 /** D18 / CA-01: whether a mapping makes the variant sellable, and why not. */
 export function MappingStockCell({ mapping }: { mapping: Pick<AdminSupplierMapping, "ignored" | "counts_as_stock" | "counts_as_stock_message"> }) {
@@ -41,6 +43,7 @@ export function MappingTab({
   suppliers,
   variants,
   canMap,
+  productName,
 }: {
   token?: string;
   slug: string;
@@ -49,6 +52,8 @@ export function MappingTab({
   suppliers: Supplier[];
   variants: AdminVariant[];
   canMap: boolean;
+  /** Shown before the variant name in pickers ("<Product> – <Variant>"). */
+  productName?: string;
 }) {
   const toast = useAdminToast();
   const [createForm, setCreateForm] = useState(emptyForm);
@@ -59,6 +64,9 @@ export function MappingTab({
 
   const variantSku = (id: number | string | null | undefined) =>
     id == null ? null : (variants.find((v) => String(v.id) === String(id))?.sku ?? String(id));
+  const variantById = (id: number | string | null | undefined) =>
+    id == null ? undefined : variants.find((v) => String(v.id) === String(id));
+  const optionLabel = (v: AdminVariant) => variantOptionLabel({ ...v, product_name: v.product_name || productName });
 
   async function create() {
     if (!token) return;
@@ -149,7 +157,14 @@ export function MappingTab({
               {mappings.map((m) => (
                 <tr key={String(m.id)} className="border-t border-[var(--clicks-border)]">
                   <td className="px-3 py-2">{m.supplier_name || m.supplier_slug}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{m.variant_sku || variantSku(m.variant) || "Product-level"}</td>
+                  <td className="px-3 py-2">
+                    <VariantName
+                      productName={productName}
+                      variantName={m.variant_name || variantById(m.variant)?.name_en}
+                      sku={m.variant_sku || variantSku(m.variant)}
+                      empty="Product-level"
+                    />
+                  </td>
                   <td className="px-3 py-2 font-mono text-xs">
                     {m.external_product_id}
                     {m.external_name ? <span className="block font-sans text-[11px] text-[var(--clicks-muted)]">{m.external_name}</span> : null}
@@ -218,7 +233,7 @@ export function MappingTab({
               <option value="">Product-level</option>
               {savedVariants.map((v) => (
                 <option key={String(v.id)} value={String(v.id)}>
-                  {v.sku}
+                  {optionLabel(v)}
                 </option>
               ))}
             </select>
@@ -261,7 +276,7 @@ export function MappingTab({
               <option value="">Product-level</option>
               {savedVariants.map((v) => (
                 <option key={String(v.id)} value={String(v.id)}>
-                  {v.sku}
+                  {optionLabel(v)}
                 </option>
               ))}
             </select>

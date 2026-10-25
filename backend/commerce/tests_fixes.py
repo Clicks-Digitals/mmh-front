@@ -944,7 +944,7 @@ class EmailCopyTests(FixFixture, TestCase):
         mail.outbox = []
         with self.captureOnCommitCallbacks(execute=True):
             mark_payment_verified(order.payments.get(), external_ref="psp-test")
-        partial = [m for m in mail.outbox if "1 of 2 codes ready" in m.subject]
+        partial = [m for m in mail.outbox if "1 of your 2 codes is ready" in m.subject]
         self.assertEqual(len(partial), 1)
         self.assertIn("rest is on the way", partial[0].body)
         mail.outbox = []
