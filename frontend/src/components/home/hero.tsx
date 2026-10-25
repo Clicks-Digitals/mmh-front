@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { SITE } from "@/config/site";
+import { useBrandAssets } from "@/context/brand-assets-context";
 import { useLanguage } from "@/context/language-context";
 import { motion, useReducedMotion } from "framer-motion";
 import Image from "next/image";
@@ -9,6 +10,8 @@ import Image from "next/image";
 export function Hero() {
   const { locale, t } = useLanguage();
   const reduceMotion = useReducedMotion();
+  // Home picture from Admin → Settings (bundled picture until one is uploaded).
+  const { heroUrl } = useBrandAssets();
 
   return (
     <section
@@ -16,7 +19,7 @@ export function Hero() {
       aria-label={SITE.name}
     >
       <Image
-        src="/home/hero-banner.jpg"
+        src={heroUrl}
         alt=""
         fill
         priority

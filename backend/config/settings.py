@@ -303,8 +303,9 @@ SIMPLE_JWT = {
 # Required (64 hex chars) in staging and production.
 CODE_ENCRYPTION_KEY = resolve_code_encryption_key(DJANGO_ENV, os.environ)
 
-SUPPLIER_MODE = os.getenv("SUPPLIER_MODE", "mock").lower()
-ONEEPIN_MODE = os.getenv("ONEEPIN_MODE", "test").lower()
+# 1Epin supplier (see README "1Epin integration"). SUPPLIER_MODE: mock | test | live.
+SUPPLIER_MODE = (os.getenv("SUPPLIER_MODE", "mock") or "mock").strip().lower()
+ONEEPIN_MODE = os.getenv("ONEEPIN_MODE", "test").lower()  # legacy, unused (SUPPLIER_MODE decides)
 ONEEPIN_TEST_BASE_URL = os.getenv("ONEEPIN_TEST_BASE_URL", "https://www.1epin.com/api/test/")
 ONEEPIN_LIVE_BASE_URL = os.getenv("ONEEPIN_LIVE_BASE_URL", "https://www.1epin.com/api/live/")
 ONEEPIN_EMAIL = os.getenv("ONEEPIN_EMAIL", "")
@@ -313,6 +314,22 @@ ONEEPIN_CALLBACK_TOKEN = os.getenv("ONEEPIN_CALLBACK_TOKEN", "")
 ONEEPIN_RECONCILE_TOKEN = os.getenv("ONEEPIN_RECONCILE_TOKEN", "")
 ONEEPIN_ALLOW_LIVE = _env_bool("ONEEPIN_ALLOW_LIVE", default=False)
 ONEEPIN_REQUEST_TIMEOUT_MS = int(os.getenv("ONEEPIN_REQUEST_TIMEOUT_MS", "15000"))
+# Optional egress proxy with a static IP (http://user:pass@host:port) for every 1Epin request.
+ONEEPIN_HTTP_PROXY = os.getenv("ONEEPIN_HTTP_PROXY", "").strip()
+ONEEPIN_CURRENCY = (os.getenv("ONEEPIN_CURRENCY", "USD").strip().upper() or "USD")
+# JOD per 1 unit of ONEEPIN_CURRENCY (USD -> JOD = 0.709).
+ONEEPIN_FX_TO_JOD = os.getenv("ONEEPIN_FX_TO_JOD", "0.709").strip() or "0.709"
+ONEEPIN_LOW_BALANCE = os.getenv("ONEEPIN_LOW_BALANCE", "20").strip() or "20"
+ONEEPIN_TEST_COUNTS_AS_STOCK = _env_bool("ONEEPIN_TEST_COUNTS_AS_STOCK", default=False)
+# Mock mode delivers FAKE codes; it may only buy in development (never in staging/production).
+ONEEPIN_MOCK_FULFILLMENT = _env_bool("ONEEPIN_MOCK_FULFILLMENT", default=IS_DEVELOPMENT) and IS_DEVELOPMENT
+# Place supplier orders right after the payment commits (False = scheduled job only).
+ONEEPIN_INLINE_FULFILLMENT = _env_bool("ONEEPIN_INLINE_FULFILLMENT", default=True)
+ONEEPIN_IP_LOOKUP_URL = os.getenv("ONEEPIN_IP_LOOKUP_URL", "https://api.ipify.org?format=json").strip()
+# Public origin of this API (used to show the absolute 1Epin callback URL).
+PUBLIC_API_URL = (
+    os.getenv("PUBLIC_API_URL") or "https://backend-production-8e0e1e.up.railway.app"
+).strip().rstrip("/")
 
 # PayPal Orders v2. The client secret stays on the server.
 # Orders are priced in JOD (fils). PAYPAL_CURRENCY is the business-account
@@ -328,12 +345,8 @@ PAYPAL_FX_RATE = os.getenv("PAYPAL_FX_RATE", "").strip()
 PAYPAL_BRAND_NAME = os.getenv("PAYPAL_BRAND_NAME", "MMH").strip() or "MMH"
 PAYPAL_TIMEOUT_SECONDS = float(os.getenv("PAYPAL_TIMEOUT_SECONDS", "20"))
 
-# Live OneEpin remains locked until payment + fulfillment go-live is explicitly approved.
-if IS_PRODUCTION and (ONEEPIN_ALLOW_LIVE or SUPPLIER_MODE == "live"):
-    raise RuntimeError(
-        "OneEpin live purchasing is locked for production until payment integration and "
-        "fulfillment idempotency are complete. Keep ONEEPIN_ALLOW_LIVE=false and SUPPLIER_MODE=mock|test."
-    )
+# Live 1Epin purchasing needs BOTH SUPPLIER_MODE=live and ONEEPIN_ALLOW_LIVE=true
+# (system checks warn when it is on without credentials / callback token).
 
 # Bootstrap admin — no default password in production; seed refuses insecure defaults.
 BOOTSTRAP_ADMIN_EMAIL = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "admin@mmh.local" if IS_DEVELOPMENT else "")

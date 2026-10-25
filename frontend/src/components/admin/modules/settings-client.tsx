@@ -1,7 +1,9 @@
 "use client";
 
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
+import { EntityImageField } from "@/components/admin/ui/entity-image-field";
 import { ErrorState } from "@/components/admin/ui/error-state";
+import { DEFAULT_HERO_URL, DEFAULT_LOGO_URL } from "@/context/brand-assets-context";
 import { notifySettingsChanged } from "@/components/admin/layout/maintenance-bar";
 import { validateSettingsForm } from "@/components/admin/lib/settings-form";
 import { FormErrorSummary, FormField, adminInputClass } from "@/components/admin/ui/form-field";
@@ -9,7 +11,7 @@ import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage, adminFieldErrors } from "@/components/admin/lib/errors";
 import { useAdminQuery } from "@/hooks/use-admin-query";
-import { getSiteSettings, updateSiteSettings, type SiteSettings } from "@/lib/api/admin";
+import { deleteSiteImage, getSiteSettings, updateSiteSettings, uploadSiteImage, type SiteImageTarget, type SiteSettings } from "@/lib/api/admin";
 import { useState } from "react";
 
 // Shown on the storefront Contact page, footer, and floating chat buttons. Empty = hidden.
@@ -203,6 +205,54 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
   );
 }
 
+/** Store logo and home picture — uploaded here, bundled defaults until then. */
+function BrandPictures({ settings, token, onChanged }: { settings: SiteSettings; token?: string; onChanged: (s: SiteSettings) => void }) {
+  const toast = useAdminToast();
+  const upload = async (target: SiteImageTarget, file: File) => {
+    if (!token) return;
+    onChanged(await uploadSiteImage(token, target, file));
+    toast.push(target === "logo" ? "Logo uploaded" : "Home picture uploaded", "success");
+  };
+  const remove = async (target: SiteImageTarget) => {
+    if (!token) return;
+    onChanged(await deleteSiteImage(token, target));
+    toast.push(target === "logo" ? "Logo removed" : "Home picture removed", "success");
+  };
+  return (
+    <section className="mt-4 max-w-xl space-y-3 rounded-xl border border-[var(--clicks-border)] bg-white p-5" aria-label="Logo and home picture">
+      <div>
+        <h2 className="text-[14px] font-semibold text-[var(--clicks-navy)]">Logo &amp; home picture</h2>
+        <p className="text-[12px] text-[var(--clicks-muted)]">Saved as soon as you upload — no need to press Save.</p>
+      </div>
+      <EntityImageField
+        label="Store logo"
+        recommended="square, 512 × 512 px (PNG with a transparent background works best)"
+        imageUrl={settings.logo_image_url}
+        fallbackUrl={DEFAULT_LOGO_URL}
+        canWrite={Boolean(token)}
+        removeDescription="The store goes back to the default MMH logo."
+        onUpload={(file) => upload("logo", file)}
+        onRemove={() => remove("logo")}
+      />
+      <EntityImageField
+        label="Home picture"
+        recommended="wide, 1920 × 1080 px"
+        minEdge={720}
+        shape="wide"
+        imageUrl={settings.hero_image_url}
+        fallbackUrl={DEFAULT_HERO_URL}
+        canWrite={Boolean(token)}
+        removeDescription="The home page goes back to the default picture. It is only shown while no home banner is live (Content → Banners)."
+        onUpload={(file) => upload("hero", file)}
+        onRemove={() => remove("hero")}
+      />
+      <p className="text-[11px] text-[var(--clicks-muted)]">
+        The home picture fills the top of the home page whenever no home banner is live. The logo appears in the header, footer and promo strip.
+      </p>
+    </section>
+  );
+}
+
 export function SettingsClient() {
   const { data: settings, setData: setSettings, loading, error, reload, token } = useAdminQuery((tok) =>
     getSiteSettings(tok),
@@ -214,7 +264,10 @@ export function SettingsClient() {
       {error ? <ErrorState message={error} onRetry={reload} /> : null}
       {loading ? <div className="h-48 animate-pulse rounded-xl border border-[var(--clicks-border)] bg-white" /> : null}
       {!loading && !error && settings ? (
-        <SettingsForm settings={settings} token={token} onSaved={(s) => setSettings(s)} />
+        <>
+          <SettingsForm settings={settings} token={token} onSaved={(s) => setSettings(s)} />
+          <BrandPictures settings={settings} token={token} onChanged={(s) => setSettings(s)} />
+        </>
       ) : null}
     </div>
   );

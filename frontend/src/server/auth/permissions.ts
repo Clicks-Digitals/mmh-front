@@ -108,6 +108,7 @@ export const ROUTE_PERMISSIONS: Record<string, PermissionKey | undefined> = {
   "/admin/payments": PERMISSIONS.ordersRead,
   "/admin/coupons": PERMISSIONS.ordersRead,
   "/admin/banners": PERMISSIONS.contentRead,
+  "/admin/home-tiles": PERMISSIONS.contentRead,
   "/admin/faqs": PERMISSIONS.contentRead,
   "/admin/pages": PERMISSIONS.contentRead,
   "/admin/administrators": PERMISSIONS.adminsRead,

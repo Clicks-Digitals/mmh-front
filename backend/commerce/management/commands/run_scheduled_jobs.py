@@ -14,13 +14,15 @@ logger = logging.getLogger("commerce")
 
 class Command(BaseCommand):
     help = (
-        "Run all periodic commerce jobs: PayPal reconciliation, code-import cleanup, and "
-        "expiry of unpaid orders. Idempotent; safe to run every 10-15 minutes."
+        "Run all periodic commerce jobs: PayPal reconciliation, 1Epin supplier reconciliation "
+        "(+ daily catalog sync and balance check), code-import cleanup, and expiry of unpaid "
+        "orders. Idempotent; safe to run every 10-15 minutes."
     )
 
     def add_arguments(self, parser):
         parser.add_argument("--expire-after-hours", type=int, default=EXPIRE_AFTER_HOURS)
         parser.add_argument("--skip-paypal", action="store_true")
+        parser.add_argument("--skip-1epin", action="store_true", dest="skip_oneepin")
 
     def handle(self, *args, **options):
         summary: dict[str, dict | str] = {}
@@ -39,6 +41,21 @@ class Command(BaseCommand):
             except Exception as exc:  # keep the other jobs running
                 logger.exception("reconcile_paypal job failed")
                 summary["reconcile_paypal"] = f"error:{exc.__class__.__name__}"
+
+        if options.get("skip_oneepin"):
+            summary["oneepin"] = "skipped"
+        else:
+            try:
+                from suppliers.services.reconcile import run_oneepin_jobs
+
+                result = run_oneepin_jobs()
+                summary["oneepin"] = {
+                    job: (" ".join(f"{k}={v}" for k, v in value.items()) if isinstance(value, dict) else value)
+                    for job, value in result.items()
+                }
+            except Exception as exc:  # keep the other jobs running
+                logger.exception("1Epin jobs failed")
+                summary["oneepin"] = f"error:{exc.__class__.__name__}"
 
         try:
             summary["cleanup_code_imports"] = cleanup_pending_imports(older_than_hours=PENDING_PAYLOAD_TTL_HOURS)

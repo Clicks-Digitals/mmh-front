@@ -3,14 +3,18 @@
 import { AdminModal } from "@/components/admin/ui/admin-modal";
 import { Badge } from "@/components/admin/ui/badge";
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
-import { EmptyState } from "@/components/admin/ui/empty-state";
 import { FormField, adminInputClass } from "@/components/admin/ui/form-field";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage } from "@/components/admin/lib/errors";
+import { deleteMapping, type OneEpinMapping } from "@/components/admin/oneepin/api";
+import { describeFailure } from "@/components/admin/oneepin/errors";
+import { filsJod, jodText } from "@/components/admin/oneepin/labels";
+import { LinkDialog, type LinkTarget } from "@/components/admin/oneepin/link-dialog";
+import { MarginText, StockBadge } from "@/components/admin/oneepin/ui";
 import {
   createProductMapping,
   deleteSupplierMapping,
-  updateSupplierMapping,
+  type AdminProductField,
   type AdminSupplierMapping,
   type AdminVariant,
   type Supplier,
@@ -18,6 +22,8 @@ import {
 import { useState } from "react";
 import { VariantName } from "@/components/admin/ui/variant-name";
 import { variantOptionLabel } from "@/components/admin/lib/variants";
+
+const ONEEPIN = "1epin";
 
 /** D18 / CA-01: whether a mapping makes the variant sellable, and why not. */
 export function MappingStockCell({ mapping }: { mapping: Pick<AdminSupplierMapping, "ignored" | "counts_as_stock" | "counts_as_stock_message"> }) {
@@ -33,8 +39,17 @@ export function MappingStockCell({ mapping }: { mapping: Pick<AdminSupplierMappi
   );
 }
 
-const emptyForm = { supplier_id: "", variant_id: "", external_product_id: "", external_name: "", ignored: false };
+const emptyForm = { supplier_id: "", variant_id: "", external_product_id: "", external_name: "" };
 
+function isOneEpin(m: AdminSupplierMapping): boolean {
+  return (m.supplier_slug ?? "").toLowerCase() === ONEEPIN;
+}
+
+/**
+ * Product editor → Supplier tab. 1Epin links are made with a catalog search picker (no
+ * typing of IDs) and show cost, margin and whether they count as stock. Mappings to other
+ * (manual) suppliers keep the simple ID form.
+ */
 export function MappingTab({
   token,
   slug,
@@ -44,6 +59,8 @@ export function MappingTab({
   variants,
   canMap,
   productName,
+  fulfillmentType,
+  customerFields,
 }: {
   token?: string;
   slug: string;
@@ -54,21 +71,48 @@ export function MappingTab({
   canMap: boolean;
   /** Shown before the variant name in pickers ("<Product> – <Variant>"). */
   productName?: string;
+  fulfillmentType?: string;
+  customerFields?: AdminProductField[];
 }) {
   const toast = useAdminToast();
-  const [createForm, setCreateForm] = useState(emptyForm);
-  const [editing, setEditing] = useState<AdminSupplierMapping | null>(null);
-  const [editForm, setEditForm] = useState(emptyForm);
+  const [link, setLink] = useState<LinkTarget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AdminSupplierMapping | null>(null);
+  const [otherOpen, setOtherOpen] = useState(false);
+  const [createForm, setCreateForm] = useState(emptyForm);
   const [pending, setPending] = useState(false);
 
-  const variantSku = (id: number | string | null | undefined) =>
-    id == null ? null : (variants.find((v) => String(v.id) === String(id))?.sku ?? String(id));
-  const variantById = (id: number | string | null | undefined) =>
-    id == null ? undefined : variants.find((v) => String(v.id) === String(id));
+  const savedVariants = variants.filter((v) => v.id);
+  const oneEpin = mappings.filter(isOneEpin) as unknown as OneEpinMapping[];
+  const others = mappings.filter((m) => !isOneEpin(m));
+  const linkedVariantIds = new Set(oneEpin.map((m) => String(m.variant ?? "")));
+  const unlinked = savedVariants.filter((v) => !linkedVariantIds.has(String(v.id)));
+  const otherSuppliers = suppliers.filter((s) => s.slug !== ONEEPIN);
+  const fields = (customerFields ?? []).filter((f) => !f.delete && f.key).map((f) => ({ key: f.key, label: f.label_en, required: f.required }));
   const optionLabel = (v: AdminVariant) => variantOptionLabel({ ...v, product_name: v.product_name || productName });
 
-  async function create() {
+  function upsert(saved: OneEpinMapping) {
+    const row = saved as unknown as AdminSupplierMapping;
+    const exists = mappings.some((m) => String(m.id) === String(saved.id));
+    setMappings(exists ? mappings.map((m) => (String(m.id) === String(saved.id) ? row : m)) : [...mappings, row]);
+  }
+
+  async function confirmDelete() {
+    if (!token || !deleteTarget) return;
+    setPending(true);
+    try {
+      if (isOneEpin(deleteTarget)) await deleteMapping(token, deleteTarget.id);
+      else await deleteSupplierMapping(token, deleteTarget.id);
+      setMappings(mappings.filter((m) => String(m.id) !== String(deleteTarget.id)));
+      toast.push("Link removed", "success");
+      setDeleteTarget(null);
+    } catch (err) {
+      toast.push(describeFailure(err, "Could not remove the link."), "error");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function createOther() {
     if (!token) return;
     if (!createForm.supplier_id || !createForm.external_product_id.trim()) {
       toast.push("Choose a supplier and enter the supplier's product ID.", "error");
@@ -82,9 +126,10 @@ export function MappingTab({
         variant_id: createForm.variant_id || null,
         external_name: createForm.external_name.trim(),
       });
-      setMappings([...mappings, { ...created, variant_sku: variantSku(created.variant) }]);
+      setMappings([...mappings, created]);
       setCreateForm(emptyForm);
-      toast.push(created.counts_as_stock ? "Mapping created — it counts as stock." : `Mapping created. ${created.counts_as_stock_message ?? ""}`.trim(), created.counts_as_stock ? "success" : "info");
+      setOtherOpen(false);
+      toast.push("Mapping created", "success");
     } catch (err) {
       toast.push(adminErrorMessage(err, "Mapping failed"), "error");
     } finally {
@@ -92,107 +137,84 @@ export function MappingTab({
     }
   }
 
-  async function saveEdit() {
-    if (!token || !editing) return;
-    setPending(true);
-    try {
-      const updated = await updateSupplierMapping(token, editing.id, {
-        external_product_id: editForm.external_product_id.trim(),
-        external_name: editForm.external_name.trim(),
-        ignored: editForm.ignored,
-        variant_id: editForm.variant_id || null,
-      });
-      setMappings(
-        mappings.map((m) =>
-          String(m.id) === String(editing.id) ? { ...m, ...updated, variant_sku: variantSku(updated.variant) } : m,
-        ),
-      );
-      toast.push("Mapping updated", "success");
-      setEditing(null);
-    } catch (err) {
-      toast.push(adminErrorMessage(err, "Update failed"), "error");
-    } finally {
-      setPending(false);
-    }
+  function variantRefOf(v: AdminVariant) {
+    return {
+      id: v.id,
+      product: String(v.product ?? slug),
+      productName: productName ?? v.product_name ?? "",
+      name: v.name_en || v.sku,
+      sku: v.sku,
+      priceFils: v.price_fils ?? null,
+      fulfillmentType: fulfillmentType ?? v.fulfillment_type ?? "",
+    };
   }
-
-  async function confirmDelete() {
-    if (!token || !deleteTarget) return;
-    setPending(true);
-    try {
-      await deleteSupplierMapping(token, deleteTarget.id);
-      setMappings(mappings.filter((m) => String(m.id) !== String(deleteTarget.id)));
-      toast.push("Mapping removed", "success");
-      setDeleteTarget(null);
-    } catch (err) {
-      toast.push(adminErrorMessage(err, "Delete failed"), "error");
-    } finally {
-      setPending(false);
-    }
-  }
-
-  const savedVariants = variants.filter((v) => v.id);
 
   return (
     <section className="admin-card p-4">
-      <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Supplier mapping</h2>
-      <p className="mb-4 mt-0.5 text-xs text-[var(--clicks-muted)]">
-        Links a variant to the supplier&apos;s product so the supplier can deliver it. A mapping only counts as stock (keeps the
-        variant on sale with no codes) when the supplier is active <em>and</em> live purchasing is switched on — in test mode it
-        does not. Changes here are saved immediately.
+      <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Supplier (1Epin)</h2>
+      <p className="mb-4 mt-0.5 max-w-3xl text-xs text-[var(--clicks-muted)]">
+        Link a product option to a 1Epin product so 1Epin can deliver it when a customer pays. A link only counts as stock (keeps the
+        option on sale with no codes of our own) in live mode, with “Buy automatically” on and a recently synced catalog. Changes
+        here are saved immediately.
       </p>
-      {mappings.length ? (
+
+      {oneEpin.length ? (
         <div className="mb-4 overflow-x-auto rounded-xl border border-[var(--clicks-border)]">
           <table className="min-w-full text-sm">
-            <thead className="bg-[var(--clicks-bg)] text-[11px] uppercase text-[var(--clicks-muted)]">
+            <thead className="bg-[var(--clicks-bg)] text-[11px] text-[var(--clicks-muted)]">
               <tr>
-                <th className="px-3 py-2 text-start">Supplier</th>
-                <th className="px-3 py-2 text-start">Variant</th>
-                <th className="px-3 py-2 text-start">External ID</th>
-                <th className="px-3 py-2 text-start">Counts as stock?</th>
+                <th className="px-3 py-2 text-start">Our option</th>
+                <th className="px-3 py-2 text-start">1Epin product</th>
+                <th className="px-3 py-2 text-start">Cost / sale / profit</th>
+                <th className="px-3 py-2 text-start">Stock</th>
+                <th className="px-3 py-2 text-start">Settings</th>
                 <th className="px-3 py-2" />
               </tr>
             </thead>
             <tbody>
-              {mappings.map((m) => (
-                <tr key={String(m.id)} className="border-t border-[var(--clicks-border)]">
-                  <td className="px-3 py-2">{m.supplier_name || m.supplier_slug}</td>
+              {oneEpin.map((m) => (
+                <tr key={m.id} className="border-t border-[var(--clicks-border)] align-top">
                   <td className="px-3 py-2">
-                    <VariantName
-                      productName={productName}
-                      variantName={m.variant_name || variantById(m.variant)?.name_en}
-                      sku={m.variant_sku || variantSku(m.variant)}
-                      empty="Product-level"
-                    />
+                    <VariantName productName={productName} variantName={m.variant_name} sku={m.variant_sku} empty="Whole product" />
                   </td>
-                  <td className="px-3 py-2 font-mono text-xs">
-                    {m.external_product_id}
-                    {m.external_name ? <span className="block font-sans text-[11px] text-[var(--clicks-muted)]">{m.external_name}</span> : null}
+                  <td className="px-3 py-2 text-xs">
+                    <p className="font-medium text-[var(--clicks-navy)]">{m.catalog_item?.product_name || m.external_name || "—"}</p>
+                    <p className="font-mono text-[11px] text-[var(--clicks-muted)]">ID {m.external_product_id}</p>
+                    {m.warnings?.length ? (
+                      <ul className="mt-1 space-y-0.5 text-[11px] text-amber-700">
+                        {m.warnings.map((w) => (
+                          <li key={w}>{w}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </td>
+                  <td className="px-3 py-2 text-xs tabular-nums">
+                    <p>Cost {jodText(m.cost_jod)}</p>
+                    <p>Sale {jodText(m.sale_price_jod)}</p>
+                    <MarginText fils={m.margin_fils} pct={m.margin_pct} />
                   </td>
                   <td className="px-3 py-2">
-                    <MappingStockCell mapping={m} />
+                    <StockBadge counts={m.counts_as_stock} reason={m.counts_as_stock_reason} />
+                  </td>
+                  <td className="px-3 py-2 text-[11px] text-[var(--clicks-muted)]">
+                    <p>{m.ignored ? "Paused" : m.auto_buy ? "Buys automatically" : "Manual purchase only"}</p>
+                    {(m.category_type || "") !== "topup" ? <p>{m.prefer_supplier ? "1Epin first" : "Our codes first"}</p> : null}
+                    {m.max_cost_fils !== null && m.max_cost_fils !== undefined ? <p>Max {filsJod(m.max_cost_fils)}</p> : null}
+                    {m.quantity_per_unit > 1 ? <p>{m.quantity_per_unit} 1Epin units each</p> : null}
+                    {m.user_template ? <p className="font-mono">{m.user_template}</p> : null}
                   </td>
                   <td className="px-3 py-2">
                     {canMap ? (
                       <div className="flex justify-end gap-3 text-xs">
-                        <button
-                          type="button"
-                          className="font-medium text-[var(--clicks-blue)]"
-                          onClick={() => {
-                            setEditForm({
-                              supplier_id: String(m.supplier_id),
-                              variant_id: m.variant != null ? String(m.variant) : "",
-                              external_product_id: m.external_product_id,
-                              external_name: m.external_name ?? "",
-                              ignored: Boolean(m.ignored),
-                            });
-                            setEditing(m);
-                          }}
-                        >
+                        <button type="button" className="font-medium text-[var(--clicks-blue)]" onClick={() => setLink({ kind: "edit", mapping: m })}>
                           Edit
                         </button>
-                        <button type="button" className="font-medium text-red-600" onClick={() => setDeleteTarget(m)}>
-                          Delete
+                        <button
+                          type="button"
+                          className="font-medium text-red-600"
+                          onClick={() => setDeleteTarget(m as unknown as AdminSupplierMapping)}
+                        >
+                          Remove
                         </button>
                       </div>
                     ) : null}
@@ -202,11 +224,88 @@ export function MappingTab({
             </tbody>
           </table>
         </div>
-      ) : (
-        <EmptyState title="No mappings" description="Map a supplier product id to this product or a variant." />
-      )}
+      ) : null}
+
       {canMap ? (
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        unlinked.length ? (
+          <div className="mb-4 rounded-xl border border-dashed border-[var(--clicks-border)] p-3">
+            <p className="mb-2 text-[12px] font-medium text-[var(--clicks-text)]">Options not linked to 1Epin</p>
+            <ul className="divide-y divide-[var(--clicks-border)]">
+              {unlinked.map((v) => (
+                <li key={String(v.id)} className="flex flex-wrap items-center justify-between gap-2 py-2 text-[13px]">
+                  <span>{optionLabel(v)}</span>
+                  <button
+                    type="button"
+                    className="admin-btn admin-btn-secondary h-8 text-xs"
+                    onClick={() => setLink({ kind: "fromVariant", variant: variantRefOf(v), fields })}
+                  >
+                    Link to 1Epin…
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : !savedVariants.length ? (
+          <p className="mb-4 text-[13px] text-[var(--clicks-muted)]">Save at least one variant first, then link it to 1Epin.</p>
+        ) : null
+      ) : (
+        <p className="mb-4 text-sm text-[var(--clicks-muted)]">You can view these links, but your role can&apos;t change them.</p>
+      )}
+
+      {others.length ? (
+        <div className="mb-4 overflow-x-auto rounded-xl border border-[var(--clicks-border)]">
+          <table className="min-w-full text-sm">
+            <thead className="bg-[var(--clicks-bg)] text-[11px] text-[var(--clicks-muted)]">
+              <tr>
+                <th className="px-3 py-2 text-start">Other supplier</th>
+                <th className="px-3 py-2 text-start">Variant</th>
+                <th className="px-3 py-2 text-start">External ID</th>
+                <th className="px-3 py-2 text-start">Counts as stock?</th>
+                <th className="px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {others.map((m) => (
+                <tr key={String(m.id)} className="border-t border-[var(--clicks-border)]">
+                  <td className="px-3 py-2">{m.supplier_name || m.supplier_slug}</td>
+                  <td className="px-3 py-2">
+                    <VariantName productName={productName} variantName={m.variant_name} sku={m.variant_sku} empty="Product-level" />
+                  </td>
+                  <td className="px-3 py-2 font-mono text-xs">{m.external_product_id}</td>
+                  <td className="px-3 py-2">
+                    <MappingStockCell mapping={m} />
+                  </td>
+                  <td className="px-3 py-2 text-end">
+                    {canMap ? (
+                      <button type="button" className="text-xs font-medium text-red-600" onClick={() => setDeleteTarget(m)}>
+                        Delete
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {canMap && otherSuppliers.length ? (
+        <button type="button" className="text-[12px] font-semibold text-[var(--clicks-blue)]" onClick={() => setOtherOpen(true)}>
+          Map to another supplier by ID…
+        </button>
+      ) : null}
+
+      <LinkDialog
+        target={link}
+        onClose={() => setLink(null)}
+        onSaved={(saved) => {
+          upsert(saved);
+          setLink(null);
+        }}
+      />
+
+      <AdminModal open={otherOpen} onClose={() => setOtherOpen(false)} title="Map to another supplier">
+        <div className="space-y-3">
           <FormField label="Supplier" htmlFor="map-supplier" required>
             <select
               id="map-supplier"
@@ -215,15 +314,15 @@ export function MappingTab({
               onChange={(e) => setCreateForm((s) => ({ ...s, supplier_id: e.target.value }))}
             >
               <option value="">Select…</option>
-              {suppliers.map((s) => (
+              {otherSuppliers.map((s) => (
                 <option key={String(s.id)} value={String(s.id)}>
                   {s.name}
-                  {!s.active ? " (inactive)" : s.live_purchasing === false ? " (test mode)" : ""}
+                  {!s.active ? " (inactive)" : ""}
                 </option>
               ))}
             </select>
           </FormField>
-          <FormField label="Variant" htmlFor="map-variant" hint="Pick the variant — product-level mappings never count as stock.">
+          <FormField label="Variant" htmlFor="map-variant">
             <select
               id="map-variant"
               className={adminInputClass}
@@ -238,7 +337,7 @@ export function MappingTab({
               ))}
             </select>
           </FormField>
-          <FormField label="Supplier product ID" htmlFor="map-ext" required hint="The supplier's id / SKU for this item.">
+          <FormField label="Supplier product ID" htmlFor="map-ext" required>
             <input
               id="map-ext"
               className={`${adminInputClass} font-mono`}
@@ -246,7 +345,7 @@ export function MappingTab({
               onChange={(e) => setCreateForm((s) => ({ ...s, external_product_id: e.target.value }))}
             />
           </FormField>
-          <FormField label="Supplier product name" htmlFor="map-name" optional hint="For your reference.">
+          <FormField label="Supplier product name" htmlFor="map-name" optional>
             <input
               id="map-name"
               className={adminInputClass}
@@ -254,64 +353,12 @@ export function MappingTab({
               onChange={(e) => setCreateForm((s) => ({ ...s, external_name: e.target.value }))}
             />
           </FormField>
-          <div className="flex items-start pt-6">
-            <button type="button" disabled={pending} className="admin-btn admin-btn-primary" onClick={() => void create()}>
-              Add mapping
-            </button>
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm text-[var(--clicks-muted)]">You can view these mappings, but your role can&apos;t change them.</p>
-      )}
-
-      <AdminModal open={Boolean(editing)} onClose={() => setEditing(null)} title="Edit mapping">
-        <div className="space-y-3">
-          <FormField label="Variant" htmlFor="map-edit-variant" hint="Empty = whole product.">
-            <select
-              id="map-edit-variant"
-              className={adminInputClass}
-              value={editForm.variant_id}
-              onChange={(e) => setEditForm((s) => ({ ...s, variant_id: e.target.value }))}
-            >
-              <option value="">Product-level</option>
-              {savedVariants.map((v) => (
-                <option key={String(v.id)} value={String(v.id)}>
-                  {optionLabel(v)}
-                </option>
-              ))}
-            </select>
-          </FormField>
-          <FormField label="External product ID" htmlFor="map-edit-ext" required>
-            <input
-              id="map-edit-ext"
-              className={`${adminInputClass} font-mono`}
-              value={editForm.external_product_id}
-              onChange={(e) => setEditForm((s) => ({ ...s, external_product_id: e.target.value }))}
-            />
-          </FormField>
-          <FormField label="External name" htmlFor="map-edit-name">
-            <input
-              id="map-edit-name"
-              className={adminInputClass}
-              value={editForm.external_name}
-              onChange={(e) => setEditForm((s) => ({ ...s, external_name: e.target.value }))}
-            />
-          </FormField>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={editForm.ignored} onChange={(e) => setEditForm((s) => ({ ...s, ignored: e.target.checked }))} />
-            Ignore (keep the record but don&apos;t use it)
-          </label>
           <div className="flex justify-end gap-2 pt-2">
-            <button type="button" className="admin-btn admin-btn-secondary" onClick={() => setEditing(null)}>
+            <button type="button" className="admin-btn admin-btn-secondary" onClick={() => setOtherOpen(false)}>
               Cancel
             </button>
-            <button
-              type="button"
-              className="admin-btn admin-btn-primary"
-              disabled={pending || !editForm.external_product_id.trim()}
-              onClick={() => void saveEdit()}
-            >
-              {pending ? "Saving…" : "Save"}
+            <button type="button" disabled={pending} className="admin-btn admin-btn-primary" onClick={() => void createOther()}>
+              Add mapping
             </button>
           </div>
         </div>
@@ -319,11 +366,15 @@ export function MappingTab({
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
-        title="Delete mapping?"
-        description={deleteTarget ? `Remove the link to supplier product ${deleteTarget.external_product_id}.` : undefined}
+        title="Remove this link?"
+        description={
+          deleteTarget
+            ? `The option will no longer be bought from ${deleteTarget.supplier_name || "the supplier"} (product ${deleteTarget.external_product_id}). Orders already placed are not affected.`
+            : undefined
+        }
         danger
         pending={pending}
-        confirmLabel="Delete"
+        confirmLabel="Remove"
         onCancel={() => setDeleteTarget(null)}
         onConfirm={() => void confirmDelete()}
       />

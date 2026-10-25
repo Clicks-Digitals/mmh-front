@@ -24,14 +24,6 @@ def check_production_launch_guards(app_configs, **kwargs):
                     id="config.E002",
                 )
             )
-        if getattr(settings, "ONEEPIN_ALLOW_LIVE", False):
-            errors.append(
-                Error(
-                    "ONEEPIN_ALLOW_LIVE must remain False until payment integration "
-                    "and an explicit go-live decision.",
-                    id="config.E003",
-                )
-            )
         if not getattr(settings, "CORS_ALLOWED_ORIGINS", None):
             errors.append(
                 Error(
@@ -85,4 +77,68 @@ def check_production_launch_guards(app_configs, **kwargs):
             )
         )
 
+    errors.extend(check_oneepin_settings(is_production=is_production))
     return errors + warnings
+
+
+def check_oneepin_settings(*, is_production: bool) -> list:
+    """1Epin supplier configuration (D-1E-1): live needs SUPPLIER_MODE=live AND ONEEPIN_ALLOW_LIVE."""
+    out = []
+    mode = (getattr(settings, "SUPPLIER_MODE", "mock") or "").strip().lower()
+    allow_live = bool(getattr(settings, "ONEEPIN_ALLOW_LIVE", False))
+    has_creds = bool(getattr(settings, "ONEEPIN_EMAIL", "") and getattr(settings, "ONEEPIN_PASSWORD", ""))
+    token = getattr(settings, "ONEEPIN_CALLBACK_TOKEN", "") or ""
+    if mode not in {"mock", "test", "live"}:
+        out.append(Error(f"SUPPLIER_MODE must be mock, test or live (got {mode!r}).", id="suppliers.E001"))
+        return out
+    if mode == "live" and allow_live:
+        if not has_creds:
+            out.append(
+                Warning(
+                    "1Epin live mode is on but ONEEPIN_EMAIL / ONEEPIN_PASSWORD are missing: nothing can be bought.",
+                    id="suppliers.W001",
+                )
+            )
+        if len(token) < 16:
+            out.append(
+                Warning(
+                    "1Epin live mode is on without a strong ONEEPIN_CALLBACK_TOKEN (>= 16 chars): callbacks are "
+                    "rejected and orders only complete through the scheduled reconcile.",
+                    id="suppliers.W002",
+                )
+            )
+    if mode == "live" and not allow_live:
+        out.append(
+            Warning(
+                "SUPPLIER_MODE=live without ONEEPIN_ALLOW_LIVE=true: live purchasing stays disabled.",
+                id="suppliers.W003",
+            )
+        )
+    if allow_live and mode != "live":
+        out.append(
+            Warning("ONEEPIN_ALLOW_LIVE=true has no effect unless SUPPLIER_MODE=live.", id="suppliers.W004")
+        )
+    if mode == "test" and not has_creds:
+        out.append(
+            Warning(
+                "SUPPLIER_MODE=test without ONEEPIN_EMAIL / ONEEPIN_PASSWORD (public test accounts: "
+                "test@1epin.com or test_usd@1epin.com / test1234).",
+                id="suppliers.W005",
+            )
+        )
+    try:
+        from decimal import Decimal
+
+        if Decimal(str(getattr(settings, "ONEEPIN_FX_TO_JOD", "0.709"))) <= 0:
+            raise ValueError
+    except Exception:  # noqa: BLE001
+        out.append(Error("ONEEPIN_FX_TO_JOD must be a positive number.", id="suppliers.E002"))
+    if is_production and mode == "mock":
+        out.append(
+            Warning(
+                "SUPPLIER_MODE=mock in staging/production: 1Epin is simulated and never buys "
+                "(mapped items without own stock wait for staff).",
+                id="suppliers.W006",
+            )
+        )
+    return out

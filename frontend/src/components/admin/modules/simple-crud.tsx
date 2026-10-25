@@ -5,6 +5,7 @@ import { ADMIN_LIST_PAGE_SIZE } from "@/components/admin/admin-list-page";
 import { validationSource } from "@/components/admin/lib/product-form";
 import { slugify } from "@/components/admin/lib/slugify";
 import { AdminModal } from "@/components/admin/ui/admin-modal";
+import { ArtworkPicker } from "@/components/admin/ui/artwork-picker";
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
 import { DataTable, type DataTableColumn } from "@/components/admin/ui/data-table";
 import { EmptyState } from "@/components/admin/ui/empty-state";
@@ -23,7 +24,8 @@ import { useState } from "react";
 export type CrudField = {
   name: string;
   label: string;
-  type?: "text" | "number" | "textarea" | "checkbox" | "select" | "datetime-local" | "url";
+  /** "artwork": built-in picture picker (Advanced), uses the `slug` value for its automatic choice */
+  type?: "text" | "number" | "textarea" | "checkbox" | "select" | "datetime-local" | "url" | "artwork";
   options?: Array<{ value: string; label: string }>;
   required?: boolean;
   /** show "(optional)" */
@@ -39,6 +41,17 @@ export type CrudField = {
 export type CrudValues = Record<string, string | boolean>;
 
 export type CrudListState = { search: string; ordering: string; page: string };
+
+/** Context for the optional picture block of the editor (see `media`). */
+export type CrudMediaContext<T> = {
+  editing: T | null;
+  values: CrudValues;
+  token?: string;
+  canWrite: boolean;
+  /** replace the row being edited (e.g. with the upload response) */
+  setEditing: (row: T) => void;
+  reload: () => void;
+};
 
 function nounText(noun: string) {
   return /^[A-Z0-9]{2,}$/.test(noun) ? noun : noun.toLowerCase();
@@ -72,6 +85,7 @@ export function SimpleCrudPage<T extends { id: number | string }>({
   slugFrom,
   defaultOrdering,
   emptyDescription,
+  media,
 }: {
   title: string;
   description: string;
@@ -96,6 +110,11 @@ export function SimpleCrudPage<T extends { id: number | string }>({
   /** ordering the API uses by default (marks the matching sortable column) */
   defaultOrdering?: string;
   emptyDescription?: string;
+  /**
+   * Picture block shown at the top of the editor. With it, creating keeps the editor open on the new
+   * row (when `create` returns it) so its picture can be uploaded right away.
+   */
+  media?: (ctx: CrudMediaContext<T>) => React.ReactNode;
 }) {
   const toast = useAdminToast();
   const { can } = useAdminAccess();
@@ -153,10 +172,23 @@ export function SimpleCrudPage<T extends { id: number | string }>({
     setPending(true);
     try {
       const body = toPayload(values, editing);
-      if (editing) await update(token, editing, body);
-      else await create(token, body);
-      toast.push(editing ? `${noun} saved` : `${noun} created`, "success");
-      setModalOpen(false);
+      if (editing) {
+        await update(token, editing, body);
+        toast.push(`${noun} saved`, "success");
+        setModalOpen(false);
+      } else {
+        const created = await create(token, body);
+        if (media && created && typeof created === "object" && "id" in created) {
+          const row = created as T;
+          setEditing(row);
+          setValues(toValues(row));
+          setSlugTouched(true);
+          toast.push(`${noun} created — you can now upload its picture`, "success");
+        } else {
+          toast.push(`${noun} created`, "success");
+          setModalOpen(false);
+        }
+      }
       reload();
     } catch (err) {
       const fieldErrs = adminFieldErrors(err);
@@ -274,10 +306,26 @@ export function SimpleCrudPage<T extends { id: number | string }>({
           }}
           noValidate
         >
+          {media ? (
+            <div className="sm:col-span-2">
+              {media({ editing, values, token, canWrite, setEditing: (row) => setEditing(row), reload })}
+            </div>
+          ) : null}
           {fields.map((f) => {
             const id = `crud-${f.name}`;
             const value = values[f.name];
             const hint = typeof f.hint === "function" ? f.hint(values) : f.hint;
+            if (f.type === "artwork") {
+              return (
+                <ArtworkPicker
+                  key={f.name}
+                  id={id}
+                  value={String(value ?? "")}
+                  slug={String(values.slug ?? "")}
+                  onChange={(key) => change(f.name, key)}
+                />
+              );
+            }
             if (f.type === "checkbox") {
               return (
                 <div key={f.name} className="space-y-1 sm:col-span-2">
@@ -330,7 +378,7 @@ export function SimpleCrudPage<T extends { id: number | string }>({
           })}
           <div className="mt-2 flex justify-end gap-2 sm:col-span-2">
             <button type="button" className="admin-btn admin-btn-secondary" onClick={() => setModalOpen(false)}>
-              Cancel
+              {editing && media ? "Close" : "Cancel"}
             </button>
             <button type="submit" disabled={pending} className="admin-btn admin-btn-primary disabled:opacity-60">
               {pending ? "Saving…" : "Save"}

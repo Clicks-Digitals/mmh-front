@@ -3,6 +3,7 @@ from __future__ import annotations
 from urllib.parse import urlencode
 
 import csv
+import logging
 import io
 import secrets
 from datetime import datetime, time, timedelta
@@ -92,6 +93,8 @@ from suppliers.models import Supplier
 
 PAID_LIKE = {PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.REFUNDED}
 
+
+logger = logging.getLogger("commerce")
 
 def _error(exc, *, default_code: str = "error") -> Response:
     body = {"detail": exc.message, "code": getattr(exc, "code", "") or default_code}
@@ -715,6 +718,7 @@ class AdminOrderItemSerializer(OrderItemSerializer):
     delivery_note_customer_visible = serializers.SerializerMethodField()
     show_delivery_method = serializers.SerializerMethodField()
     delivery_state_label = serializers.SerializerMethodField()
+    supplier_order = serializers.SerializerMethodField()
 
     class Meta(OrderItemSerializer.Meta):
         fields = OrderItemSerializer.Meta.fields + (
@@ -723,7 +727,18 @@ class AdminOrderItemSerializer(OrderItemSerializer):
             "delivery_state_label",
             "available_codes_for_variant",
             "sellable_codes_for_variant",
+            "supplier_order",
         )
+
+    def get_supplier_order(self, obj: OrderItem):
+        """1Epin status + staff actions for this item (None when the item is not supplier-related)."""
+        from suppliers.services.payloads import item_supplier_payload
+
+        try:
+            return item_supplier_payload(obj, order=obj.order)
+        except Exception:  # noqa: BLE001 - the order page must render even if supplier data is broken
+            logger.exception("Could not build supplier payload for order item %s", obj.pk)
+            return None
 
     def get_codes(self, obj: OrderItem):
         codes = sorted(obj.codes.all(), key=lambda c: c.id)
@@ -1209,6 +1224,31 @@ def audit_entry_payload(entry: AuditLog) -> dict:
     }
 
 
+def _oneepin_dashboard() -> dict | None:
+    """1Epin balance warning for the dashboard (D-1E-8). Cached values only, no network."""
+    try:
+        from suppliers.models import SupplierAlert, SupplierOrder, SupplierStatus
+        from suppliers.provider import to_decimal
+        from suppliers.services.alerts import is_low
+        from suppliers.services.config import supplier_mode
+
+        supplier = Supplier.objects.select_related("connection").filter(slug="1epin").first()
+        connection = getattr(supplier, "connection", None) if supplier else None
+        balance = connection.last_balance if connection else ""
+        return {
+            "mode": supplier_mode(),
+            "balance": balance or None,
+            "currency": ((connection.meta or {}).get("balance_currency") if connection else "") or None,
+            "balance_checked_at": connection.last_checked_at if connection else None,
+            "low_balance": is_low(to_decimal(balance)),
+            "open_alerts": SupplierAlert.objects.filter(resolved=False).count(),
+            "manual_review_orders": SupplierOrder.objects.filter(status=SupplierStatus.MANUAL_REVIEW).count(),
+        }
+    except Exception:  # noqa: BLE001 - the dashboard must render
+        logger.exception("Could not build the 1Epin dashboard block")
+        return None
+
+
 class AdminDashboardView(APIView):
     permission_classes = [IsAdminUser, HasAdminPermission]
     admin_permission = "orders.read"
@@ -1267,6 +1307,7 @@ class AdminDashboardView(APIView):
             "manual_review": Order.objects.filter(fulfillment_status=FulfillmentStatus.MANUAL_REVIEW).count(),
             "failed_fulfillment": Order.objects.filter(fulfillment_status=FulfillmentStatus.FAILED).count(),
             "active_suppliers": Supplier.objects.filter(active=True).count(),
+            "oneepin": _oneepin_dashboard(),
             "order_status_breakdown": status_breakdown,
             "top_products": top_products,
             "recent_orders": recent_orders,

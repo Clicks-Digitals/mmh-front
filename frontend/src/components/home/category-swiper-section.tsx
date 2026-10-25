@@ -2,7 +2,6 @@
 
 import { CategoryTileImage } from "@/components/home/category-tile-image";
 import { FOCUS_RING, ICON_HIT } from "@/components/ui/control";
-import { HOME_CATEGORY_SWIPER } from "@/data/home";
 import { useLanguage } from "@/context/language-context";
 import { useEscape, useScrollLock } from "@/hooks/use-overlay";
 import { cn } from "@/lib/cn";
@@ -10,55 +9,36 @@ import { X } from "lucide-react";
 import { catalog as liveCatalog } from "@/data/products";
 import { getSnapshotCategories, getSnapshotMenuCategories } from "@/lib/catalog-snapshot";
 import { hrefHasProducts } from "@/lib/listing";
-import { categoryImageCandidates } from "@/lib/category-image";
+import type { ArtworkSource } from "@/lib/builtin-artwork";
 import { buildMenu, type MenuEntry } from "@/lib/nav-menu";
 import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 
 const hasProducts = (href: string) => hrefHasProducts(href, liveCatalog(), getSnapshotCategories());
 
-type TileImage = string | string[] | undefined;
-type TileChild = { href: string; label: string; image?: TileImage; artworkKey: string };
-type CategoryItem = { id: string; label: string; image?: TileImage; artworkKey: string; children: TileChild[] };
+type TileChild = { href: string; label: string; picture: ArtworkSource };
+type CategoryItem = { id: string; label: string; picture: ArtworkSource; children: TileChild[] };
 
-/** Real artwork for a menu entry (own artwork → product image → bundled art) before the placeholder. */
-const entryImages = (entry: MenuEntry) =>
-  categoryImageCandidates(
-    { slug: entry.slug, href: entry.href, artworkKey: entry.artworkKey, artworkUrl: entry.artworkUrl, name: entry.label, nameAr: entry.labelAr },
-    liveCatalog(),
-    getSnapshotCategories(),
-  );
+/** A menu category's own picture (uploaded, else its built-in one) — never a product photo. */
+const pictureOf = (entry: MenuEntry): ArtworkSource => ({ imageUrl: entry.imageUrl, artworkKey: entry.artworkKey, slug: entry.slug });
 
-/**
- * D20: home category tiles come from the admin menu categories (sorted); the built-in set is the
- * fallback when no category is flagged "show in menu".
- */
+/** D20: home category tiles = the admin menu categories (sorted). No menu categories → no section. */
 function homeTiles(t: (key: string) => string, locale: "en" | "ar"): CategoryItem[] {
   const menu = buildMenu(getSnapshotMenuCategories(), getSnapshotCategories(), liveCatalog());
-  if (menu.length) {
-    return menu.map((entry) => {
-      const label = locale === "ar" ? entry.labelAr : entry.label;
-      const children = entry.children.length
-        ? [
-            ...entry.children.map((child) => ({
-              href: child.href,
-              label: locale === "ar" ? child.labelAr : child.label,
-              image: entryImages(child),
-              artworkKey: child.artworkKey,
-            })),
-            { href: entry.href, label: t("nav.viewAll"), image: entryImages(entry), artworkKey: entry.artworkKey },
-          ]
-        : [{ href: entry.href, label, image: entryImages(entry), artworkKey: entry.artworkKey }];
-      return { id: entry.slug, label, image: entryImages(entry), artworkKey: entry.artworkKey, children };
-    });
-  }
-  return HOME_CATEGORY_SWIPER.map((item) => ({
-    id: item.id,
-    label: t(item.labelKey),
-    image: item.image,
-    artworkKey: item.artworkKey,
-    children: item.children.map((child) => ({ href: child.href, label: t(child.labelKey), image: child.image, artworkKey: child.artworkKey })),
-  }));
+  return menu.map((entry) => {
+    const label = locale === "ar" ? entry.labelAr : entry.label;
+    const children = entry.children.length
+      ? [
+          ...entry.children.map((child) => ({
+            href: child.href,
+            label: locale === "ar" ? child.labelAr : child.label,
+            picture: pictureOf(child),
+          })),
+          { href: entry.href, label: t("nav.viewAll"), picture: pictureOf(entry) },
+        ]
+      : [{ href: entry.href, label, picture: pictureOf(entry) }];
+    return { id: entry.slug, label, picture: pictureOf(entry), children };
+  });
 }
 
 export function CategorySwiperSection() {
@@ -102,12 +82,7 @@ export function CategorySwiperSection() {
             >
               <span className="relative aspect-square w-full rounded-full bg-[radial-gradient(circle_at_35%_30%,#3a3b63,#17182b_70%)] p-[3px] shadow-[0_0_0_1px_rgba(247,192,55,0.35),0_12px_28px_rgba(0,0,0,0.35)] transition group-hover:shadow-[0_0_0_2px_rgba(247,192,55,0.55),0_16px_36px_rgba(0,0,0,0.4)] sm:p-[4px]">
                 <span className="relative block h-full w-full overflow-hidden rounded-full border border-brand/40 bg-[#17182b]">
-                  <CategoryTileImage
-                    src={item.image}
-                    alt=""
-                    artworkKey={item.artworkKey}
-                    className="h-full w-full"
-                  />
+                  <CategoryTileImage entity={item.picture} alt="" className="h-full w-full" />
                 </span>
               </span>
               <span className="line-clamp-2 min-h-8 text-center text-sm font-semibold leading-4 text-fg sm:min-h-10 sm:text-base sm:leading-5 lg:text-lg">
@@ -142,9 +117,8 @@ export function CategorySwiperSection() {
                 >
                   <span className="relative aspect-square overflow-hidden bg-[#17182b]">
                     <CategoryTileImage
-                      src={child.image}
+                      entity={child.picture}
                       alt=""
-                      artworkKey={child.artworkKey}
                       className="h-full w-full transition duration-300 group-hover:scale-[1.04]"
                     />
                   </span>

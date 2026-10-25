@@ -363,11 +363,20 @@ def allocate_codes(order: Order, actor=None) -> AllocationResult:
     short: list[int] = []
     touched_variants: set[int] = set()
     items = list(order.items.select_related("product").order_by("id"))
+    try:
+        from suppliers.services.fulfillment import prefer_supplier_item_ids
+
+        supplier_first = prefer_supplier_item_ids(items)
+    except Exception:  # noqa: BLE001 - supplier lookup must never block local delivery
+        logger.exception("prefer_supplier lookup failed for order %s", order.order_number)
+        supplier_first = set()
     for item in items:
         if _item_type(item) != FulfillmentType.CODE:
             continue
         have = assigned_code_count(item)
         need = item.quantity - have
+        if item.id in supplier_first:
+            need = 0  # mapping.prefer_supplier: 1Epin delivers this item (own stock is the fallback)
         if need > 0:
             claimed = list(
                 DigitalCode.objects.select_for_update(skip_locked=True)

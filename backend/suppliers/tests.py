@@ -14,15 +14,39 @@ STATUS_KEYS = {
     "supplier",
     "mode",
     "environment",
+    "base_url",
     "email_configured",
     "password_configured",
     "callback_configured",
+    "credentials_configured",
     "last_balance",
     "last_balance_currency",
     "last_checked_at",
-    "live_locked",
-    "credentials_configured",
+    "balance",
+    "low_balance",
+    "low_balance_threshold",
+    "live_enabled",
     "live_purchasing",
+    "live_locked",
+    "trading_enabled",
+    "trading_disabled_reason",
+    "mappings_count_as_stock",
+    "callback_url",
+    "callback_token_configured",
+    "api_settings_url",
+    "proxy_configured",
+    "outgoing_ip",
+    "outgoing_ip_checked_at",
+    "outgoing_ip_error",
+    "last_catalog_sync",
+    "last_catalog_sync_result",
+    "catalog_items",
+    "mappings",
+    "open_alerts",
+    "orders_in_flight",
+    "orders_manual_review",
+    "fx_to_jod",
+    "currency",
 }
 
 
@@ -31,29 +55,27 @@ class CallbackTests(TestCase):
     def test_url_token_accepted(self):
         res = self.client.post(
             "/api/v1/suppliers/1epin/callback/cb-secret-token/",
-            {"OrderNumber": "ON-1", "ResultCode": "00"},
+            {"OrderNumber": "ON-1", "OrderStatusCode": 1},
             content_type="application/json",
         )
         self.assertEqual(res.status_code, 200)
-        body = res.json()
-        self.assertFalse(body["processed"])
-        self.assertEqual(body["reason"], "no_matching_supplier_order")
-        event = SupplierWebhookEvent.objects.get(pk=body["id"])
+        self.assertEqual(res.content, b"OK")  # D-1E-6: plain-text OK
+        event = SupplierWebhookEvent.objects.get(supplier_ref="ON-1")
         self.assertFalse(event.processed)
         self.assertEqual(event.reason, "no_matching_supplier_order")
 
     def test_header_token_accepted(self):
         supplier = Supplier.objects.create(slug="1epin", name="1Epin")
-        SupplierOrder.objects.create(supplier=supplier, order_item_id=1, supplier_ref="ON-2")
+        SupplierOrder.objects.create(supplier=supplier, order_item_id=1, supplier_ref="ON-2", status="COMPLETED")
         res = self.client.post(
             "/api/v1/suppliers/1epin/callback/",
-            {"OrderNumber": "ON-2", "ResultCode": "00"},
+            {"OrderNumber": "ON-2", "OrderStatusCode": 1},
             content_type="application/json",
             HTTP_X_CALLBACK_TOKEN="cb-secret-token",
         )
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json()["reason"], "recorded_for_manual_processing")
-        self.assertFalse(res.json()["processed"])
+        self.assertEqual(res.content, b"OK")
+        self.assertEqual(SupplierWebhookEvent.objects.get(supplier_ref="ON-2").reason, "confirmed_by_check_order:completed")
 
     def test_wrong_or_missing_token_rejected(self):
         for url, headers in (
@@ -69,7 +91,8 @@ class CallbackTests(TestCase):
         res = self.client.post(
             "/api/v1/suppliers/1epin/callback/", {}, content_type="application/json", HTTP_X_CALLBACK_TOKEN="cb-secret-token"
         )
-        self.assertEqual(res.json()["reason"], "missing_order_number")
+        self.assertEqual(res.content, b"OK")
+        self.assertEqual(SupplierWebhookEvent.objects.get().reason, "missing_order_number")
 
     @override_settings(ONEEPIN_CALLBACK_TOKEN="")
     def test_unconfigured_token_rejects_everything(self):
@@ -136,12 +159,13 @@ class AdminSupplierEndpointTests(TestCase):
         connection = Supplier.objects.get(slug="1epin").connection
         self.assertIsNone(connection.last_checked_at)
 
-    def test_balance_refresh_in_mock_mode_is_not_ok(self):
+    def test_balance_refresh_in_mock_mode_uses_simulated_wallet(self):
+        # D-1E-1: mock mode simulates 1Epin, including a balance.
         with override_settings(SUPPLIER_MODE="mock"):
             res = auth_client(self.admin).post("/api/v1/admin/1epin/balance/refresh/")
-        self.assertEqual(res.status_code, 409)
-        self.assertFalse(res.data["ok"])
-        self.assertEqual(res.data["detail"], "Balance is not available in test mode")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data["ok"])
+        self.assertEqual(res.data["balance"], "1000.00")
 
     @override_settings(SUPPLIER_MODE="test")
     def test_balance_refresh_stores_and_get_returns_cache(self):
@@ -174,11 +198,11 @@ class AdminSupplierEndpointTests(TestCase):
         self.assertEqual(res.status_code, 502)
         self.assertEqual(res.data["detail"], "bad creds")
 
-    def test_sync_noop_is_409_and_failure_502(self):
+    def test_sync_mock_ok_and_failure_502(self):
         res = auth_client(self.admin).post("/api/v1/admin/1epin/sync/")
-        self.assertEqual(res.status_code, 409)
-        self.assertFalse(res.data["ok"])
-        self.assertTrue(res.data["detail"])
+        self.assertEqual(res.status_code, 200)  # mock catalog sync (D-1E-1/3)
+        self.assertTrue(res.data["ok"])
+        self.assertGreater(res.data["total"], 0)
         with mock.patch("suppliers.views.get_supplier_provider", side_effect=SupplierError("timeout")):
             res = auth_client(self.admin).post("/api/v1/admin/1epin/sync/")
         self.assertEqual(res.status_code, 502)

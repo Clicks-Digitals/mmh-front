@@ -76,6 +76,13 @@ def _safe_fulfill(order: Order, *, actor=None) -> None:
     except Exception as exc:  # pragma: no cover - defensive: a paid order must never 500
         logger.exception("Unexpected fulfillment error for order %s", order.order_number)
         flag_manual_review(order, reason=f"Unexpected fulfillment error: {exc.__class__.__name__}", actor=actor)
+    # D-1E-5: buy what is still missing from 1Epin AFTER this transaction commits (never inside it).
+    try:
+        from suppliers.services.fulfillment import schedule_supplier_fulfillment
+
+        schedule_supplier_fulfillment(order.id)
+    except Exception:  # pragma: no cover - scheduling must never affect the paid order
+        logger.exception("Could not schedule 1Epin fulfillment for order %s", order.order_number)
 
 
 @transaction.atomic

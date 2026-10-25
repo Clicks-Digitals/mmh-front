@@ -1,11 +1,12 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { useBrandAssets } from "@/context/brand-assets-context";
 import { useLanguage } from "@/context/language-context";
-import Image from "next/image";
 
 export function HomePromoBanner() {
   const { t } = useLanguage();
+  const { logoUrl } = useBrandAssets();
 
   return (
     <section className="container-mmh py-5 sm:py-7">
@@ -20,7 +21,8 @@ export function HomePromoBanner() {
         />
         <div className="relative grid items-center gap-6 md:grid-cols-[auto_1fr_auto] md:gap-10">
           <div className="mx-auto flex h-28 w-28 items-center justify-center rounded-2xl bg-white/8 ring-1 ring-white/15 sm:h-32 sm:w-32">
-            <Image src="/brand/IMG_4556.png" alt="" width={96} height={96} className="h-20 w-20 rounded-full object-contain sm:h-24 sm:w-24" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={logoUrl} alt="" width={96} height={96} className="h-20 w-20 rounded-full object-contain sm:h-24 sm:w-24" />
           </div>
           <div className="text-center md:text-start">
             <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">{t("home.promoTitle")}</h2>

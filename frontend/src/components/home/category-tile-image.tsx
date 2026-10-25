@@ -2,27 +2,27 @@
 
 import { CategoryArtwork } from "@/components/product/product-artwork";
 import { cn } from "@/lib/cn";
+import { drawnArtworkKey, entityImageSources, type ArtworkSource } from "@/lib/builtin-artwork";
 import { useState } from "react";
 
 /**
- * A category picture. `src` may be a list of candidates (best first): when one fails to load the
- * next is tried, and the drawn placeholder is shown only when none loads (ST-30).
+ * The picture of a category / platform / home tile: the picture uploaded in the admin panel, else
+ * the entity's built-in picture (by its built-in key or web address), else the drawn placeholder.
+ * When a picture fails to load the next one is tried (ST-30). Never another entity's photo.
  */
 export function CategoryTileImage({
-  src,
+  entity,
   alt,
-  artworkKey,
   className,
   fit = "cover",
 }: {
-  src?: string | ReadonlyArray<string | undefined>;
+  entity: ArtworkSource;
   alt: string;
-  artworkKey: string;
   className?: string;
-  /** "contain" keeps the whole product art visible (no cropping) on non-square tiles. */
+  /** "contain" keeps the whole picture visible (no cropping) on non-square tiles. */
   fit?: "cover" | "contain";
 }) {
-  const sources = (Array.isArray(src) ? src : [src]).filter((item): item is string => Boolean(item));
+  const sources = entityImageSources(entity);
   const key = sources.join("|");
   const [failed, setFailed] = useState<{ key: string; count: number }>({ key, count: 0 });
   const failedCount = failed.key === key ? failed.count : 0;
@@ -47,5 +47,5 @@ export function CategoryTileImage({
       </div>
     );
   }
-  return <CategoryArtwork artworkKey={artworkKey} className={className} />;
+  return <CategoryArtwork artworkKey={drawnArtworkKey(entity)} className={className} />;
 }

@@ -7,6 +7,8 @@ import { ErrorState } from "@/components/admin/ui/error-state";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { StatCard } from "@/components/admin/ui/stat-card";
 import { getDashboard, type DashboardData } from "@/components/admin/ops/api";
+import { OneEpinDashboardCard } from "@/components/admin/oneepin/dashboard-card";
+import type { DashboardOneEpin } from "@/components/admin/oneepin/api";
 import { auditActionLabel, auditEntityHref, auditEntityText } from "@/components/admin/lib/audit";
 import { formatJod } from "@/components/admin/lib/money";
 import { fulfillmentStatusLabel, orderHref, paymentStatusLabel } from "@/components/admin/lib/orders";
@@ -38,7 +40,7 @@ const QUICK_LINKS: Array<{ href: string; title: string; body: string; permission
   { href: "/admin/banners", title: "Banners", body: "Homepage & shop banners", permission: "content.read" },
   { href: "/admin/pages", title: "Pages", body: "About, terms, privacy…", permission: "content.read" },
   { href: "/admin/faqs", title: "FAQs", body: "Help center questions", permission: "content.read" },
-  { href: "/admin/integrations/1epin", title: "OneEpin", body: "Supplier status", permission: "suppliers.read" },
+  { href: "/admin/integrations/1epin", title: "1Epin", body: "Supplier status & balance", permission: "suppliers.read" },
   { href: "/admin/audit", title: "Audit log", body: "Who changed what", permission: "audit.read" },
   { href: "/admin/settings", title: "Settings", body: "Store name, contact, maintenance", permission: "settings.manage" },
 ];
@@ -237,6 +239,8 @@ function OrdersDashboard() {
         </p>
       )}
 
+      <OneEpinDashboardCard data={(stats as DashboardData & { oneepin?: DashboardOneEpin | null }).oneepin ?? null} />
+
       <div className="mt-4 grid gap-3 lg:grid-cols-5">
         <AdminCard className="lg:col-span-3" padding="md">
           <AdminSectionHeader
@@ -409,6 +413,7 @@ export function DashboardClient() {
           <QuickLinks columns={3} />
         </AdminCard>
       )}
+      {!canOrders ? <OneEpinDashboardCard /> : null}
     </div>
   );
 }

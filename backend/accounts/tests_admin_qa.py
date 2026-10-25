@@ -250,9 +250,15 @@ class AdminQaTests(TestCase):
         with override_settings(SUPPLIER_MODE="live", ONEEPIN_ALLOW_LIVE=False):
             with self.assertRaises(SupplierError):
                 get_supplier_provider()
-        with override_settings(SUPPLIER_MODE="mock", ONEEPIN_ALLOW_LIVE=True):
+        with override_settings(SUPPLIER_MODE="live", ONEEPIN_ALLOW_LIVE=False):
             with self.assertRaises(SupplierError):
                 assert_live_locked()
+        # D-1E-1: live needs BOTH switches; ONEEPIN_ALLOW_LIVE alone (mock mode) changes nothing.
+        with override_settings(SUPPLIER_MODE="mock", ONEEPIN_ALLOW_LIVE=True):
+            assert_live_locked()
+            self.assertEqual(get_supplier_provider().environment, "MOCK")
+        with override_settings(SUPPLIER_MODE="live", ONEEPIN_ALLOW_LIVE=True):
+            self.assertEqual(get_supplier_provider().environment, "LIVE")
         # Mock mode must remain available
         with override_settings(SUPPLIER_MODE="mock", ONEEPIN_ALLOW_LIVE=False):
             provider = get_supplier_provider()

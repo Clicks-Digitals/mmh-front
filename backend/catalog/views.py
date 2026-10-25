@@ -47,6 +47,7 @@ from catalog.serializers import (
 from accounts.permissions import has_permission
 from catalog.stock import annotate_stock, available_code_counts, available_quantities, mapping_stock_payload, variant_stock
 from config.pagination import LargePageNumberPagination
+from catalog.services.entity_images import entity_image_response
 from catalog.services.media import (
     MediaUploadError,
     absolute_media_url,
@@ -349,6 +350,19 @@ class AdminCategoryViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, view
             )
         return super().destroy(request, *args, **kwargs)
 
+    @action(detail=True, methods=["post", "delete"], url_path="image", parser_classes=[MultiPartParser, FormParser, JSONParser])
+    def image(self, request, pk=None):
+        """POST multipart ``file``: set the category picture. DELETE: remove it (built-in artwork again)."""
+        category = self.get_object()
+        return entity_image_response(
+            request,
+            category,
+            audit_prefix="catalog.category",
+            entity_type="Category",
+            label=category.name_en,
+            serialize=lambda obj: CategorySerializer(self.get_queryset().get(pk=obj.pk), context={"request": request}).data,
+        )
+
 
 class AdminPlatformViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, viewsets.ModelViewSet):
     audit_prefix = "catalog.platform"
@@ -362,6 +376,19 @@ class AdminPlatformViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, view
     def get_permissions(self):
         self.admin_permission = "catalog.read" if self.action in {"list", "retrieve"} else "catalog.write"
         return super().get_permissions()
+
+    @action(detail=True, methods=["post", "delete"], url_path="image", parser_classes=[MultiPartParser, FormParser, JSONParser])
+    def image(self, request, pk=None):
+        """POST multipart ``file``: set the platform logo. DELETE: remove it (built-in artwork again)."""
+        platform = self.get_object()
+        return entity_image_response(
+            request,
+            platform,
+            audit_prefix="catalog.platform",
+            entity_type="Platform",
+            label=platform.name_en,
+            serialize=lambda obj: PlatformSerializer(self.get_queryset().get(pk=obj.pk), context={"request": request}).data,
+        )
 
 
 class AdminRegionViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, viewsets.ModelViewSet):
@@ -663,13 +690,28 @@ class AdminProductViewSet(viewsets.ModelViewSet):
                 return Response({"detail": "Variant not found on this product"}, status=400)
         if SupplierProductMapping.objects.filter(supplier=supplier, external_product_id=external_product_id).exists():
             return Response({"detail": "Supplier product mapping already exists"}, status=400)
+        from suppliers.services.mapping import mapping_payload
+
+        options, error = _mapping_options(request.data)
+        if error:
+            return Response({"detail": error}, status=400)
+        catalog_item = None
+        if request.data.get("catalog_item_id"):
+            from suppliers.models import SupplierCatalogItem
+
+            catalog_item = SupplierCatalogItem.objects.filter(supplier=supplier, pk=request.data.get("catalog_item_id")).first()
+            if catalog_item is None:
+                return Response({"detail": "1Epin catalog item not found"}, status=404)
         mapping = SupplierProductMapping.objects.create(
             supplier=supplier,
             product=product,
             variant=variant,
             external_product_id=external_product_id,
-            external_name=str(request.data.get("external_name") or ""),
+            external_name=str(request.data.get("external_name") or (catalog_item.product_name if catalog_item else "")),
             ignored=bool(request.data.get("ignored", False)),
+            catalog_item=catalog_item,
+            category_type=catalog_item.category_type if catalog_item else "",
+            **options,
         )
         AuditLog.objects.create(
             actor=request.user,
@@ -683,21 +725,7 @@ class AdminProductViewSet(viewsets.ModelViewSet):
                 "external_product_id": external_product_id,
             },
         )
-        return Response(
-            {
-                "id": mapping.id,
-                "supplier_id": supplier.id,
-                "supplier_slug": supplier.slug,
-                "supplier_name": supplier.name,
-                "product": product.id,
-                "variant": variant.id if variant else None,
-                "external_product_id": mapping.external_product_id,
-                "external_name": mapping.external_name,
-                "ignored": mapping.ignored,
-                **mapping_stock_payload(mapping),
-            },
-            status=201,
-        )
+        return Response(mapping_payload(mapping), status=201)
 
 
 class AdminMediaAssetView(APIView):
@@ -739,6 +767,49 @@ class AdminMediaAssetView(APIView):
         return Response(status=204)
 
 
+
+_MAPPING_BOOL_OPTIONS = ("prefer_supplier", "auto_buy", "allow_loss")
+
+
+def _mapping_options(data) -> tuple[dict, str]:
+    """Optional 1Epin mapping fields accepted by the product mapping endpoints."""
+    from decimal import Decimal, InvalidOperation
+
+    out: dict = {}
+    for key in _MAPPING_BOOL_OPTIONS:
+        if key in data:
+            out[key] = str(data.get(key)).strip().lower() in {"1", "true", "yes", "on"}
+    if "quantity_per_unit" in data:
+        try:
+            qpu = int(data.get("quantity_per_unit"))
+        except (TypeError, ValueError):
+            return {}, "quantity_per_unit must be a whole number"
+        if qpu < 1 or qpu > 1000:
+            return {}, "quantity_per_unit must be between 1 and 1000"
+        out["quantity_per_unit"] = qpu
+    if "max_cost_fils" in data:
+        raw = data.get("max_cost_fils")
+        if raw in (None, ""):
+            out["max_cost_fils"] = None
+        else:
+            try:
+                out["max_cost_fils"] = max(int(raw), 0)
+            except (TypeError, ValueError):
+                return {}, "max_cost_fils must be a whole number of fils"
+    if "user_template" in data:
+        out["user_template"] = str(data.get("user_template") or "")[:255]
+    if "barem" in data:
+        raw = data.get("barem")
+        if raw in (None, ""):
+            out["barem"] = None
+        else:
+            try:
+                out["barem"] = Decimal(str(raw))
+            except (InvalidOperation, ValueError):
+                return {}, "barem must be a number"
+    return out, ""
+
+
 class AdminSupplierMappingDetailView(APIView):
     permission_classes = [IsAdminUser, HasAdminPermission]
     admin_permission = "suppliers.write"
@@ -755,6 +826,11 @@ class AdminSupplierMappingDetailView(APIView):
             mapping.external_name = str(request.data.get("external_name") or "")
         if "ignored" in request.data:
             mapping.ignored = bool(request.data.get("ignored"))
+        options, error = _mapping_options(request.data)
+        if error:
+            return Response({"detail": error}, status=400)
+        for key, value in options.items():
+            setattr(mapping, key, value)
         if "variant_id" in request.data:
             vid = request.data.get("variant_id")
             if vid in (None, "", "null"):
@@ -775,20 +851,9 @@ class AdminSupplierMappingDetailView(APIView):
             entity_id=str(mapping.id),
             meta={"product_id": mapping.product_id, "supplier_id": mapping.supplier_id},
         )
-        return Response(
-            {
-                "id": mapping.id,
-                "supplier_id": mapping.supplier_id,
-                "supplier_slug": mapping.supplier.slug,
-                "supplier_name": mapping.supplier.name,
-                "product": mapping.product_id,
-                "variant": mapping.variant_id,
-                "external_product_id": mapping.external_product_id,
-                "external_name": mapping.external_name,
-                "ignored": mapping.ignored,
-                **mapping_stock_payload(mapping),
-            }
-        )
+        from suppliers.services.mapping import mapping_payload
+
+        return Response(mapping_payload(mapping))
 
     def delete(self, request, mapping_id: int):
         mapping = SupplierProductMapping.objects.filter(pk=mapping_id).first()
@@ -812,7 +877,7 @@ class AdminVariantViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, views
     protected_detail = "This variant has order or code history and cannot be deleted. Unpublish it instead."
     permission_classes = [IsAdminUser, HasAdminPermission]
     serializer_class = VariantSerializer
-    search_fields = ["sku", "name_en", "product__id", "product__slug"]
+    search_fields = ["sku", "name_en", "name_ar", "product__id", "product__slug", "product__name_en", "product__name_ar"]
     filterset_fields = ["stock_status", "published", "product"]
 
     def get_queryset(self):

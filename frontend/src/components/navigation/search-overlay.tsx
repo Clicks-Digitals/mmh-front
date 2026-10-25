@@ -3,13 +3,11 @@
 import { ProductCover } from "@/components/product/product-artwork";
 import { CategoryTileImage } from "@/components/home/category-tile-image";
 import { useHydrated, useLocalStorage } from "@/hooks/use-local-storage";
-import type { Category } from "@/types";
 import { Price } from "@/components/ui/price";
 import { FOCUS_RING, ICON_HIT } from "@/components/ui/control";
 import { CATEGORIES, HOME_CATEGORIES } from "@/data/categories";
 import { TRENDING_SEARCHES } from "@/data/navigation";
 import { catalog, searchProducts } from "@/data/products";
-import { categoryImageCandidates } from "@/lib/category-image";
 import { hrefHasProducts } from "@/lib/listing";
 import { categoryMatchesQuery } from "@/lib/search";
 import { useLanguage } from "@/context/language-context";
@@ -46,8 +44,6 @@ export function SearchOverlay() {
   const hydrated = useHydrated();
   // ST-30: the shortcut hint matches the keyboard (⌘K on Apple devices, Ctrl K elsewhere).
   const shortcutLabel = hydrated && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K";
-  /** Real pictures for a category tile (own artwork → linked / listed product image → bundled art). */
-  const categoryImage = (category: Category) => categoryImageCandidates(category, catalog(), getSnapshotCategories());
 
   const closeSearch = () => {
     setSearchOpen(false);
@@ -208,9 +204,8 @@ export function SearchOverlay() {
                       onClick={closeSearch}
                     >
                       <CategoryTileImage
-                        src={categoryImage(category)}
+                        entity={category}
                         alt=""
-                        artworkKey={category.artworkKey}
                         fit="contain"
                         className="aspect-[16/10] w-full"
                       />

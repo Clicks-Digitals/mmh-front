@@ -2,6 +2,7 @@
 
 import { useAdminAccess } from "@/components/admin/admin-access";
 import { RevealCodeDialog } from "@/components/admin/modules/reveal-code-dialog";
+import { OneEpinItemBlock } from "@/components/admin/oneepin/order-item-block";
 import { ActionButton, MoreMenu, Notice } from "@/components/admin/ops/controls";
 import {
   attachItemCode,
@@ -168,6 +169,7 @@ function ItemCard({
   onAttach,
   onMarkDelivered,
   onReveal,
+  onOrderUpdated,
 }: {
   item: OrderDetailItem;
   order: OrderDetail;
@@ -177,6 +179,8 @@ function ItemCard({
   onAttach: () => void;
   onMarkDelivered: () => void;
   onReveal: (code: OrderItemCode) => void;
+  /** 1Epin item actions return the refreshed order */
+  onOrderUpdated?: (next: OrderDetail) => void;
 }) {
   const isCode = item.fulfillment_type === "CODE";
   const paid = isPaidLike(order.payment_status);
@@ -280,6 +284,8 @@ function ItemCard({
           ))}
         </ul>
       ) : null}
+
+      {onOrderUpdated ? <OneEpinItemBlock order={order} item={item} canFulfill={canFulfill} onOrderUpdated={onOrderUpdated} /> : null}
     </li>
   );
 }
@@ -672,6 +678,10 @@ export function OrderDetailClient({ id }: { id: string }) {
                       setDeliverItem(item);
                     }}
                     onReveal={(code) => setRevealTarget(code)}
+                    onOrderUpdated={(next) => {
+                      setOrder(next);
+                      setHistoryTick((n) => n + 1);
+                    }}
                   />
                 ))}
               </ul>

@@ -8,6 +8,9 @@ import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
 import { DataTable } from "@/components/admin/ui/data-table";
 import { EmptyState } from "@/components/admin/ui/empty-state";
 import { ErrorState } from "@/components/admin/ui/error-state";
+import { ArtworkPicker } from "@/components/admin/ui/artwork-picker";
+import { EntityImageField } from "@/components/admin/ui/entity-image-field";
+import { EntityThumb } from "@/components/admin/ui/entity-thumb";
 import { Filters } from "@/components/admin/ui/filters";
 import { FormField, adminInputClass, adminTextareaClass } from "@/components/admin/ui/form-field";
 import { PageHeader } from "@/components/admin/ui/page-header";
@@ -20,9 +23,11 @@ import {
   asList,
   createCategory,
   deleteCategory,
+  deleteCategoryImage,
   fetchAllPages,
   listCategories,
   updateCategory,
+  uploadCategoryImage,
   type AdminCategory,
 } from "@/lib/api/admin";
 import { useState } from "react";
@@ -151,11 +156,15 @@ export function CategoriesListClient() {
       if (editing) {
         await updateCategory(token, editing.id, body);
         toast.push("Category saved", "success");
+        setModalOpen(false);
       } else {
-        await createCategory(token, body);
-        toast.push("Category created", "success");
+        // Stay open on the new category so its picture can be uploaded right away.
+        const created = await createCategory(token, body);
+        setEditing(created);
+        setSlugTouched(true);
+        setForm((f) => ({ ...f, slug: created.slug || f.slug }));
+        toast.push("Category created — you can now upload its picture", "success");
       }
-      setModalOpen(false);
       reload();
     } catch (err) {
       setErrors(adminFieldErrors(err));
@@ -225,13 +234,16 @@ export function CategoriesListClient() {
             sortKey: "name_en",
             mobilePrimary: true,
             render: (r) => (
-              <div>
-                <p className="font-medium">{r.name_en}</p>
-                {r.name_ar ? (
-                  <p className="text-xs text-[var(--clicks-muted)]" dir="rtl">
-                    {r.name_ar}
-                  </p>
-                ) : null}
+              <div className="flex items-center gap-3">
+                <EntityThumb imageUrl={r.image_url} artworkKey={r.artwork_key} slug={r.slug} />
+                <div>
+                  <p className="font-medium">{r.name_en}</p>
+                  {r.name_ar ? (
+                    <p className="text-xs text-[var(--clicks-muted)]" dir="rtl">
+                      {r.name_ar}
+                    </p>
+                  ) : null}
+                </div>
               </div>
             ),
           },
@@ -358,20 +370,6 @@ export function CategoriesListClient() {
                 ))}
               </select>
             </FormField>
-            <FormField
-              label="Built-in picture"
-              htmlFor="cat-art"
-              optional
-              hint="Name of a built-in tile picture (e.g. playstation). Leave empty if unsure."
-              error={errors.artwork_key}
-            >
-              <input
-                id="cat-art"
-                className={`${adminInputClass} font-mono`}
-                value={form.artwork_key}
-                onChange={(e) => setForm((f) => ({ ...f, artwork_key: e.target.value }))}
-              />
-            </FormField>
             <div className="grid grid-cols-2 gap-3">
               <FormField label="Sort order" htmlFor="cat-sort" hint="Lower shows first." error={errors.sort_order}>
                 <input
@@ -396,6 +394,35 @@ export function CategoriesListClient() {
               </FormField>
             </div>
           </div>
+          <EntityImageField
+            label="Category picture"
+            recommended="square, 512 × 512 px"
+            imageUrl={editing?.image_url}
+            fallback={{ artworkKey: form.artwork_key, slug: form.slug }}
+            canWrite={canWrite}
+            disabledReason={editing ? undefined : "Save the category first, then upload its picture."}
+            onUpload={async (file) => {
+              if (!token || !editing) return;
+              setEditing(await uploadCategoryImage(token, editing.id, file));
+              toast.push("Picture uploaded", "success");
+              reload();
+            }}
+            onRemove={async () => {
+              if (!token || !editing) return;
+              setEditing(await deleteCategoryImage(token, editing.id));
+              toast.push("Picture removed", "success");
+              reload();
+            }}
+          />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ArtworkPicker
+              id="cat-art"
+              value={form.artwork_key}
+              slug={form.slug}
+              onChange={(key) => setForm((f) => ({ ...f, artwork_key: key }))}
+            />
+          </div>
+          {errors.artwork_key ? <p className="text-[11px] text-[var(--clicks-error)]">{errors.artwork_key}</p> : null}
           <label className="flex items-start gap-2 text-sm">
             <input
               type="checkbox"
@@ -434,10 +461,10 @@ export function CategoriesListClient() {
           </FormField>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="admin-btn admin-btn-secondary" onClick={() => setModalOpen(false)}>
-              Cancel
+              {editing ? "Close" : "Cancel"}
             </button>
             <button type="button" disabled={pending} onClick={() => void save()} className="admin-btn admin-btn-primary disabled:opacity-60">
-              {pending ? "Saving…" : "Save"}
+              {pending ? "Saving…" : editing ? "Save" : "Create category"}
             </button>
           </div>
         </div>

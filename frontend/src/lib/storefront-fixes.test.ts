@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { categoryImageCandidates, homeCategoryTiles } from "@/lib/category-image";
+import { builtinArtworkImage, drawnArtworkKey, entityImageSources } from "@/lib/builtin-artwork";
 import { cartDeliveryNoteKey } from "@/lib/delivery-copy";
 import { denominationSellable } from "@/lib/digital-options";
-import { keywordCatalogImage } from "@/lib/static-images";
 import { parseStockLines, stockLineMessage } from "@/lib/stock-errors";
 import { formatMessage, translations } from "@/data/translations";
-import { HOME_SERVICE_TILES } from "@/data/home";
 import { PRODUCTS } from "@/data/products";
+import { mapApiCategory, mapApiProduct } from "@/server/catalog/from-api";
 import type { Category, DigitalDenomination } from "@/types";
 
 describe("out-of-stock line messages (item 2)", () => {
@@ -63,45 +62,74 @@ describe("cart delivery note by contents (item 4 / ST-19)", () => {
   });
 });
 
-describe("category artwork (item 5 / ST-30, D20)", () => {
-  const pubg: Category = {
-    slug: "pubg-mobile",
-    name: "PUBG Mobile UC",
-    nameAr: "شدات ببجي موبايل",
+describe("entity pictures: uploaded image, else built-in artwork — never another product's photo", () => {
+  const giftCards: Category = {
+    slug: "gift-cards",
+    name: "Gift cards",
+    nameAr: "بطاقات الهدايا",
     description: "",
     descriptionAr: "",
-    href: "/category/pubg-mobile",
-    artworkKey: "gift",
+    href: "/gift-cards",
+    artworkKey: "",
   };
 
-  it("uses own artwork first and falls back to bundled art by name before the placeholder", () => {
-    expect(categoryImageCandidates({ ...pubg, artworkUrl: "https://cdn/x.png" }, [], [])[0]).toBe("https://cdn/x.png");
-    expect(categoryImageCandidates(pubg, [], [])).toEqual(["/catalog/pubg-uc.webp"]);
-    expect(categoryImageCandidates({ ...pubg, slug: "misc", name: "Misc", nameAr: "", artworkKey: "card-steam" }, [], [])).toEqual([
+  it("uses the uploaded picture first, then the built-in picture", () => {
+    expect(entityImageSources({ ...giftCards, imageUrl: "https://api.x/media/uploads/a.png", artworkKey: "card-steam" })).toEqual([
+      "https://api.x/media/uploads/a.png",
       "/catalog/steam-wallet.webp",
     ]);
+    expect(entityImageSources({ ...giftCards, artworkKey: "card-steam" })).toEqual(["/catalog/steam-wallet.webp"]);
   });
 
-  it("uses the image of the product a category links to", () => {
-    const product = PRODUCTS[0];
-    const images = categoryImageCandidates({ ...pubg, slug: "linked", name: "Linked", nameAr: "", href: `/product/${product.slug}` }, PRODUCTS, []);
-    expect(images[0]).toBe(product.images[0]);
+  it("a category without upload or built-in key gets the drawn placeholder, not a product photo", () => {
+    expect(entityImageSources(giftCards)).toEqual([]);
+    expect(drawnArtworkKey(giftCards)).toBe("gift");
+    const ps = PRODUCTS.find((product) => product.images.length);
+    expect(ps).toBeTruthy();
+    expect(entityImageSources(giftCards)).not.toContain(ps!.images[0]);
   });
 
-  it("matches keywords in slugs and names", () => {
-    expect(keywordCatalogImage("free-fire")).toBe("/catalog/free-fire.webp");
-    expect(keywordCatalogImage("", "PlayStation Plus")).toBe("/catalog/ps-plus.webp");
-    expect(keywordCatalogImage("gift-cards")).toBe("");
+  it("matches built-in art only by own key or exact brand slug (no fuzzy name matching)", () => {
+    expect(builtinArtworkImage({ slug: "playstation" })).toBe("/catalog/psn-store.webp");
+    expect(builtinArtworkImage({ slug: "pubg-mobile" })).toBe("/catalog/pubg-uc.webp");
+    expect(builtinArtworkImage({ slug: "subscriptions" })).toBe("");
+    expect(builtinArtworkImage({ slug: "my-playstation-deals" })).toBe("");
+    // an explicitly picked drawn key wins over the slug
+    expect(builtinArtworkImage({ slug: "steam", artworkKey: "deal" })).toBe("");
   });
 
-  it("home tiles come from menu categories, static tiles only when the menu is empty", () => {
-    const menu = [{ slug: "pubg-mobile", href: "/category/pubg-mobile", label: "PUBG", labelAr: "ببجي", artworkKey: "card-pubg" }];
-    const fromMenu = homeCategoryTiles(menu, HOME_SERVICE_TILES, [], []);
-    expect(fromMenu.source).toBe("menu");
-    expect(fromMenu.tiles.map((tile) => tile.id)).toEqual(["pubg-mobile"]);
-    expect(fromMenu.tiles[0].images).toContain("/catalog/pubg-uc.webp");
-    const fallback = homeCategoryTiles([], HOME_SERVICE_TILES, [], []);
-    expect(fallback.source).toBe("static");
-    expect(fallback.tiles).toHaveLength(HOME_SERVICE_TILES.length);
+  it("API mapping keeps the category picture and never adds a bundled product photo", () => {
+    const category = mapApiCategory({
+      id: 1,
+      slug: "gift-cards",
+      href: "",
+      artwork_key: "",
+      image_url: "https://api.x/media/uploads/c.png",
+      name_en: "Gift cards",
+      name_ar: "",
+      description_en: "",
+      description_ar: "",
+    });
+    expect(category.imageUrl).toBe("https://api.x/media/uploads/c.png");
+    expect(category.artworkKey).toBe("");
+    const product = mapApiProduct({
+      id: "psn-store",
+      slug: "psn-store",
+      kind: "GIFT_CARD",
+      fulfillment_type: "CODE",
+      brand: "PlayStation",
+      artwork_key: "card-psn",
+      status: "PUBLISHED",
+      featured: false,
+      bestseller: false,
+      trending: false,
+      rating: 0,
+      review_count: 0,
+      badges: [],
+      tags: [],
+      name_en: "PSN",
+      name_ar: "",
+    });
+    expect(product.images).toEqual([]);
   });
 });

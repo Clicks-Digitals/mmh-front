@@ -60,6 +60,9 @@ class Category(models.Model):
     )
     artwork_key = models.CharField(max_length=64, blank=True)
     artwork_url = models.CharField(max_length=512, blank=True)
+    # Uploaded picture (MEDIA_URL path) set via POST/DELETE admin/categories/<id>/image/.
+    # Empty -> the storefront shows the built-in artwork picked by artwork_key / slug.
+    image = models.CharField(max_length=512, blank=True, default="")
     status = models.CharField(max_length=16, choices=PublishStatus.choices, default=PublishStatus.PUBLISHED)
     sort_order = models.IntegerField(default=0)
     # D20: storefront header / mega menu / mobile menu / home tiles list published categories
@@ -83,6 +86,8 @@ class Category(models.Model):
 class Platform(models.Model):
     slug = models.SlugField(unique=True)
     artwork_key = models.CharField(max_length=64, blank=True)
+    # Uploaded logo (MEDIA_URL path) set via POST/DELETE admin/platforms/<id>/image/.
+    image = models.CharField(max_length=512, blank=True, default="")
     status = models.CharField(max_length=16, choices=PublishStatus.choices, default=PublishStatus.PUBLISHED)
     sort_order = models.IntegerField(default=0)
     name_en = models.CharField(max_length=160)

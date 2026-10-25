@@ -36,6 +36,9 @@ export type ApiSiteSettings = {
   facebook_url?: string;
   tiktok_url?: string;
   youtube_url?: string;
+  /** Uploaded in Admin → Settings; "" → the store's bundled logo / home picture. */
+  logo_image_url?: string;
+  hero_image_url?: string;
 };
 
 export function listBanners(placement = "HOME") {

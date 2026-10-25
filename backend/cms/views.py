@@ -13,7 +13,8 @@ from accounts.drf_permissions import HasAdminPermission, IsAdminUser
 from accounts.validators import normalize_whatsapp
 from audit.services import AuditedModelViewSetMixin, record_audit
 from catalog.serializers import media_absolute_url
-from cms.models import Banner, ContentPage, FAQ, SiteSettings
+from catalog.services.entity_images import entity_image_response
+from cms.models import Banner, ContentPage, FAQ, HomeTile, SiteSettings
 
 BANNER_PUBLIC_FIELDS = (
     "id",
@@ -104,6 +105,49 @@ class AdminBannerSerializer(serializers.ModelSerializer):
 BannerSerializer = AdminBannerSerializer
 
 
+HOME_TILE_PUBLIC_FIELDS = (
+    "id",
+    "section",
+    "title_en",
+    "title_ar",
+    "href",
+    "image_url",
+    "artwork_key",
+    "sort_order",
+)
+
+
+class PublicHomeTileSerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HomeTile
+        fields = HOME_TILE_PUBLIC_FIELDS
+        read_only_fields = HOME_TILE_PUBLIC_FIELDS
+
+    def get_image_url(self, obj) -> str:
+        """Uploaded tile picture (absolute) or "" -> the store shows built-in artwork for artwork_key."""
+        return media_absolute_url(self.context.get("request"), obj.image)
+
+
+class AdminHomeTileSerializer(PublicHomeTileSerializer):
+    class Meta:
+        model = HomeTile
+        fields = HOME_TILE_PUBLIC_FIELDS + ("image", "published", "created_at", "updated_at")
+        # ``image`` is set only through POST/DELETE admin/home-tiles/<id>/image/.
+        read_only_fields = ("id", "image", "image_url", "created_at", "updated_at")
+
+    def validate_href(self, value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("Enter the link, e.g. /product/steam-wallet.")
+        if not (value.startswith("/") or value.startswith("https://")):
+            raise serializers.ValidationError(
+                "Use a store path starting with / (e.g. /category/steam) or a full https:// link."
+            )
+        return value
+
+
 class PublicFAQSerializer(serializers.ModelSerializer):
     class Meta:
         model = FAQ
@@ -173,6 +217,15 @@ ContentPageSerializer = AdminContentPageSerializer
 
 
 class SiteSettingsSerializer(serializers.ModelSerializer):
+    logo_image_url = serializers.SerializerMethodField()
+    hero_image_url = serializers.SerializerMethodField()
+
+    def get_logo_image_url(self, obj) -> str:
+        return media_absolute_url(self.context.get("request"), obj.logo_image)
+
+    def get_hero_image_url(self, obj) -> str:
+        return media_absolute_url(self.context.get("request"), obj.hero_image)
+
     class Meta:
         model = SiteSettings
         fields = (
@@ -188,9 +241,14 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
             "youtube_url",
             "low_stock_threshold",
             "maintenance_mode",
+            "logo_image",
+            "logo_image_url",
+            "hero_image",
+            "hero_image_url",
             "updated_at",
         )
-        read_only_fields = ("updated_at",)
+        # Pictures are set only through POST/DELETE admin/settings/image/?target=logo|hero.
+        read_only_fields = ("logo_image", "hero_image", "updated_at")
 
     def validate_whatsapp_number(self, value):
         try:
@@ -216,6 +274,8 @@ PUBLIC_SETTINGS_FIELDS = (
     "facebook_url",
     "tiktok_url",
     "youtube_url",
+    "logo_image_url",
+    "hero_image_url",
 )
 
 
@@ -226,7 +286,7 @@ class PublicSiteSettingsView(APIView):
     authentication_classes = []
 
     def get(self, request):
-        data = SiteSettingsSerializer(SiteSettings.load()).data
+        data = SiteSettingsSerializer(SiteSettings.load(), context={"request": request}).data
         return Response({key: data[key] for key in PUBLIC_SETTINGS_FIELDS})
 
 
@@ -253,6 +313,22 @@ class BannerListView(generics.ListAPIView):
         placement = (self.request.query_params.get("placement") or "").strip().upper()
         if placement:
             qs = qs.filter(placement=placement)
+        return qs
+
+
+class HomeTileListView(generics.ListAPIView):
+    """Published home tiles (sort_order). Optional ?section=SUGGESTED."""
+
+    permission_classes = [AllowAny]
+    serializer_class = PublicHomeTileSerializer
+    pagination_class = None
+    filter_backends: list = []
+
+    def get_queryset(self):
+        qs = HomeTile.objects.filter(published=True).order_by("section", "sort_order", "id")
+        section = (self.request.query_params.get("section") or "").strip().upper()
+        if section:
+            qs = qs.filter(section=section)
         return qs
 
 
@@ -346,6 +422,34 @@ class AdminBannerViewSet(_ContentPermissionMixin, AuditedModelViewSetMixin, view
         return Response(AdminBannerSerializer(banner, context={"request": request}).data)
 
 
+class AdminHomeTileViewSet(_ContentPermissionMixin, AuditedModelViewSetMixin, viewsets.ModelViewSet):
+    audit_prefix = "cms.home_tile"
+    permission_classes = [IsAdminUser, HasAdminPermission]
+    serializer_class = AdminHomeTileSerializer
+    queryset = HomeTile.objects.all().order_by("section", "sort_order", "id")
+    search_fields = ["title_en", "title_ar", "href"]
+    ordering_fields = ["sort_order", "title_en", "created_at"]
+    filterset_fields = ["published", "section"]
+
+    @action(
+        detail=True,
+        methods=["post", "delete"],
+        url_path="image",
+        parser_classes=[MultiPartParser, FormParser, JSONParser],
+    )
+    def image(self, request, pk=None):
+        """POST multipart ``file``: set the tile picture. DELETE: remove it (built-in artwork again)."""
+        tile = self.get_object()
+        return entity_image_response(
+            request,
+            tile,
+            audit_prefix="cms.home_tile",
+            entity_type="HomeTile",
+            label=tile.title_en,
+            serialize=lambda obj: AdminHomeTileSerializer(obj, context={"request": request}).data,
+        )
+
+
 class AdminFAQViewSet(_ContentPermissionMixin, AuditedModelViewSetMixin, viewsets.ModelViewSet):
     audit_prefix = "cms.faq"
     permission_classes = [IsAdminUser, HasAdminPermission]
@@ -370,12 +474,12 @@ class AdminSiteSettingsView(APIView):
     admin_permission = "settings.manage"
 
     def get(self, request):
-        return Response(SiteSettingsSerializer(SiteSettings.load()).data)
+        return Response(SiteSettingsSerializer(SiteSettings.load(), context={"request": request}).data)
 
     def patch(self, request):
         settings_obj = SiteSettings.load()
-        before = SiteSettingsSerializer(settings_obj).data
-        serializer = SiteSettingsSerializer(settings_obj, data=request.data, partial=True)
+        before = SiteSettingsSerializer(settings_obj, context={"request": request}).data
+        serializer = SiteSettingsSerializer(settings_obj, data=request.data, partial=True, context={"request": request})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         after = serializer.data
@@ -388,6 +492,41 @@ class AdminSiteSettingsView(APIView):
             meta={"fields": changed, "changes": {k: {"from": before.get(k), "to": after.get(k)} for k in changed}},
         )
         return Response(after)
+
+
+SETTINGS_IMAGE_TARGETS = {"logo": "logo_image", "hero": "hero_image"}
+
+
+class AdminSiteSettingsImageView(APIView):
+    """POST (multipart ``file`` + ``target``) / DELETE ``?target=logo|hero``: store logo / home hero picture."""
+
+    permission_classes = [IsAdminUser, HasAdminPermission]
+    admin_permission = "settings.manage"
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def _handle(self, request):
+        raw = request.query_params.get("target") or (request.data.get("target") if request.method == "POST" else "")
+        field = SETTINGS_IMAGE_TARGETS.get(str(raw or "").lower())
+        if not field:
+            return Response(
+                {"detail": "target must be 'logo' or 'hero'", "code": "validation_error"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return entity_image_response(
+            request,
+            SiteSettings.load(),
+            field=field,
+            audit_prefix="settings",
+            entity_type="SiteSettings",
+            label=field,
+            serialize=lambda obj: SiteSettingsSerializer(obj, context={"request": request}).data,
+        )
+
+    def post(self, request):
+        return self._handle(request)
+
+    def delete(self, request):
+        return self._handle(request)
 
 
 # Backward-compatible list/create alias used previously

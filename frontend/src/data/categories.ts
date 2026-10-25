@@ -62,16 +62,6 @@ export const HOME_CATEGORIES = [
   "subscriptions",
 ] as const;
 
-/** Catalog artwork for homepage category tiles (supplier category images). */
-export const HOME_CATEGORY_IMAGES: Record<(typeof HOME_CATEGORIES)[number], string> = {
-  playstation: "/catalog/psn-store.webp",
-  steam: "/catalog/steam-wallet.webp",
-  "pubg-mobile": "/catalog/pubg-uc.webp",
-  roblox: "/catalog/roblox-card.webp",
-  "gift-cards": "/catalog/google-play.webp",
-  subscriptions: "/catalog/ps-plus.webp",
-};
-
 export function getCategory(slug: string): Category | undefined {
   return CATEGORIES.find((category) => category.slug === slug);
 }

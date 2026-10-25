@@ -33,6 +33,32 @@ class Banner(models.Model):
         return self.title_en
 
 
+class HomeTileSection(models.TextChoices):
+    SUGGESTED = "SUGGESTED", "MMH suggests (home page picture grid)"
+
+
+class HomeTile(models.Model):
+    """A picture tile on the home page managed in Admin -> Content -> Home tiles."""
+
+    section = models.CharField(max_length=24, choices=HomeTileSection.choices, default=HomeTileSection.SUGGESTED)
+    title_en = models.CharField(max_length=120)
+    title_ar = models.CharField(max_length=120, blank=True)
+    href = models.CharField(max_length=255)
+    # Uploaded picture (MEDIA_URL path). Empty -> built-in artwork for ``artwork_key``.
+    image = models.CharField(max_length=512, blank=True, default="")
+    artwork_key = models.CharField(max_length=64, blank=True)
+    sort_order = models.IntegerField(default=0)
+    published = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["section", "sort_order", "id"]
+
+    def __str__(self) -> str:
+        return self.title_en
+
+
 class FAQ(models.Model):
     question_en = models.CharField(max_length=255)
     question_ar = models.CharField(max_length=255, blank=True)
@@ -79,6 +105,9 @@ class SiteSettings(models.Model):
     youtube_url = models.URLField(blank=True)
     low_stock_threshold = models.IntegerField(default=5)
     maintenance_mode = models.BooleanField(default=False)
+    # Uploaded brand pictures (MEDIA_URL paths); empty -> the store's bundled defaults.
+    logo_image = models.CharField(max_length=512, blank=True, default="")
+    hero_image = models.CharField(max_length=512, blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

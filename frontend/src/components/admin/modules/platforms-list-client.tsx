@@ -2,23 +2,29 @@
 
 import { SimpleCrudPage, crudListParams, optionalSlugError, str } from "@/components/admin/modules/simple-crud";
 import { Badge } from "@/components/admin/ui/badge";
+import { EntityImageField } from "@/components/admin/ui/entity-image-field";
+import { EntityThumb } from "@/components/admin/ui/entity-thumb";
+import { useAdminToast } from "@/components/admin/ui/toast";
 import {
   asList,
   createPlatform,
   deletePlatform,
+  deletePlatformImage,
   listPlatforms,
   updatePlatform,
+  uploadPlatformImage,
   type AdminPlatform,
 } from "@/lib/api/admin";
 
 const STATUS_LABEL: Record<string, string> = { PUBLISHED: "Published", DRAFT: "Draft", ARCHIVED: "Archived" };
 
 export function PlatformsListClient() {
+  const toast = useAdminToast();
   return (
     <SimpleCrudPage<AdminPlatform>
       title="Platforms"
       noun="Platform"
-      description="Brands/platforms a product belongs to (PlayStation, Steam, PUBG…). Hiding a platform (draft or archived) hides all of its products from the store."
+      description="Brands/platforms a product belongs to (PlayStation, Steam, PUBG…). Published platforms with products appear in the brand row on the home page with their logo. Hiding a platform (draft or archived) hides all of its products from the store."
       writePermission="catalog.write"
       searchPlaceholder="Search platforms…"
       slugFrom="name_en"
@@ -36,9 +42,12 @@ export function PlatformsListClient() {
           header: "Name",
           mobilePrimary: true,
           render: (r) => (
-            <div>
-              <p className="font-medium">{r.name_en}</p>
-              {r.name_ar ? <p className="text-xs text-[var(--clicks-muted)]" dir="rtl">{r.name_ar}</p> : null}
+            <div className="flex items-center gap-3">
+              <EntityThumb imageUrl={r.image_url} artworkKey={r.artwork_key} slug={r.slug} />
+              <div>
+                <p className="font-medium">{r.name_en}</p>
+                {r.name_ar ? <p className="text-xs text-[var(--clicks-muted)]" dir="rtl">{r.name_ar}</p> : null}
+              </div>
             </div>
           ),
         },
@@ -56,6 +65,28 @@ export function PlatformsListClient() {
         status: r.status,
         sort_order: String(r.sort_order ?? 0),
       })}
+      media={({ editing, values, token, canWrite, setEditing, reload }) => (
+        <EntityImageField
+          label="Platform logo"
+          recommended="square, 512 × 512 px (logo centred on a plain background)"
+          imageUrl={editing?.image_url}
+          fallback={{ artworkKey: String(values.artwork_key ?? ""), slug: String(values.slug ?? "") }}
+          canWrite={canWrite}
+          disabledReason={editing ? undefined : "Save the platform first, then upload its logo."}
+          onUpload={async (file) => {
+            if (!token || !editing) return;
+            setEditing(await uploadPlatformImage(token, editing.id, file));
+            toast.push("Logo uploaded", "success");
+            reload();
+          }}
+          onRemove={async () => {
+            if (!token || !editing) return;
+            setEditing(await deletePlatformImage(token, editing.id));
+            toast.push("Logo removed", "success");
+            reload();
+          }}
+        />
+      )}
       validate={(v, editing) => ({
         slug: editing && !str(v, "slug") ? "Enter a web address, e.g. playstation." : optionalSlugError(v),
       })}
@@ -76,7 +107,7 @@ export function PlatformsListClient() {
           mono: true,
           hint: "Filled in from the English name; used in store filters and links. Changing it breaks old links.",
         },
-        { name: "artwork_key", label: "Built-in logo", optional: true, mono: true, hint: "Name of a built-in logo, e.g. playstation. Leave empty if unsure." },
+        { name: "artwork_key", label: "Built-in picture", type: "artwork" },
         {
           name: "status",
           label: "Status",

@@ -121,9 +121,16 @@ def sync_variant_stock(variant_ids: set[int] | list[int]) -> None:
         .values("variant_id")
         .annotate(c=Count("id"))
     }
+    try:
+        from catalog.stock import active_mapping_variant_ids
+
+        supplier_backed = active_mapping_variant_ids(ids)
+    except Exception:  # noqa: BLE001
+        supplier_backed = set()
     for vid in ids:
         available = available_map.get(vid, 0)
-        status = StockStatus.IN_STOCK if available > 0 else StockStatus.OUT_OF_STOCK
+        # D18: a supplier mapping that counts as stock keeps the variant sellable without codes.
+        status = StockStatus.IN_STOCK if (available > 0 or vid in supplier_backed) else StockStatus.OUT_OF_STOCK
         ProductVariant.objects.filter(pk=vid).update(stock_status=status)
 
 

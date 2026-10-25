@@ -1,7 +1,15 @@
 import { getSettings } from "@/lib/api/cms";
+import { resolveMediaUrl } from "@/lib/media";
 import { EMPTY_SITE_CONTACT, type SiteContact } from "@/lib/site-contact";
 
-export type StoreSettings = { contact: SiteContact; storeName: string; maintenanceMode: boolean };
+export type StoreSettings = {
+  contact: SiteContact;
+  storeName: string;
+  maintenanceMode: boolean;
+  /** Uploaded logo / home picture ("" → bundled defaults). */
+  logoUrl: string;
+  heroUrl: string;
+};
 
 export async function loadStoreSettings(): Promise<StoreSettings> {
   try {
@@ -16,12 +24,16 @@ export async function loadStoreSettings(): Promise<StoreSettings> {
       contact,
       storeName: String(data?.store_name ?? "").trim() || "MMH",
       maintenanceMode: data?.maintenance_mode === true,
+      logoUrl: resolveMediaUrl(data?.logo_image_url),
+      heroUrl: resolveMediaUrl(data?.hero_image_url),
     };
   } catch {
     return {
       contact: { ...EMPTY_SITE_CONTACT, support_email: (process.env.SUPPORT_EMAIL ?? "").trim() },
       storeName: "MMH",
       maintenanceMode: false,
+      logoUrl: "",
+      heroUrl: "",
     };
   }
 }

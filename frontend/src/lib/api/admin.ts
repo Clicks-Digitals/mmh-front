@@ -246,6 +246,10 @@ export type AdminCategory = {
   href?: string;
   artwork_key?: string | null;
   artwork_url?: string | null;
+  /** Uploaded picture (stored path) — set via uploadCategoryImage / deleteCategoryImage only. */
+  image?: string;
+  /** Absolute URL of the uploaded picture, "" when none (the store shows built-in artwork). */
+  image_url?: string;
   status: string;
   sort_order?: number;
   name_en: string;
@@ -264,6 +268,10 @@ export type AdminPlatform = {
   id: number | string;
   slug: string;
   artwork_key?: string | null;
+  /** Uploaded logo (stored path) — set via uploadPlatformImage / deletePlatformImage only. */
+  image?: string;
+  /** Absolute URL of the uploaded logo, "" when none (the store shows built-in artwork). */
+  image_url?: string;
   status: string;
   sort_order?: number;
   name_en: string;
@@ -673,6 +681,9 @@ export type SiteSettings = {
   youtube_url?: string;
   low_stock_threshold?: number;
   maintenance_mode?: boolean;
+  /** Uploaded store logo / home picture (absolute URLs, "" = bundled default). Read-only here. */
+  logo_image_url?: string;
+  hero_image_url?: string;
   updated_at?: string;
 };
 
@@ -1411,4 +1422,96 @@ export function asList<T>(data: Paginated<T> | T[] | null | undefined): { items:
   if (!data) return { items: [], count: 0 };
   if (Array.isArray(data)) return { items: data, count: data.length };
   return { items: data.results ?? [], count: data.count ?? data.results?.length ?? 0 };
+}
+
+/* ─── Entity pictures (categories, platforms, home tiles, logo / home picture) ─── */
+
+function imageForm(file: File, extra: Record<string, string> = {}) {
+  const form = new FormData();
+  form.append("file", file);
+  for (const [key, value] of Object.entries(extra)) form.append(key, value);
+  return form;
+}
+
+export function uploadCategoryImage(token: string, id: number | string, file: File) {
+  return adminFetch<AdminCategory>(`/admin/categories/${encodeURIComponent(String(id))}/image/`, {
+    token,
+    method: "POST",
+    body: imageForm(file),
+  });
+}
+
+export function deleteCategoryImage(token: string, id: number | string) {
+  return adminFetch<AdminCategory>(`/admin/categories/${encodeURIComponent(String(id))}/image/`, { token, method: "DELETE" });
+}
+
+export function uploadPlatformImage(token: string, id: number | string, file: File) {
+  return adminFetch<AdminPlatform>(`/admin/platforms/${encodeURIComponent(String(id))}/image/`, {
+    token,
+    method: "POST",
+    body: imageForm(file),
+  });
+}
+
+export function deletePlatformImage(token: string, id: number | string) {
+  return adminFetch<AdminPlatform>(`/admin/platforms/${encodeURIComponent(String(id))}/image/`, { token, method: "DELETE" });
+}
+
+/** "logo" = store logo (header, footer, promo strip); "hero" = home picture shown when no home banner is live. */
+export type SiteImageTarget = "logo" | "hero";
+
+export function uploadSiteImage(token: string, target: SiteImageTarget, file: File) {
+  return adminFetch<SiteSettings>(`/admin/settings/image/?target=${target}`, { token, method: "POST", body: imageForm(file) });
+}
+
+export function deleteSiteImage(token: string, target: SiteImageTarget) {
+  return adminFetch<SiteSettings>(`/admin/settings/image/?target=${target}`, { token, method: "DELETE" });
+}
+
+/** Home page picture tiles (Admin → Content → Home tiles). */
+export type HomeTile = {
+  id: number | string;
+  section: "SUGGESTED" | string;
+  title_en: string;
+  title_ar?: string;
+  href: string;
+  image?: string;
+  image_url?: string;
+  artwork_key?: string;
+  sort_order?: number;
+  published: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export function listHomeTiles(token: string, params?: ListParams) {
+  return adminFetch<Paginated<HomeTile> | HomeTile[]>(`/admin/home-tiles/${toQuery(params)}`, { token });
+}
+
+export function createHomeTile(token: string, body: Partial<HomeTile>) {
+  return adminFetch<HomeTile>("/admin/home-tiles/", { token, method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateHomeTile(token: string, id: number | string, body: Partial<HomeTile>) {
+  return adminFetch<HomeTile>(`/admin/home-tiles/${encodeURIComponent(String(id))}/`, {
+    token,
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteHomeTile(token: string, id: number | string) {
+  return adminFetch<void>(`/admin/home-tiles/${encodeURIComponent(String(id))}/`, { token, method: "DELETE" });
+}
+
+export function uploadHomeTileImage(token: string, id: number | string, file: File) {
+  return adminFetch<HomeTile>(`/admin/home-tiles/${encodeURIComponent(String(id))}/image/`, {
+    token,
+    method: "POST",
+    body: imageForm(file),
+  });
+}
+
+export function deleteHomeTileImage(token: string, id: number | string) {
+  return adminFetch<HomeTile>(`/admin/home-tiles/${encodeURIComponent(String(id))}/image/`, { token, method: "DELETE" });
 }

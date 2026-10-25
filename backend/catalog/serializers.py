@@ -79,6 +79,7 @@ class CategorySerializer(AutoSlugMixin, serializers.ModelSerializer):
     children = serializers.SerializerMethodField()
     parent = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all(), required=False, allow_null=True)
     parent_slug = serializers.CharField(source="parent.slug", read_only=True, allow_null=True, default=None)
+    image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Category
@@ -90,6 +91,8 @@ class CategorySerializer(AutoSlugMixin, serializers.ModelSerializer):
             "parent_slug",
             "artwork_key",
             "artwork_url",
+            "image",
+            "image_url",
             "status",
             "sort_order",
             "show_in_menu",
@@ -102,10 +105,14 @@ class CategorySerializer(AutoSlugMixin, serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("created_at", "updated_at")
+        # ``image`` is set only through POST/DELETE admin/categories/<id>/image/.
+        read_only_fields = ("image", "created_at", "updated_at")
 
     def validate_slug(self, value):
         return _check_unique_slug(self, value)
+
+    def get_image_url(self, obj) -> str:
+        return media_absolute_url(self.context.get("request"), obj.image)
 
     def get_children(self, obj) -> list[dict]:
         return [{"id": c.id, "slug": c.slug, "name_en": c.name_en} for c in obj.children.all()]
@@ -125,6 +132,7 @@ class CategorySerializer(AutoSlugMixin, serializers.ModelSerializer):
 class PublicCategorySerializer(serializers.ModelSerializer):
     parent = serializers.CharField(source="parent.slug", read_only=True, allow_null=True, default=None)
     artwork_url = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
     href = serializers.SerializerMethodField()
 
     class Meta:
@@ -136,6 +144,7 @@ class PublicCategorySerializer(serializers.ModelSerializer):
             "parent",
             "artwork_key",
             "artwork_url",
+            "image_url",
             "sort_order",
             "show_in_menu",
             "name_en",
@@ -147,14 +156,24 @@ class PublicCategorySerializer(serializers.ModelSerializer):
     def get_artwork_url(self, obj) -> str:
         return media_absolute_url(self.context.get("request"), obj.artwork_url)
 
+    def get_image_url(self, obj) -> str:
+        """Uploaded category picture (absolute) or "" -> the store shows built-in artwork."""
+        return media_absolute_url(self.context.get("request"), obj.image)
+
     def get_href(self, obj) -> str:
         return obj.href or f"/category/{obj.slug}"
 
 
 class PublicPlatformSerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
+
     class Meta:
         model = Platform
-        fields = ("id", "slug", "artwork_key", "sort_order", "name_en", "name_ar")
+        fields = ("id", "slug", "artwork_key", "image_url", "sort_order", "name_en", "name_ar")
+
+    def get_image_url(self, obj) -> str:
+        """Uploaded platform logo (absolute) or "" -> the store shows built-in artwork."""
+        return media_absolute_url(self.context.get("request"), obj.image)
 
 
 class PublicRegionSerializer(serializers.ModelSerializer):
@@ -167,9 +186,13 @@ class PlatformSerializer(AutoSlugMixin, serializers.ModelSerializer):
     slug_fallback = "platform"
     slug = _optional_slug_field()
     products_count = serializers.IntegerField(read_only=True, required=False)
+    image_url = serializers.SerializerMethodField()
 
     def validate_slug(self, value):
         return _check_unique_slug(self, value)
+
+    def get_image_url(self, obj) -> str:
+        return media_absolute_url(self.context.get("request"), obj.image)
 
     class Meta:
         model = Platform
@@ -177,6 +200,8 @@ class PlatformSerializer(AutoSlugMixin, serializers.ModelSerializer):
             "id",
             "slug",
             "artwork_key",
+            "image",
+            "image_url",
             "status",
             "sort_order",
             "name_en",
@@ -185,7 +210,8 @@ class PlatformSerializer(AutoSlugMixin, serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("created_at", "updated_at")
+        # ``image`` is set only through POST/DELETE admin/platforms/<id>/image/.
+        read_only_fields = ("image", "created_at", "updated_at")
 
 
 class RegionSerializer(AutoSlugMixin, serializers.ModelSerializer):
@@ -662,27 +688,10 @@ class ProductDetailSerializer(ProductListSerializer):
         return warnings
 
     def get_supplier_mappings(self, obj) -> list[dict]:
-        rows = []
-        qs = obj.supplier_mappings.select_related("supplier", "variant").all()
-        for m in qs:
-            rows.append(
-                {
-                    "id": m.id,
-                    "supplier_id": m.supplier_id,
-                    "supplier_slug": m.supplier.slug,
-                    "supplier_name": m.supplier.name,
-                    "product": m.product_id,
-                    "variant": m.variant_id,
-                    "variant_sku": m.variant.sku if m.variant_id else None,
-                    "variant_name": m.variant.name_en if m.variant_id else None,
-                    "external_product_id": m.external_product_id,
-                    "external_name": m.external_name,
-                    "ignored": m.ignored,
-                    "created_at": m.created_at,
-                    **mapping_stock_payload(m),
-                }
-            )
-        return rows
+        from suppliers.services.mapping import mapping_payload
+
+        qs = obj.supplier_mappings.select_related("supplier", "variant", "product", "catalog_item").all()
+        return [mapping_payload(m) for m in qs]
 
 
 class PublicVariantSerializer(serializers.ModelSerializer):

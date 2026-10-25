@@ -66,7 +66,8 @@ export interface MenuEntry {
   label: string;
   labelAr: string;
   artworkKey: string;
-  artworkUrl?: string;
+  /** Uploaded category picture (absolute URL). */
+  imageUrl?: string;
   children: MenuEntry[];
 }
 
@@ -81,7 +82,7 @@ function entryOf(category: Category, children: MenuEntry[] = []): MenuEntry {
     label: category.name,
     labelAr: category.nameAr || category.name,
     artworkKey: category.artworkKey,
-    ...(category.artworkUrl ? { artworkUrl: category.artworkUrl } : {}),
+    ...(category.imageUrl ? { imageUrl: category.imageUrl } : {}),
     children,
   };
 }

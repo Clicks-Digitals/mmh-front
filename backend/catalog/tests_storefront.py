@@ -152,8 +152,17 @@ class EffectiveStockTests(Base):
         with override_settings(ONEEPIN_ALLOW_LIVE=True, SUPPLIER_MODE="test"):
             self.assertEqual(self._public()["variants"][0]["stock_status"], "OUT_OF_STOCK")
 
-    @override_settings(ONEEPIN_ALLOW_LIVE=True, SUPPLIER_MODE="live")
+    @override_settings(ONEEPIN_ALLOW_LIVE=True, SUPPLIER_MODE="live", ONEEPIN_EMAIL="ops@mmh.test", ONEEPIN_PASSWORD="x")
     def test_active_supplier_mapping_makes_in_stock(self):
+        # D-1E-10: live + switch + credentials + a fresh, active catalog item.
+        from django.utils import timezone
+
+        from suppliers.models import SupplierCatalogItem
+
+        SupplierCatalogItem.objects.create(
+            supplier=self.supplier, environment="LIVE", external_product_id="X1", product_name="X1",
+            category_type="epin", price="1.00", last_seen_at=timezone.now(),
+        )
         mapping = SupplierProductMapping.objects.create(
             supplier=self.supplier, product=self.product, variant=self.variant, external_product_id="X1"
         )

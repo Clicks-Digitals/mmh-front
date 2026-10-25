@@ -13,6 +13,7 @@ import {
   Image as ImageIcon,
   KeyRound,
   LayoutDashboard,
+  LayoutGrid,
   Link2,
   Package,
   PanelLeftClose,
@@ -82,8 +83,9 @@ export const ADMIN_NAV: Array<AdminNavItem | AdminNavGroup> = [
     permissionAny: ["suppliers.read", "suppliers.write"],
     items: [
       { href: "/admin/suppliers", label: "Suppliers", icon: Link2, permission: "suppliers.read" },
-      { href: "/admin/integrations/1epin", label: "OneEpin", icon: Link2, permission: "suppliers.read" },
-      { href: "/admin/integrations/1epin/logs", label: "OneEpin logs", icon: ScrollText, permission: "suppliers.read" },
+      { href: "/admin/integrations/1epin", label: "1Epin", icon: Link2, permission: "suppliers.read" },
+      { href: "/admin/integrations/1epin/orders", label: "1Epin orders", icon: ShoppingCart, permission: "suppliers.read" },
+      { href: "/admin/integrations/1epin/logs", label: "1Epin logs", icon: ScrollText, permission: "suppliers.read" },
     ],
   },
   {
@@ -93,6 +95,7 @@ export const ADMIN_NAV: Array<AdminNavItem | AdminNavGroup> = [
     permissionAny: ["content.read", "content.write"],
     items: [
       { href: "/admin/banners", label: "Banners", icon: ImageIcon, permission: "content.read" },
+      { href: "/admin/home-tiles", label: "Home tiles", icon: LayoutGrid, permission: "content.read" },
       { href: "/admin/pages", label: "Pages", icon: FileText, permission: "content.read" },
       { href: "/admin/faqs", label: "FAQs", icon: HelpCircle, permission: "content.read" },
     ],
@@ -123,7 +126,7 @@ function matches(pathname: string, href: string) {
 const NAV_HREFS = ADMIN_NAV.flatMap((entry) => (isGroup(entry) ? entry.items.map((item) => item.href) : [entry.href]));
 
 // Only the most specific match is active, so /admin/integrations/1epin/logs
-// highlights "OneEpin logs" and not "OneEpin" as well.
+// highlights "1Epin logs" and not "1Epin" as well.
 function isActive(pathname: string, href: string) {
   if (!matches(pathname, href)) return false;
   return !NAV_HREFS.some((other) => other.length > href.length && matches(pathname, other));

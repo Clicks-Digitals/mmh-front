@@ -37,6 +37,14 @@ const ITEMS: CommandItem[] = [
     label: "Orders waiting for delivery (manual review)",
     permission: "orders.read",
   },
+  { href: "/admin/integrations/1epin/catalog", label: "1Epin catalog", permission: "suppliers.read", keywords: "supplier products link map" },
+  { href: "/admin/integrations/1epin/mappings", label: "Products linked to 1Epin", permission: "suppliers.read", keywords: "supplier mapping margin" },
+  {
+    href: "/admin/integrations/1epin/orders?status=MANUAL_REVIEW",
+    label: "1Epin orders needing review",
+    permission: "orders.read",
+    keywords: "supplier failed",
+  },
 ];
 
 const PAGE_SIZE = 5;

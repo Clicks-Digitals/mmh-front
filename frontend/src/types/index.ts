@@ -148,11 +148,34 @@ export interface Category {
   descriptionAr: string;
   parent?: string;
   href: string;
+  /** Built-in picture key ("" → by slug, else drawn) — used only when no picture is uploaded. */
   artworkKey: string;
-  artworkUrl?: string;
+  /** Picture uploaded in Admin → Categories (absolute URL). */
+  imageUrl?: string;
   /** D20: shown in the header / mega menu / mobile menu / home tiles. */
   showInMenu?: boolean;
   sortOrder?: number;
+}
+
+/** A published platform / brand (PlayStation, Steam, PUBG…) — the home page brand row. */
+export interface StorePlatform {
+  slug: string;
+  name: string;
+  nameAr: string;
+  artworkKey: string;
+  /** Logo uploaded in Admin → Platforms (absolute URL). */
+  imageUrl?: string;
+  sortOrder: number;
+}
+
+/** A home page picture tile managed in Admin → Content → Home tiles. */
+export interface StoreHomeTile {
+  id: string;
+  title: string;
+  titleAr: string;
+  href: string;
+  artworkKey: string;
+  imageUrl?: string;
 }
 
 export interface Brand {

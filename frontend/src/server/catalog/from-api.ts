@@ -1,7 +1,7 @@
-import type { Category, Product, ProductBadge, ProductKind, RequiredCustomerField } from "@/types";
+import type { Category, Product, ProductBadge, ProductKind, RequiredCustomerField, StoreHomeTile, StorePlatform } from "@/types";
 import { ApiError, apiFetch, getApiBaseUrl } from "@/lib/api/client";
 import { safeDeliveryEstimate, stripInstantClaims } from "@/lib/delivery-copy";
-import { staticCatalogImage } from "@/lib/static-images";
+import { resolveMediaUrl } from "@/lib/media";
 
 type ApiProduct = {
   id: string;
@@ -94,6 +94,7 @@ type ApiCategory = {
   parent?: string | null;
   artwork_key: string;
   artwork_url?: string;
+  image_url?: string;
   sort_order?: number;
   show_in_menu?: boolean;
   name_en: string;
@@ -201,9 +202,8 @@ export function mapApiProduct(row: ApiProduct): Product {
         })),
     }));
 
-  const gallery = orderedMedia(row.media, row.primary_image_url || row.image_url || undefined);
-  const fallbackImage = staticCatalogImage(row.id);
-  const images = gallery.length ? gallery : fallbackImage ? [{ url: fallbackImage, alt: "" }] : [];
+  // Only the product's own pictures (uploaded media / image_url); none → the drawn artwork.
+  const images = orderedMedia(row.media, row.primary_image_url || row.image_url || undefined);
   const isTopup = row.fulfillment_type === "DIRECT_TOPUP";
   const platform = row.platform;
   const categorySlug = row.category_slug || row.category?.slug || "gift-cards";
@@ -291,11 +291,54 @@ export function mapApiCategory(row: ApiCategory): Category {
     description: row.description_en,
     descriptionAr: row.description_ar,
     href: row.href || `/category/${row.slug}`,
-    artworkKey: row.artwork_key || "gift",
-    ...(row.artwork_url ? { artworkUrl: row.artwork_url } : {}),
+    artworkKey: row.artwork_key || "",
+    ...(row.image_url ? { imageUrl: resolveMediaUrl(row.image_url) } : {}),
     showInMenu: Boolean(row.show_in_menu),
     sortOrder: Number(row.sort_order) || 0,
     ...(row.parent ? { parent: row.parent } : {}),
+  };
+}
+
+type ApiPlatform = {
+  id: number;
+  slug: string;
+  artwork_key?: string;
+  image_url?: string;
+  sort_order?: number;
+  name_en: string;
+  name_ar?: string;
+};
+
+type ApiHomeTile = {
+  id: number;
+  section: string;
+  title_en: string;
+  title_ar?: string;
+  href: string;
+  image_url?: string;
+  artwork_key?: string;
+  sort_order?: number;
+};
+
+export function mapApiPlatform(row: ApiPlatform): StorePlatform {
+  return {
+    slug: row.slug,
+    name: row.name_en,
+    nameAr: row.name_ar || row.name_en,
+    artworkKey: row.artwork_key || "",
+    ...(row.image_url ? { imageUrl: resolveMediaUrl(row.image_url) } : {}),
+    sortOrder: Number(row.sort_order) || 0,
+  };
+}
+
+export function mapApiHomeTile(row: ApiHomeTile): StoreHomeTile {
+  return {
+    id: String(row.id),
+    title: row.title_en,
+    titleAr: row.title_ar || row.title_en,
+    href: row.href,
+    artworkKey: row.artwork_key || "",
+    ...(row.image_url ? { imageUrl: resolveMediaUrl(row.image_url) } : {}),
   };
 }
 
@@ -340,6 +383,26 @@ export async function fetchApiCategories(): Promise<Category[]> {
 export async function fetchApiMenuCategories(): Promise<Category[]> {
   const data = await apiFetch<Paginated<ApiCategory>>("/catalog/categories/?menu=1");
   return unwrapList(data).map(mapApiCategory);
+}
+
+/** Published platforms (sort_order) — the home page brand row. [] when the API is unavailable. */
+export async function fetchApiPlatforms(): Promise<StorePlatform[]> {
+  try {
+    const data = await apiFetch<Paginated<ApiPlatform>>("/catalog/platforms/");
+    return unwrapList(data).map(mapApiPlatform);
+  } catch {
+    return [];
+  }
+}
+
+/** Published home tiles of one section (sort_order). [] when the API is unavailable. */
+export async function fetchApiHomeTiles(section = "SUGGESTED"): Promise<StoreHomeTile[]> {
+  try {
+    const data = await apiFetch<Paginated<ApiHomeTile>>(`/cms/home-tiles/?section=${encodeURIComponent(section)}`);
+    return unwrapList(data).map(mapApiHomeTile);
+  } catch {
+    return [];
+  }
 }
 
 export async function hydrateCatalogFromDb() {

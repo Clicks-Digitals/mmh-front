@@ -318,8 +318,18 @@ class SupplierMappingStockRuleTests(FixBase):
     def setUp(self):
         self.product = make_product("fx-map", self.category, self.platform)
         self.variant = make_variant(self.product, "FX-M1")
-        self.supplier = Supplier.objects.create(slug="fx-live", name="Live sup", active=True)
+        from django.utils import timezone
+
+        from suppliers.models import SupplierCatalogItem
+
+        # D-1E-10: only the 1Epin supplier, live mode + switch + credentials, fresh catalog item.
+        self.supplier = Supplier.objects.create(slug="1epin", name="Live sup", active=True)
         SupplierConnection.objects.create(supplier=self.supplier, environment="LIVE")
+        for pid in ("E1", "E2"):
+            SupplierCatalogItem.objects.create(
+                supplier=self.supplier, environment="LIVE", external_product_id=pid, product_name=pid,
+                category_type="epin", price="1.00", last_seen_at=timezone.now(),
+            )
         self.mapping = SupplierProductMapping.objects.create(
             supplier=self.supplier, product=self.product, variant=self.variant, external_product_id="E1"
         )
@@ -338,7 +348,7 @@ class SupplierMappingStockRuleTests(FixBase):
         self.assertTrue(row["counts_as_stock_message"])
         self.assertEqual(self._public_variant()["stock_status"], "OUT_OF_STOCK")
 
-    @override_settings(ONEEPIN_ALLOW_LIVE=True, SUPPLIER_MODE="test")
+    @override_settings(ONEEPIN_ALLOW_LIVE=True, SUPPLIER_MODE="live", ONEEPIN_EMAIL="ops@mmh.test", ONEEPIN_PASSWORD="x")
     def test_live_connection_counts(self):
         row = self._mapping_row()
         self.assertTrue(row["counts_as_stock"])
@@ -350,7 +360,7 @@ class SupplierMappingStockRuleTests(FixBase):
         self.assertEqual(self._mapping_row()["counts_as_stock_reason"], "supplier_inactive")
         self.assertEqual(self._public_variant()["stock_status"], "OUT_OF_STOCK")
 
-    @override_settings(ONEEPIN_ALLOW_LIVE=True, SUPPLIER_MODE="test")
+    @override_settings(ONEEPIN_ALLOW_LIVE=True, SUPPLIER_MODE="live", ONEEPIN_EMAIL="ops@mmh.test", ONEEPIN_PASSWORD="x")
     def test_mapping_endpoints_and_supplier_detail_expose_rule(self):
         res = auth_client(self.admin).patch(
             f"/api/v1/admin/supplier-mappings/{self.mapping.id}/", {"ignored": True}, format="json"

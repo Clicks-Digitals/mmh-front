@@ -531,6 +531,8 @@ function ProductEditor({
           variants={variantRows}
           canMap={canMap}
           productName={product.name_en}
+          fulfillmentType={product.fulfillment_type}
+          customerFields={product.fields}
         />
       ) : null}
 
@@ -630,7 +632,11 @@ function ProductEditor({
 }
 
 export function ProductDetailClient({ id }: { id: string }) {
-  const [tab, setTab] = useState<TabId>("general");
+  // ?tab=supplier deep link (1Epin pages link here). Only read on the client; the first
+  // render is the loading skeleton, so there is no hydration difference.
+  const [tab, setTab] = useState<TabId>(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "supplier" ? "supplier" : "general",
+  );
   const { can } = useAdminAccess();
   const canSuppliers = can("suppliers.read") || can("catalog.read");
   const { data, setData, loading, error, reload, token } = useAdminQuery(

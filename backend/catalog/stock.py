@@ -4,16 +4,18 @@
   unassigned, minus other orders' reservations - see ``commerce.services.inventory``) **or**
   a supplier mapping that counts as stock (D18), and the manual ``stock_status`` override
   is not ``OUT_OF_STOCK``.
-* A supplier mapping counts as stock only when it is not ignored, the supplier is active
-  and live purchasing is enabled: ``ONEEPIN_ALLOW_LIVE`` is true **and** the supplier runs
-  live (``SUPPLIER_MODE=live`` or its connection environment is LIVE). Mock/test/locked
-  suppliers never make a variant sellable.
+* A supplier mapping counts as stock (D-1E-10) only when it is not ignored, linked to a
+  variant, its supplier is the active 1Epin supplier, ``auto_buy`` is on, the mapped product is
+  active in the synced 1Epin catalog of the current mode and was seen by a sync < 48 h ago, and
+  the mode can really buy: ``SUPPLIER_MODE=live`` + ``ONEEPIN_ALLOW_LIVE`` + credentials, or
+  test/mock mode with ``ONEEPIN_TEST_COUNTS_AS_STOCK=true`` (staging rehearsals).
 * DIRECT_TOPUP variants follow the manual ``stock_status`` only.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import timedelta
 
 from django.conf import settings
 from django.db.models import BooleanField, Count, Exists, OuterRef, Q, QuerySet, Value
@@ -29,6 +31,10 @@ MAPPING_REASON_MESSAGES = {
     "unmapped_variant": "Not linked to a variant - it does not count as stock.",
     "supplier_inactive": "Supplier is inactive - this mapping does not count as stock.",
     "live_disabled": "Live purchasing is disabled (mock/test mode) - this mapping does not count as stock.",
+    "unsupported_supplier": "Only 1Epin mappings can be bought automatically - it does not count as stock.",
+    "auto_buy_off": "Auto-buy is off - this mapping does not count as stock.",
+    "catalog_missing": "Not in the synced 1Epin catalog (or no longer sold) - it does not count as stock.",
+    "catalog_stale": "The 1Epin catalog was not synced in the last 48 hours - it does not count as stock.",
 }
 
 
@@ -89,35 +95,56 @@ def available_quantities(variant_ids: Iterable[int]) -> dict[int, int]:
     return {vid: min(max(n, 0), PUBLIC_QUANTITY_CAP) for vid, n in available_code_counts(ids).items()}
 
 
-# --- D18: supplier mappings ------------------------------------------------------------
+# --- D18 / D-1E-10: supplier mappings ---------------------------------------------------
 
 
 def live_purchasing_allowed() -> bool:
-    return bool(getattr(settings, "ONEEPIN_ALLOW_LIVE", False))
+    """Supplier mappings may count as stock in the current mode (see module docstring)."""
+    from suppliers.services.config import mapping_stock_mode_ok
+
+    return mapping_stock_mode_ok()
 
 
 def supplier_is_live(supplier) -> bool:
-    if not live_purchasing_allowed():
+    """True when this supplier buys for real right now (live mode, switch on, credentials)."""
+    from suppliers.provider import SUPPLIER_SLUG
+    from suppliers.services.config import credentials_configured, live_enabled
+
+    if supplier is None or getattr(supplier, "slug", None) != SUPPLIER_SLUG:
         return False
-    if (getattr(settings, "SUPPLIER_MODE", "mock") or "").lower() == "live":
-        return True
-    connection = getattr(supplier, "connection", None) if supplier is not None else None
-    try:
-        return bool(connection is not None and connection.environment == "LIVE")
-    except Exception:  # noqa: BLE001 - missing related object
-        return False
+    return live_enabled() and credentials_configured()
+
+
+def _catalog_cutoff():
+    from django.utils import timezone
+
+    from suppliers.services.config import CATALOG_MAX_AGE_HOURS
+
+    return timezone.now() - timedelta(hours=CATALOG_MAX_AGE_HOURS)
 
 
 def mapping_stock_reason(mapping) -> str | None:
     """``None`` when the mapping counts as stock, else a reason code (see MAPPING_REASON_MESSAGES)."""
+    from suppliers.provider import SUPPLIER_SLUG
+    from suppliers.services.mapping import mapping_catalog_item
+
     if mapping.ignored:
         return "ignored"
     if not mapping.variant_id:
         return "unmapped_variant"
     if not mapping.supplier.active:
         return "supplier_inactive"
-    if not supplier_is_live(mapping.supplier):
+    if mapping.supplier.slug != SUPPLIER_SLUG:
+        return "unsupported_supplier"
+    if not live_purchasing_allowed():
         return "live_disabled"
+    if not getattr(mapping, "auto_buy", True):
+        return "auto_buy_off"
+    item = mapping_catalog_item(mapping)
+    if item is None or not item.active:
+        return "catalog_missing"
+    if item.last_seen_at is None or item.last_seen_at < _catalog_cutoff():
+        return "catalog_stale"
     return None
 
 
@@ -134,10 +161,25 @@ def _stock_mapping_filter() -> Q | None:
     """Q over SupplierProductMapping for mappings that count as stock; None = none can."""
     if not live_purchasing_allowed():
         return None
-    q = Q(ignored=False, supplier__active=True)
-    if (getattr(settings, "SUPPLIER_MODE", "mock") or "").lower() != "live":
-        q &= Q(supplier__connection__environment="LIVE")
-    return q
+    from suppliers.models import SupplierCatalogItem
+    from suppliers.provider import SUPPLIER_SLUG
+    from suppliers.services.config import current_environment
+
+    fresh_item = SupplierCatalogItem.objects.filter(
+        supplier_id=OuterRef("supplier_id"),
+        environment=current_environment(),
+        external_product_id=OuterRef("external_product_id"),
+        active=True,
+        last_seen_at__gte=_catalog_cutoff(),
+    )
+    return Q(
+        Exists(fresh_item),
+        ignored=False,
+        auto_buy=True,
+        supplier__active=True,
+        supplier__slug=SUPPLIER_SLUG,
+        variant__isnull=False,
+    )
 
 
 def active_mapping_variant_ids(variant_ids: Iterable[int]) -> set[int]:

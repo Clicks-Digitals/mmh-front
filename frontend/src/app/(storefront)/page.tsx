@@ -9,6 +9,7 @@ import { ServiceCategoryGrid } from "@/components/home/service-category-grid";
 import { SuggestedGamesGrid } from "@/components/home/suggested-games-grid";
 import { listBanners } from "@/lib/api/cms";
 import { resolveMediaUrl } from "@/lib/media";
+import { fetchApiHomeTiles, fetchApiPlatforms } from "@/server/catalog/from-api";
 import { pageMeta } from "@/lib/seo";
 import { hasContactChannel } from "@/lib/site-contact";
 import { loadSiteContact } from "@/server/site-contact";
@@ -43,16 +44,21 @@ async function loadHomeBanners(): Promise<HomeBanner[]> {
 }
 
 export default async function HomePage() {
-  const [banners, contact] = await Promise.all([loadHomeBanners(), loadSiteContact()]);
+  const [banners, contact, platforms, suggested] = await Promise.all([
+    loadHomeBanners(),
+    loadSiteContact(),
+    fetchApiPlatforms(),
+    fetchApiHomeTiles("SUGGESTED"),
+  ]);
   return (
     <>
       {banners.length ? <HomeBanners banners={banners} /> : <Hero />}
       <HomePromoBanner />
-      <PlatformQuickLinks />
+      <PlatformQuickLinks platforms={platforms} />
       <CategorySwiperSection />
       <LatestProducts />
       <ServiceCategoryGrid />
-      <SuggestedGamesGrid />
+      <SuggestedGamesGrid tiles={suggested} />
       <HomeSupportCta hasContact={hasContactChannel(contact)} />
     </>
   );

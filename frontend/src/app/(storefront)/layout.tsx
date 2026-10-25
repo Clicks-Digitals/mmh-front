@@ -11,6 +11,7 @@ import { ToastViewport } from "@/components/ui/toast";
 import { FocusMode } from "@/components/ui/focus-mode";
 import { PageCurtain } from "@/components/layout/page-curtain";
 import { Providers } from "@/context/providers";
+import { BrandAssetsProvider } from "@/context/brand-assets-context";
 import { CatalogBoot } from "@/components/storefront/catalog-boot";
 import { isMaintenanceExempt, PATHNAME_HEADER } from "@/lib/maintenance";
 import { resolveMenuCategories, resolveStorefrontCategories, resolveStorefrontProducts } from "@/server/catalog/resolve";
@@ -31,7 +32,9 @@ export default async function StorefrontLayout({ children }: { children: React.R
     return (
       <div className="flex min-h-full flex-col bg-deep text-fg">
         <Providers locale={locale}>
-          <MaintenancePage contact={settings.contact} storeName={settings.storeName} />
+          <BrandAssetsProvider value={{ logoUrl: settings.logoUrl, heroUrl: settings.heroUrl }}>
+            <MaintenancePage contact={settings.contact} storeName={settings.storeName} />
+          </BrandAssetsProvider>
         </Providers>
       </div>
     );
@@ -46,25 +49,27 @@ export default async function StorefrontLayout({ children }: { children: React.R
   return (
     <div className="flex min-h-full flex-col bg-deep text-fg">
       <Providers locale={locale}>
-        <CatalogBoot products={products} categories={categories} menuCategories={menuCategories}>
-          <FocusMode />
-          <PageCurtain />
-          {settings.maintenanceMode ? (
-            <div className="bg-amber/15 px-4 py-2 text-center text-xs font-medium text-amber" role="status">
-              {(await serverT()).t("maintenance.banner")}
-            </div>
-          ) : null}
-          <AnnouncementBar />
-          <Header />
-          <main className="flex-1">{children}</main>
-          <Footer contact={settings.contact} storeName={settings.storeName} pages={footerPages} />
-          <FloatingContactButtons contact={settings.contact} />
-          <CartDrawer />
-          <MobileMenu />
-          <SearchOverlay />
-          <QuickView />
-          <ToastViewport />
-        </CatalogBoot>
+        <BrandAssetsProvider value={{ logoUrl: settings.logoUrl, heroUrl: settings.heroUrl }}>
+          <CatalogBoot products={products} categories={categories} menuCategories={menuCategories}>
+            <FocusMode />
+            <PageCurtain />
+            {settings.maintenanceMode ? (
+              <div className="bg-amber/15 px-4 py-2 text-center text-xs font-medium text-amber" role="status">
+                {(await serverT()).t("maintenance.banner")}
+              </div>
+            ) : null}
+            <AnnouncementBar />
+            <Header />
+            <main className="flex-1">{children}</main>
+            <Footer contact={settings.contact} storeName={settings.storeName} pages={footerPages} />
+            <FloatingContactButtons contact={settings.contact} />
+            <CartDrawer />
+            <MobileMenu />
+            <SearchOverlay />
+            <QuickView />
+            <ToastViewport />
+          </CatalogBoot>
+        </BrandAssetsProvider>
       </Providers>
     </div>
   );
