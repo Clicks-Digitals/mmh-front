@@ -1,6 +1,7 @@
 "use client";
 
 import { useAdminAccess } from "@/components/admin/admin-access";
+import { useAdminBreadcrumbLabel } from "@/components/admin/layout/breadcrumbs";
 import { AdminCard, AdminSectionHeader } from "@/components/admin/ui/card";
 import { EmptyState } from "@/components/admin/ui/empty-state";
 import { ErrorState } from "@/components/admin/ui/error-state";
@@ -17,6 +18,7 @@ import {
   resultCodeMessage,
   supplierAmount,
   supplierStatusLabel,
+  supersededAttempts,
 } from "@/components/admin/oneepin/labels";
 import { OneEpinTabs, ResultCode, SupplierStatusBadge } from "@/components/admin/oneepin/ui";
 import { canCheckSupplierOrder } from "@/components/admin/oneepin/orders-client";
@@ -42,6 +44,8 @@ export function OneEpinOrderDetailClient({ id }: { id: string }) {
   const canLogs = can("suppliers.read");
   const [checking, setChecking] = useState(false);
   const { data: so, loading, error, reload, token } = useAdminQuery((tok) => getSupplierOrder(tok, id), [id]);
+  // Breadcrumb: "1Epin order MMH-…" instead of the database id.
+  useAdminBreadcrumbLabel(so?.external_order_number ? `1Epin order ${so.external_order_number}` : null);
 
   async function check() {
     if (!token || !so) return;
@@ -62,6 +66,7 @@ export function OneEpinOrderDetailClient({ id }: { id: string }) {
   if (!so) return <EmptyState title="1Epin order not found" />;
 
   const codeHelp = so.result_code && so.result_code !== "00" ? resultCodeMessage(so.result_code) : "";
+  const replaced = supersededAttempts(so.attempts ?? []);
 
   return (
     <div>
@@ -88,8 +93,13 @@ export function OneEpinOrderDetailClient({ id }: { id: string }) {
       <div className="grid gap-3 lg:grid-cols-3">
         <AdminCard padding="md" className="lg:col-span-2">
           <AdminSectionHeader title="Status" />
-          <SupplierStatusBadge status={so.status} label={so.status_label} withHelp />
+          <SupplierStatusBadge status={so.status} label={so.status_label} withHelp supersededBy={so.superseded ? so.superseded_by_attempt : null} />
           {so.message ? <p className="mt-2 text-[13px]">{so.message}</p> : null}
+          {so.raw_reason ? (
+            <p className="mt-1 text-[11px] text-[var(--clicks-muted)]">
+              1Epin said: <span className="font-mono">{so.raw_reason}</span>
+            </p>
+          ) : null}
           {codeHelp ? (
             <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-950">
               1Epin code {so.result_code}: {codeHelp}
@@ -158,7 +168,7 @@ export function OneEpinOrderDetailClient({ id }: { id: string }) {
                   <span className="ms-2 text-[12px] text-[var(--clicks-muted)]">{a.message}</span>
                 </span>
                 <span className="flex items-center gap-2">
-                  <SupplierStatusBadge status={a.status} />
+                  <SupplierStatusBadge status={a.status} supersededBy={replaced.get(a.attempt) ?? null} />
                   <span className="text-[11px] text-[var(--clicks-muted)]">{formatAdminDateTime(a.created_at)}</span>
                 </span>
               </li>

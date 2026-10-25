@@ -237,6 +237,8 @@ export type AdminVariant = {
   available?: boolean;
   available_quantity?: number | null;
   product_name?: string;
+  product_slug?: string;
+  product_status?: string;
   fulfillment_type?: string;
 };
 

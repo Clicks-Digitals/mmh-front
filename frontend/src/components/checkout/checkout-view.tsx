@@ -1,14 +1,15 @@
 "use client";
 
 import { CouponBox } from "@/components/cart/coupon-box";
-import { isCouponFailure, PaymentStep, UsdEstimate, type CheckoutFailure } from "@/components/checkout/payment-step";
+import { isCouponFailure, PaymentStep, StockLinesList, UsdEstimate, type CheckoutFailure } from "@/components/checkout/payment-step";
 import { Button } from "@/components/ui/button";
 import { TEXTAREA } from "@/components/ui/control";
 import { Field } from "@/components/ui/field";
 import { Price } from "@/components/ui/price";
 import { useCart } from "@/context/cart-context";
 import { useLanguage } from "@/context/language-context";
-import { checkoutLine, lineFieldsText, lineLimits, lineProblem, lineProblemKey, linePrice } from "@/lib/cart";
+import { checkoutLine, lineDenomination, lineFieldsText, lineLimits, lineProblem, lineProblemKey, linePrice } from "@/lib/cart";
+import { stockCartUpdates, type StockLine } from "@/lib/stock-errors";
 import { formatDiscount } from "@/lib/coupon";
 import { getProductById } from "@/data/products";
 import { cn } from "@/lib/cn";
@@ -33,6 +34,8 @@ export function CheckoutView() {
     setCouponEmail,
     clear,
     hydrated,
+    removeItem,
+    updateQty,
   } = useCart();
   const { t, locale } = useLanguage();
   const { data: session, status } = useSession();
@@ -44,6 +47,8 @@ export function CheckoutView() {
   const [confirmed, setConfirmed] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
   const [failure, setFailure] = useState<CheckoutFailure | null>(null);
+  /** Sold out between "Continue to payment" and PayPal (409 out_of_stock): shown on every step. */
+  const [stockNotice, setStockNotice] = useState<StockLine[] | null>(null);
 
   const email = (contact.email || sessionEmail).trim();
   const fullName = (contact.fullName || (sessionEmail ? session?.user?.name ?? "" : "")).trim();
@@ -75,14 +80,42 @@ export function CheckoutView() {
       setCouponEmail(email);
     }
     if (step === 2 && blocked) return;
+    if (step === 2) setStockNotice(null);
     setStep((value) => Math.min(3, value + 1));
   };
+
+  const applyStockProblem = (stockLines: StockLine[]) => {
+    const updates = stockCartUpdates(
+      items.map((item) => {
+        const product = getProductById(item.productId);
+        const denomination = product ? lineDenomination(item, product) : undefined;
+        return { lineId: item.lineId, productId: item.productId, variantId: denomination?.variantId ?? null, quantity: item.quantity };
+      }),
+      stockLines,
+    );
+    for (const update of updates) {
+      if (update.remove) removeItem(update.lineId);
+      else updateQty(update.lineId, update.quantity);
+    }
+    setStockNotice(stockLines);
+    setConfirmed(false);
+    setStep(2);
+  };
+
+  const stockBanner = stockNotice ? (
+    <div className="mt-6 rounded-xl border border-danger/30 bg-danger/10 p-4 text-sm text-danger" role="alert">
+      <p className="font-semibold">{t("checkout.stockSoldOutTitle")}</p>
+      {stockNotice.length ? <StockLinesList lines={stockNotice} /> : <p className="mt-1">{t("checkout.outOfStock")}</p>}
+      <p className="mt-2">{items.length ? t("checkout.stockCartUpdated") : t("checkout.stockCartEmpty")}</p>
+    </div>
+  ) : null;
 
   if (!hydrated) return <div className="container-mmh py-16">{t("common.loading")}</div>;
   if (items.length === 0) {
     return (
       <div className="container-mmh py-16">
-        <p className="text-muted">{t("cart.empty")}</p>
+        {stockBanner}
+        <p className={stockBanner ? "mt-4 text-muted" : "text-muted"}>{t("cart.empty")}</p>
         <Button className="mt-4" href="/shop">
           {t("cart.emptyCta")}
         </Button>
@@ -105,6 +138,8 @@ export function CheckoutView() {
             </li>
           ))}
         </ol>
+
+        {stockBanner}
 
         {step === 1 ? (
           <div className="mt-8 space-y-4">
@@ -252,6 +287,11 @@ export function CheckoutView() {
               onFailure={(next) => {
                 setFailure(next);
                 if (!next) return;
+                if (next.code === "out_of_stock") {
+                  // Keep the customer here: name what sold out, fix the cart, back to the item review.
+                  applyStockProblem(next.lines ?? []);
+                  return;
+                }
                 // The coupon was rejected at order time: drop it so the totals are honest again.
                 if (isCouponFailure(next)) {
                   removePromo();

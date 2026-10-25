@@ -62,7 +62,12 @@ def _set_order_paid(order: Order, *, actor=None, reason: str = "") -> None:
 
 def _safe_fulfill(order: Order, *, actor=None) -> None:
     """Run fulfillment without ever propagating errors into the payment transaction."""
-    from commerce.services.fulfillment import FulfillmentError, flag_manual_review, fulfill_order
+    from commerce.services.fulfillment import (
+        FulfillmentError,
+        flag_manual_review,
+        flag_out_of_stock_after_payment,
+        fulfill_order,
+    )
 
     order.refresh_from_db()
     if order.fulfillment_status == FulfillmentStatus.CANCELLED:
@@ -71,6 +76,8 @@ def _safe_fulfill(order: Order, *, actor=None) -> None:
     try:
         with transaction.atomic():
             fulfill_order(order, actor=actor)
+        with transaction.atomic():
+            flag_out_of_stock_after_payment(order, actor=actor)
     except (FulfillmentError, OrderTransitionError) as exc:
         flag_manual_review(order, reason=f"Fulfillment failed: {exc.message}", actor=actor)
     except Exception as exc:  # pragma: no cover - defensive: a paid order must never 500

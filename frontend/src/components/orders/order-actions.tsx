@@ -1,6 +1,6 @@
 "use client";
 
-import { PayPalCheckout } from "@/components/checkout/paypal-checkout";
+import { PAYMENT_HANDLED, PayPalCheckout } from "@/components/checkout/paypal-checkout";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/context/language-context";
 import { usePayPalConfig } from "@/hooks/use-paypal-config";
@@ -92,9 +92,13 @@ export function UnpaidOrderActions({
               if (result.ok) return { orderId: result.paypalOrderId };
               if (result.error === "already_paid") {
                 onChanged(null);
-                throw new Error("ALREADY_PAID");
+                throw new Error(PAYMENT_HANDLED);
               }
-              if (result.error === "out_of_stock") setLines(result.lines);
+              if (result.error === "out_of_stock") {
+                // Nothing was charged: name what sold out and close the PayPal buttons.
+                setLines(result.lines);
+                setPaying(false);
+              }
               const message = t(
                 result.error === "out_of_stock"
                   ? "orderActions.outOfStock"
@@ -107,7 +111,7 @@ export function UnpaidOrderActions({
                         : "checkout.paypalUnavailable",
               );
               setError(message);
-              throw new Error("ALREADY_PAID");
+              throw new Error(PAYMENT_HANDLED);
             }}
             onPaid={() => onChanged(null)}
             onCancel={() => setError(t("checkout.paypalCancel"))}

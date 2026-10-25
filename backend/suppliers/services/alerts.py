@@ -19,7 +19,12 @@ SEVERITY = {
     AlertKind.ORDER_FAILED: "warning",
     AlertKind.PRICE_CHANGE: "info",
     AlertKind.DUPLICATE_CODE: "error",
+    AlertKind.COST_LIMIT: "warning",
+    AlertKind.OUT_OF_STOCK: "error",
 }
+
+# Alerts about one order item: closed automatically once that item is delivered (any path).
+ITEM_ALERT_KINDS = (AlertKind.ORDER_FAILED, AlertKind.COST_LIMIT)
 
 
 def raise_alert(
@@ -97,3 +102,21 @@ def record_balance(supplier: Supplier, balance: Decimal | None) -> None:
         )
     else:
         auto_resolve(supplier, "low_balance", f"Balance back to {balance:.2f} {currency()}")
+
+
+def resolve_delivered_item_alerts(order, delivered_item_ids, *, order_completed: bool = False) -> int:
+    """Close open per-item alerts once the item is delivered - by 1Epin, own stock, a code typed in by
+    staff or a top-up marked delivered. The order's "out of stock after payment" alert closes once
+    every code item has its codes (``order_completed``)."""
+    ids = [int(i) for i in delivered_item_ids or [] if i]
+    now = timezone.now()
+    total = 0
+    if ids:
+        total += SupplierAlert.objects.filter(
+            resolved=False, kind__in=list(ITEM_ALERT_KINDS), supplier_order__order_item_id__in=ids
+        ).update(resolved=True, resolved_at=now, resolution_note="Item delivered", updated_at=now)
+    if order_completed and getattr(order, "order_number", ""):
+        total += SupplierAlert.objects.filter(
+            resolved=False, kind=AlertKind.OUT_OF_STOCK, order_number=order.order_number
+        ).update(resolved=True, resolved_at=now, resolution_note="Order delivered", updated_at=now)
+    return total

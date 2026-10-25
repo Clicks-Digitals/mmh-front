@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "@/lib/api/client";
 import {
+  alertKindLabel,
+  supersededAttempts,
+  supersededLabel,
   catalogTypeForFulfillment,
   countsAsStockText,
   defaultPlayerKey,
@@ -77,6 +80,7 @@ describe("modes", () => {
     expect(modeLabel("TEST")).toBe("Test");
     expect(modeLabel("mock")).toBe("Mock (practice)");
     expect(modeExplanation("mock")).toContain("simulated");
+    expect(modeExplanation("mock")).toContain("counts as in stock");
     expect(modeExplanation("live")).toContain("real purchases");
   });
 });
@@ -136,7 +140,7 @@ describe("counts as stock", () => {
   it("explains the reason", () => {
     expect(countsAsStockText(true, null)).toContain("Stays on sale");
     expect(countsAsStockText(false, "catalog_stale")).toContain("48 hours");
-    expect(countsAsStockText(false, "live_disabled")).toContain("not in live mode");
+    expect(countsAsStockText(false, "live_disabled")).toContain("doesn't buy from 1Epin on demand");
     expect(countsAsStockText(false, "nope")).toBe("Does not count as stock.");
   });
 });
@@ -178,5 +182,28 @@ describe("misc", () => {
     expect(durationText(null)).toBe("—");
     expect(orderNumberFromSupplierRef("MMH-MMH10023-55-2")).toBe("MMH10023");
     expect(orderNumberFromSupplierRef("other")).toBeNull();
+  });
+});
+
+describe("1Epin fixes from the verification pass", () => {
+  it("labels the cost-limit and out-of-stock alerts", () => {
+    expect(alertKindLabel("cost_limit")).toBe("Cost above limit");
+    expect(alertKindLabel("out_of_stock")).toBe("Out of stock after payment");
+    expect(alertKindLabel("order_failed")).toBe("Order failed");
+  });
+
+  it("shows earlier attempts as replaced, never as needing review", () => {
+    expect(supersededLabel(3)).toBe("Replaced by attempt 3");
+    expect(supersededLabel(null)).toBe("");
+    const map = supersededAttempts([
+      { attempt: 1, status: "MANUAL_REVIEW" },
+      { attempt: 2, status: "FAILED" },
+      { attempt: 3, status: "COMPLETED" },
+    ]);
+    expect([...map.entries()]).toEqual([
+      [1, 3],
+      [2, 3],
+    ]);
+    expect(supersededAttempts([{ attempt: 1, status: "FAILED" }]).size).toBe(0);
   });
 });

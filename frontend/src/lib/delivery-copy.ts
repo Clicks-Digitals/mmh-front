@@ -4,8 +4,8 @@ export const DELIVERY_AFTER_PAYMENT = {
 } as const;
 
 export const TOPUP_AFTER_PAYMENT = {
-  en: "Processed by our team after payment confirmation",
-  ar: "يعالجه فريقنا بعد تأكيد الدفع",
+  en: "Delivered to your game account after payment",
+  ar: "يُضاف إلى حساب اللعبة بعد الدفع",
 } as const;
 
 const INSTANT_RE = /\binstant(ly)?\b|فور(ي|ا|اً|ًا)?\b|فوري/i;

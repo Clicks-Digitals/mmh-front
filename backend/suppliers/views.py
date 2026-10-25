@@ -59,9 +59,16 @@ from suppliers.services.config import (
     trading_enabled,
 )
 from suppliers.services.config import currency as oneepin_currency
-from suppliers.services.fulfillment import SupplierActionError, staff_check, staff_purchase, sync_supplier_order
+from suppliers.services.fulfillment import (
+    SupplierActionError,
+    needs_review_order_count,
+    needs_review_supplier_orders,
+    staff_check,
+    staff_purchase,
+    sync_supplier_order,
+)
 from suppliers.services.mapping import catalog_item_brief, mapping_payload
-from suppliers.services.payloads import supplier_order_payload
+from suppliers.services.payloads import latest_attempts, supplier_order_payload
 from suppliers.services.reconcile import reconcile_supplier_orders
 
 logger = logging.getLogger("suppliers")
@@ -325,9 +332,8 @@ def supplier_status_payload(supplier: Supplier, *, request=None, refresh_ip: boo
         "mappings": SupplierProductMapping.objects.filter(supplier=supplier, ignored=False).count(),
         "open_alerts": SupplierAlert.objects.filter(supplier=supplier, resolved=False).count(),
         "orders_in_flight": SupplierOrder.objects.filter(supplier=supplier, status__in=IN_FLIGHT_STATUSES).count(),
-        "orders_manual_review": SupplierOrder.objects.filter(
-            supplier=supplier, status=SupplierStatus.MANUAL_REVIEW
-        ).count(),
+        # Distinct ORDERS waiting for a person (same rule as the orders page ``needs_review`` filter).
+        "orders_manual_review": needs_review_order_count(),
         "fx_to_jod": f"{fx_to_jod()}",
         "currency": oneepin_currency(),
     }
@@ -370,8 +376,8 @@ class SupplierPingView(APIView):
 
     def post(self, request):
         supplier = ensure_supplier()
-        if not credentials_configured():
-            # CA-25: never report a successful test without credentials.
+        if supplier_mode() != "mock" and not credentials_configured():
+            # CA-25: never report a successful test without credentials (mock = the local simulator).
             message = CREDENTIALS_MISSING_MESSAGE
             log_supplier_action(supplier, "ping", False, message)
             payload = supplier_status_payload(supplier, request=request)
@@ -826,6 +832,9 @@ class SupplierOrderListView(generics.ListAPIView):
     def get_queryset(self):
         params = self.request.query_params
         qs = _supplier_order_qs()
+        if _truthy(params.get("needs_review")):
+            # Same rule as the dashboard / overview "need review" count.
+            qs = qs.filter(pk__in=needs_review_supplier_orders().values("pk"))
         statuses = [s.strip().upper() for s in (params.get("status") or "").split(",") if s.strip()]
         if statuses:
             qs = qs.filter(status__in=statuses)
@@ -861,9 +870,10 @@ class SupplierOrderListView(generics.ListAPIView):
             i.id: i
             for i in OrderItem.objects.filter(id__in=[so.order_item_id for so in page])
         }
+        latest = latest_attempts([so.order_item_id for so in page])
         rows = []
         for so in page:
-            row = supplier_order_payload(so)
+            row = supplier_order_payload(so, latest_attempts=latest)
             item = items.get(so.order_item_id)
             row["item"] = (
                 {"id": item.id, "product_name": item.product_name, "variant_name": item.variant_name, "quantity": item.quantity}

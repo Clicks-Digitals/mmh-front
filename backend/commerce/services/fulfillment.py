@@ -99,6 +99,80 @@ def fulfill_order(order: Order, *, actor=None) -> Order:
     return order
 
 
+OUT_OF_STOCK_AFTER_PAYMENT = "Out of stock after payment — deliver manually or refund"
+
+
+def flag_out_of_stock_after_payment(order: Order, *, actor=None) -> list[int]:
+    """Paid, but some CODE items could not get codes (stock sold out between checkout and capture).
+
+    Items that 1Epin will buy now (active auto-buy mapping while trading is possible) are left to the
+    supplier path; every other short item puts the order in MANUAL_REVIEW with a clear reason and one
+    staff alert. Idempotent (a replayed capture/webhook never raises a second alert). Returns the
+    item ids that need a person.
+    """
+    from catalog.models import FulfillmentType
+    from commerce.services.inventory import assigned_code_count, move_fulfillment
+
+    order = Order.objects.get(pk=order.pk)
+    if order.payment_status not in {PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED}:
+        return []
+    if order.fulfillment_status in {FulfillmentStatus.COMPLETED, FulfillmentStatus.CANCELLED}:
+        return []
+    short = [
+        item
+        for item in order.items.select_related("product").order_by("id")
+        if item.product.fulfillment_type == FulfillmentType.CODE and assigned_code_count(item) < item.quantity
+    ]
+    if not short:
+        return []
+    try:
+        from suppliers.services.config import trading_enabled
+        from suppliers.services.mapping import active_mapping_for_variant
+
+        can_buy = trading_enabled()
+        unhandled = [i for i in short if not (can_buy and active_mapping_for_variant(i.variant_id) is not None)]
+    except Exception:  # noqa: BLE001 - supplier lookup problems mean a person must look
+        logger.exception("Supplier lookup failed for order %s", order.order_number)
+        unhandled = short
+    if not unhandled:
+        return []
+    names = ", ".join(f"{i.product_name}" + (f" ({i.variant_name})" if i.variant_name else "") for i in unhandled)
+    if order.fulfillment_status != FulfillmentStatus.MANUAL_REVIEW:
+        move_fulfillment(order, FulfillmentStatus.MANUAL_REVIEW, actor=actor, reason=OUT_OF_STOCK_AFTER_PAYMENT)
+    try:
+        from suppliers.models import AlertKind, SupplierAlert
+        from suppliers.provider import ensure_supplier
+        from suppliers.services.alerts import raise_alert
+
+        key = f"out_of_stock:{order.order_number}"
+        if not SupplierAlert.objects.filter(dedupe_key=key).exists():
+            from audit.models import AuditLog
+
+            AuditLog.objects.create(
+                actor=actor,
+                action="orders.out_of_stock_after_payment",
+                entity_type="Order",
+                entity_id=str(order.pk),
+                meta={
+                    "order_number": order.order_number,
+                    "item_ids": [i.id for i in unhandled],
+                    "reason": OUT_OF_STOCK_AFTER_PAYMENT,
+                },
+            )
+            raise_alert(
+                ensure_supplier(),
+                AlertKind.OUT_OF_STOCK,
+                f"{order.order_number}: {OUT_OF_STOCK_AFTER_PAYMENT}. Sold out: {names}."[:500],
+                dedupe_key=key,
+                order_number=order.order_number,
+                meta={"order_id": order.pk, "item_ids": [i.id for i in unhandled]},
+            )
+    except Exception:  # noqa: BLE001 - the alert is advisory; the order is already in manual review
+        logger.exception("Could not raise the out-of-stock alert for order %s", order.order_number)
+    logger.warning("Order %s paid but out of stock for item(s) %s", order.order_number, [i.id for i in unhandled])
+    return [i.id for i in unhandled]
+
+
 def flag_manual_review(order: Order, *, reason: str, actor=None) -> None:
     """Force MANUAL_REVIEW without transition rules (used when automation fails on a paid order)."""
     from audit.models import AuditLog

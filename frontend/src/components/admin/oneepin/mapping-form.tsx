@@ -2,7 +2,7 @@
 
 import { FormField, adminInputClass } from "@/components/admin/ui/form-field";
 import type { MappingDraft } from "@/components/admin/oneepin/mapping-draft";
-import { estimateMargin } from "@/components/admin/oneepin/mapping-draft";
+import { estimateMargin, maxCostWarning } from "@/components/admin/oneepin/mapping-draft";
 import { filsJod, previewUserTemplate, sampleFieldValue } from "@/components/admin/oneepin/labels";
 import { MarginText } from "@/components/admin/oneepin/ui";
 import { cn } from "@/lib/cn";
@@ -96,6 +96,7 @@ export function MappingSettingsForm({
   const keys = (fields ?? []).map((f) => f.key);
   const sample = Object.fromEntries(keys.map((k) => [k, sampleFieldValue(k)]));
   const preview = topup ? previewUserTemplate(draft.user_template, sample, keys) : null;
+  const costWarning = errors.max_cost ? null : maxCostWarning(draft.max_cost, estimate.costFils);
 
   return (
     <div className="space-y-4">
@@ -161,6 +162,11 @@ export function MappingSettingsForm({
           value={draft.max_cost}
           onChange={(e) => onChange({ max_cost: e.target.value })}
         />
+        {costWarning ? (
+          <p role="alert" className="mt-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+            {costWarning}
+          </p>
+        ) : null}
       </FormField>
 
       <Toggle

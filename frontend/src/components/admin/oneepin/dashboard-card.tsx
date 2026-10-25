@@ -55,12 +55,12 @@ function Card({ data }: { data: DashboardOneEpin }) {
         <div>
           <p className="text-[11px] text-[var(--clicks-muted)]">1Epin orders needing review</p>
           <Link
-            href="/admin/integrations/1epin/orders?status=MANUAL_REVIEW"
+            href="/admin/integrations/1epin/orders?needs_review=1"
             className={cn("text-[1.1rem] font-semibold tabular-nums", data.manual_review_orders ? "text-amber-700" : "text-[var(--clicks-navy)]")}
           >
             {data.manual_review_orders}
           </Link>
-          <p className="text-[11px] text-[var(--clicks-muted)]">Stopped purchases waiting for a decision</p>
+          <p className="text-[11px] text-[var(--clicks-muted)]">Open orders whose 1Epin purchase stopped and waits for a decision</p>
         </div>
       </div>
     </AdminCard>

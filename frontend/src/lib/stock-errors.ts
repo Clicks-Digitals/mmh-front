@@ -59,3 +59,32 @@ export function stockLineMessage(
     values: { name: stockLineName(line, locale), count: line.available, requested: line.requested, available: line.available },
   };
 }
+
+/** A cart line as far as stock matching is concerned. */
+export interface StockCartLine {
+  lineId: string;
+  productId: string;
+  variantId: number | string | null | undefined;
+  quantity: number;
+}
+
+export type StockCartUpdate = { lineId: string; remove: true } | { lineId: string; remove: false; quantity: number };
+
+/**
+ * Cart changes for the sold-out lines of a 409 out_of_stock: lines with nothing left are removed,
+ * lines with fewer left are reduced to what is available. Other lines are untouched.
+ */
+export function stockCartUpdates(cart: StockCartLine[], lines: StockLine[]): StockCartUpdate[] {
+  const updates: StockCartUpdate[] = [];
+  for (const entry of cart) {
+    const match = lines.find((line) =>
+      line.variantId != null && entry.variantId != null && String(entry.variantId) !== ""
+        ? String(line.variantId) === String(entry.variantId)
+        : line.productId !== "" && line.productId === String(entry.productId),
+    );
+    if (!match) continue;
+    if (match.available <= 0) updates.push({ lineId: entry.lineId, remove: true });
+    else if (entry.quantity > match.available) updates.push({ lineId: entry.lineId, remove: false, quantity: match.available });
+  }
+  return updates;
+}

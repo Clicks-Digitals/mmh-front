@@ -449,7 +449,9 @@ def send_topup_delivered_email(order_id: int, item_id: int) -> bool:
     if not item:
         return False
     link = order_link(order)
-    note = (item.delivery_note or "").strip()
+    from commerce.views import customer_delivery_note
+
+    note = customer_delivery_note(item)
     fields = field_lines(order, item)
     intro = _t(order, "topup_intro", item=item_title(order, item), qty=item.quantity, number=order.order_number)
     text = (

@@ -315,6 +315,13 @@ export function OneEpinOverviewClient() {
                     {!status.trading_enabled && status.trading_disabled_reason ? ` — ${status.trading_disabled_reason}` : ""}.
                     {" "}Linked products count as stock: <strong>{status.mappings_count_as_stock ? "yes" : "no"}</strong>.
                   </p>
+                  <p className="text-[12px] text-[var(--clicks-muted)]">
+                    {status.mode === "mock"
+                      ? "Mock mode on a development computer: a product linked to 1Epin can be bought even with no codes of our own — the simulator delivers practice codes."
+                      : status.mode === "test"
+                        ? "Test mode: linked products count as stock only when ONEEPIN_TEST_COUNTS_AS_STOCK=true (for rehearsals on staging)."
+                        : "Live mode: linked products count as stock while “Buy automatically” is on and the catalog was synced in the last 48 hours."}
+                  </p>
                 </CheckRow>
 
                 <CheckRow
@@ -396,10 +403,10 @@ export function OneEpinOverviewClient() {
                 <ul className="space-y-1.5 text-[13px]">
                   <li>
                     <Link
-                      href="/admin/integrations/1epin/orders?status=MANUAL_REVIEW"
+                      href="/admin/integrations/1epin/orders?needs_review=1"
                       className={cn("font-medium", (status.orders_manual_review ?? 0) > 0 ? "text-amber-700" : "text-[var(--clicks-blue)]")}
                     >
-                      {status.orders_manual_review ?? 0} need review
+                      {status.orders_manual_review ?? 0} order{(status.orders_manual_review ?? 0) === 1 ? "" : "s"} need review
                     </Link>
                   </li>
                   <li>

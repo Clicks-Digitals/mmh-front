@@ -114,6 +114,7 @@ def mapping_payload(mapping: SupplierProductMapping) -> dict:
         "supplier_name": mapping.supplier.name,
         "product": mapping.product_id,
         "product_name": mapping.product.name_en if mapping.product_id else None,
+        "product_slug": mapping.product.slug if mapping.product_id else None,
         "variant": mapping.variant_id,
         "variant_name": variant.name_en if variant is not None else None,
         "variant_sku": variant.sku if variant is not None else None,

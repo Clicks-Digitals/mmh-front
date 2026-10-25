@@ -30,6 +30,8 @@ import { useEffect, useState } from "react";
 export type VariantRef = {
   id: number | string;
   product: string;
+  /** Slug for GET admin/products/<slug>/ (the id 404s there). */
+  productSlug?: string | null;
   productName: string;
   name: string;
   sku?: string | null;
@@ -46,6 +48,7 @@ function variantRef(v: AdminVariant): VariantRef {
   return {
     id: v.id,
     product: String(v.product ?? ""),
+    productSlug: v.product_slug ?? null,
     productName: v.product_name ?? "",
     name: v.name_en || v.sku,
     sku: v.sku,
@@ -77,8 +80,15 @@ function VariantSearch({ catalogType, onPick }: { catalogType: string; onPick: (
       if (cancelled || !token) return;
       setState((s) => ({ ...s, loading: true, error: "" }));
       try {
-        const data = await listVariants(token, { search: search || undefined, fulfillment_type: ftype || undefined, page_size: 20 });
-        if (!cancelled) setState({ rows: asList(data).items, loading: false, error: "" });
+        const data = await listVariants(token, {
+          search: search || undefined,
+          fulfillment_type: ftype || undefined,
+          exclude_archived: true,
+          page_size: 20,
+        });
+        // Archived products are never offered (older servers ignore exclude_archived: filter here too).
+        const rows = asList(data).items.filter((v) => (v.product_status ?? "").toUpperCase() !== "ARCHIVED");
+        if (!cancelled) setState({ rows, loading: false, error: "" });
       } catch (err) {
         if (!cancelled) setState({ rows: [], loading: false, error: describeFailure(err, "Could not load product options.") });
       }
@@ -218,13 +228,13 @@ function CatalogSearch({ fulfillmentType, onPick }: { fulfillmentType: string; o
   );
 }
 
-function useProductFields(productId: string | null | undefined, enabled: boolean, given?: CustomerFieldInfo[]) {
+function useProductFields(productSlug: string | null | undefined, enabled: boolean, given?: CustomerFieldInfo[]) {
   const token = useAdminToken();
   const [fields, setFields] = useState<CustomerFieldInfo[] | undefined>(given);
   useEffect(() => {
-    if (given || !enabled || !productId || !token) return;
+    if (given || !enabled || !productSlug || !token) return;
     let cancelled = false;
-    getProduct(token, productId)
+    getProduct(token, productSlug)
       .then((p) => {
         if (!cancelled) setFields((p.fields ?? []).map((f) => ({ key: f.key, label: f.label_en, required: f.required })));
       })
@@ -234,7 +244,7 @@ function useProductFields(productId: string | null | undefined, enabled: boolean
     return () => {
       cancelled = true;
     };
-  }, [token, productId, enabled, given]);
+  }, [token, productSlug, enabled, given]);
   return given ?? fields;
 }
 
@@ -277,6 +287,7 @@ function LinkDialogInner({
         ? {
             id: target.mapping.variant ?? "",
             product: target.mapping.product,
+            productSlug: target.mapping.product_slug ?? null,
             productName: target.mapping.product_name ?? "",
             name: target.mapping.variant_name ?? target.mapping.variant_sku ?? "",
             sku: target.mapping.variant_sku,
@@ -291,7 +302,7 @@ function LinkDialogInner({
   const [serverError, setServerError] = useState("");
 
   const kind = (item?.category_type || (target.kind === "edit" ? target.mapping.category_type : "") || "").toLowerCase();
-  const fields = useProductFields(variant?.product, kind === "topup", target.kind === "fromVariant" ? target.fields : undefined);
+  const fields = useProductFields(variant?.productSlug, kind === "topup", target.kind === "fromVariant" ? target.fields : undefined);
   const ready = Boolean(item && variant && variant.id !== "");
 
   async function save() {

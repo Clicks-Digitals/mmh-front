@@ -26,7 +26,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F, Max
+from django.db.models import Exists, F, Max, OuterRef
 from django.utils import timezone
 
 from audit.services import record_audit
@@ -44,6 +44,7 @@ from suppliers.provider import (
     OneEpinResult,
     SupplierError,
     get_supplier_provider,
+    readable_order_status,
     sanitize_payload,
     to_decimal,
 )
@@ -60,8 +61,22 @@ logger = logging.getLogger("suppliers")
 
 SERVICE_WINDOW_RETRY = timedelta(minutes=20)
 MAX_RESUBMITS = 3
+# Customer-visible (order page + e-mail): never name the supplier.
 TOPUP_NOTE = "Your top-up has been added to your game account."
-COST_LIMIT_REASON = "Supplier cost above limit"
+TOPUP_NOTE_AR = "تمت إضافة الشحن إلى حساب اللعبة الخاص بك."
+COST_LIMIT_REASON = "1Epin cost above your limit"
+LOSS_REASON = "1Epin cost above our sale price"
+IN_FLIGHT_ACTION_REASON = "A 1Epin purchase is in progress — check it first"
+# Supplier orders that need a person (the latest attempt of an item only).
+NEEDS_REVIEW_STATUSES = (SupplierStatus.MANUAL_REVIEW, SupplierStatus.FAILED)
+
+
+def topup_note(order: Order | None) -> str:
+    return TOPUP_NOTE_AR if getattr(order, "locale", "en") == "ar" else TOPUP_NOTE
+
+
+def _supplier_named(note: str) -> bool:
+    return "1epin" in (note or "").lower()
 CONFIG_CODES = {"02", "03"}
 
 
@@ -90,6 +105,40 @@ def _assigned(item: OrderItem) -> int:
 
 def latest_supplier_order(item_id: int) -> SupplierOrder | None:
     return SupplierOrder.objects.filter(order_item_id=item_id).order_by("-attempt", "-id").first()
+
+
+def in_flight_item_ids(item_ids) -> set[int]:
+    """Items whose latest supplier attempt may still be bought / delivered by 1Epin right now."""
+    ids = [int(i) for i in item_ids if i]
+    if not ids:
+        return set()
+    out: set[int] = set()
+    seen: set[int] = set()
+    for so in SupplierOrder.objects.filter(order_item_id__in=ids).order_by("order_item_id", "-attempt", "-id"):
+        if so.order_item_id in seen:
+            continue
+        seen.add(so.order_item_id)
+        if so.status in IN_FLIGHT_STATUSES:
+            out.add(so.order_item_id)
+    return out
+
+
+def needs_review_supplier_orders():
+    """Latest attempts in MANUAL_REVIEW/FAILED of paid orders that still need action, for items that
+    are not delivered yet. Shared by the dashboard count and the 1Epin orders ``needs_review`` filter."""
+    later = SupplierOrder.objects.filter(order_item_id=OuterRef("order_item_id"), attempt__gt=OuterRef("attempt"))
+    undelivered = OrderItem.objects.filter(pk=OuterRef("order_item_id"), delivered_at__isnull=True)
+    return (
+        SupplierOrder.objects.filter(status__in=list(NEEDS_REVIEW_STATUSES), order__isnull=False)
+        .filter(order__payment_status__in=list(PAID_UNREFUNDED))
+        .exclude(order__fulfillment_status__in=[FulfillmentStatus.COMPLETED, FulfillmentStatus.CANCELLED])
+        .filter(~Exists(later), Exists(undelivered))
+    )
+
+
+def needs_review_order_count() -> int:
+    """Number of ORDERS (distinct) with a 1Epin purchase waiting for a person."""
+    return needs_review_supplier_orders().values("order_id").distinct().count()
 
 
 def is_unresolved_placed(so: SupplierOrder) -> bool:
@@ -290,7 +339,7 @@ def _plan_item(
         if mapping.max_cost_fils is not None and unit_cost_fils > mapping.max_cost_fils:
             reason = COST_LIMIT_REASON
         elif so.cost_fils > sale_fils and not mapping.allow_loss:
-            reason = COST_LIMIT_REASON
+            reason = LOSS_REASON
     so.request_payload = {
         "product": so.external_product_id,
         "quantity": so.quantity,
@@ -303,20 +352,38 @@ def _plan_item(
         so.message = reason[:500]
     so.save()
     if reason:
-        _alert_for(so, AlertKind.ORDER_FAILED, f"{order.order_number}: {reason}")
+        if reason in {COST_LIMIT_REASON, LOSS_REASON}:
+            limit = (
+                f" (limit {Decimal(mapping.max_cost_fils) / 1000:.3f} JOD)" if mapping.max_cost_fils is not None else ""
+            )
+            cost = f"{Decimal(so.cost_fils) / 1000:.3f} JOD" if so.cost_fils is not None else "?"
+            _alert_for(
+                so,
+                AlertKind.COST_LIMIT,
+                f"{order.order_number}: {reason} - 1Epin cost {cost}{limit}. Not bought automatically: "
+                "use 'Buy from 1Epin now' to buy anyway, or deliver another way.",
+            )
+        else:
+            _alert_for(so, AlertKind.ORDER_FAILED, f"{order.order_number}: {reason}")
         _audit(actor, "suppliers.order_skipped", so, reason=reason[:300])
     return so
 
 
 def plan_supplier_orders(order_id: int, *, actor=None) -> list[int]:
     """Create SupplierOrders for every eligible item without one (auto path). Returns ids to submit."""
+    return _plan_supplier_orders(order_id, actor=actor)[0]
+
+
+def _plan_supplier_orders(order_id: int, *, actor=None) -> tuple[list[int], int]:
+    """(ids to submit, number of items parked in MANUAL_REVIEW by a guard)."""
     to_submit: list[int] = []
+    parked = 0
     with transaction.atomic():
         order = Order.objects.select_for_update().filter(pk=order_id).first()
         if order is None or order.payment_status not in PAID_UNREFUNDED:
-            return []
+            return [], 0
         if order.fulfillment_status in {FulfillmentStatus.CANCELLED, FulfillmentStatus.COMPLETED}:
-            return []
+            return [], 0
         for item in order.items.select_related("product", "variant").order_by("id"):
             if SupplierOrder.objects.filter(order_item_id=item.id).exists():
                 continue  # the auto path never buys twice; staff use retry / buy now
@@ -326,7 +393,9 @@ def plan_supplier_orders(order_id: int, *, actor=None) -> list[int]:
             so = _plan_item(order, item, mapping, actor=actor)
             if so is not None and so.status == SupplierStatus.NOT_SUBMITTED:
                 to_submit.append(so.id)
-    return to_submit
+            elif so is not None:
+                parked += 1
+    return to_submit, parked
 
 
 # --- submit / check ------------------------------------------------------------------------
@@ -430,6 +499,7 @@ def check_supplier_order(so: SupplierOrder, *, actor=None) -> str:
         return "error"
     res = provider.client.check_order(so.supplier_ref)
     so.refresh_from_db()
+    previous_status, previous_code = so.status, so.order_status_code
     now = timezone.now()
     so.check_count += 1
     so.last_checked_at = now
@@ -443,8 +513,10 @@ def check_supplier_order(so: SupplierOrder, *, actor=None) -> str:
         if not so.placed:
             _save(so, result_code="08")
             return "not_found"
-        _save(so, status=SupplierStatus.MANUAL_REVIEW, result_code="08", message="1Epin cannot find this order (08)")
-        _alert_for(so, AlertKind.ORDER_FAILED, f"1Epin cannot find order {so.supplier_ref}")
+        already = previous_status == SupplierStatus.MANUAL_REVIEW and so.result_code == "08"
+        _save(so, status=SupplierStatus.MANUAL_REVIEW, result_code="08", message="1Epin cannot find this order")
+        if not already:
+            _alert_for(so, AlertKind.ORDER_FAILED, f"1Epin cannot find order {so.supplier_ref}")
         refresh_order_status(so.order_id)
         return "failed"
     if res.code != "00":
@@ -471,10 +543,14 @@ def check_supplier_order(so: SupplierOrder, *, actor=None) -> str:
         apply_completed(so.pk, pins, actor=actor)
         return "completed"
     if status_code == 2:
-        message = str(data.get("OrderStatusMessage") or "failed")[:200]
-        _save(so, status=SupplierStatus.FAILED, message=f"1Epin order failed: {message}"[:500])
-        _alert_for(so, AlertKind.ORDER_FAILED, f"1Epin order {so.supplier_ref} failed: {message}")
-        _audit(actor, "suppliers.order_failed", so)
+        raw = str(data.get("OrderStatusMessage") or "failed")[:200]
+        reason = readable_order_status(raw)
+        # "Check now" on an order that already failed: nothing new, so no new alert occurrence.
+        already = previous_status == SupplierStatus.FAILED and previous_code == 2
+        _save(so, status=SupplierStatus.FAILED, message=f"1Epin order failed: {reason}"[:500])
+        if not already:
+            _alert_for(so, AlertKind.ORDER_FAILED, f"1Epin order {so.supplier_ref} failed: {reason}")
+            _audit(actor, "suppliers.order_failed", so, raw_reason=raw)
         refresh_order_status(so.order_id)
         return "failed"
     message = str(data.get("OrderStatusMessage") or "Processing")[:200]
@@ -555,7 +631,8 @@ def apply_completed(so_id: int, pins: list[str], *, actor=None) -> SupplierOrder
         if so.kind == "topup":
             if item.delivered_at is None:
                 item.delivered_at = now
-                item.delivery_note = item.delivery_note or TOPUP_NOTE
+                if not item.delivery_note or _supplier_named(item.delivery_note):
+                    item.delivery_note = topup_note(order)
                 item.save(update_fields=["delivered_at", "delivery_note"])
                 queue_topup_delivered(order.id, item.id)
             _save(so, status=SupplierStatus.COMPLETED, completed_at=now, message="Top-up delivered by 1Epin")
@@ -640,7 +717,7 @@ def fulfill_from_supplier(order_id: int, *, actor=None, check: bool = True) -> l
     """Plan + place supplier orders for a paid order, then one immediate checkOrder each."""
     if not trading_enabled():
         return []
-    ids = plan_supplier_orders(order_id, actor=actor)
+    ids, parked = _plan_supplier_orders(order_id, actor=actor)
     results: list[SupplierOrder] = []
     for so_id in ids:
         so = submit_supplier_order(so_id, actor=actor)
@@ -648,7 +725,9 @@ def fulfill_from_supplier(order_id: int, *, actor=None, check: bool = True) -> l
             check_supplier_order(so, actor=actor)
             so.refresh_from_db()
         results.append(so)
-    if ids:
+    if ids or parked:
+        # A guard (e.g. the cost limit) parked an item: the order must show "Needs review", never
+        # stay in "Processing" waiting for a purchase that will not happen.
         refresh_order_status(order_id, actor=actor)
     return results
 

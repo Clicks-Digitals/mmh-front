@@ -389,7 +389,8 @@ class FulfillmentContractTests(OneEpinBase):
         self.assertEqual((add["user"], add["quantity"]), ("12345(678)", 1))
         so = SupplierOrder.objects.get()
         self.assertEqual(so.status, SupplierStatus.FAILED)
-        self.assertIn("wrong_player_id", so.message)
+        self.assertIn("Wrong player ID", so.message)
+        self.assertNotIn("wrong_player_id", so.message)  # readable; the raw code stays in the details
         order.refresh_from_db()
         self.assertEqual(order.fulfillment_status, FulfillmentStatus.MANUAL_REVIEW)
         self.assertTrue(SupplierAlert.objects.filter(kind="order_failed").exists())
@@ -574,7 +575,7 @@ class FulfillmentContractTests(OneEpinBase):
         self.run_supplier(order, fake)
         self.assertEqual(fake.calls, [])
         so = SupplierOrder.objects.get()
-        self.assertEqual((so.status, so.message), (SupplierStatus.MANUAL_REVIEW, "Supplier cost above limit"))
+        self.assertEqual((so.status, so.message), (SupplierStatus.MANUAL_REVIEW, "1Epin cost above your limit"))
         self.assertEqual(so.cost_fils, 4254)
         # Staff "Buy from supplier now" after seeing the cost: guard overridden.
         payload = auth_client(self.admin).get(f"/api/v1/admin/orders/{order.order_number}/").data
@@ -599,7 +600,7 @@ class FulfillmentContractTests(OneEpinBase):
         self.mapping(item=expensive)
         order = self.paid_order()
         self.run_supplier(order, FakeTransport())
-        self.assertEqual(SupplierOrder.objects.get().message, "Supplier cost above limit")
+        self.assertEqual(SupplierOrder.objects.get().message, "1Epin cost above our sale price")
         SupplierProductMapping.objects.update(allow_loss=True)
         order2 = self.paid_order()
         fake = FakeTransport(addOrder=DOC_ADD_ORDER_OK, checkOrder=DOC_CHECK_WAITING)

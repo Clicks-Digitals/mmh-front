@@ -305,6 +305,30 @@ def move_fulfillment(order: Order, target: str, *, actor=None, reason: str = "")
 _move_fulfillment = move_fulfillment  # back-compat
 
 
+def _resolve_supplier_alerts(order: Order, delivered_ids: list[int], *, codes_complete: bool) -> None:
+    """Delivered items close their open 1Epin alerts, whatever delivered them (never blocks)."""
+    if not delivered_ids and not codes_complete:
+        return
+    try:
+        from suppliers.services.alerts import resolve_delivered_item_alerts
+
+        with transaction.atomic():
+            resolve_delivered_item_alerts(order, delivered_ids, order_completed=codes_complete)
+    except Exception:  # noqa: BLE001 - alerts are advisory
+        logger.exception("Could not auto-resolve supplier alerts for order %s", order.order_number)
+
+
+def supplier_busy_item_ids(items) -> set[int]:
+    """Items with a 1Epin purchase in flight: own stock / staff codes must wait (never deliver twice)."""
+    try:
+        from suppliers.services.fulfillment import in_flight_item_ids
+
+        return in_flight_item_ids([i.id for i in items])
+    except Exception:  # noqa: BLE001 - supplier lookup must never block local delivery
+        logger.exception("in-flight supplier lookup failed")
+        return set()
+
+
 def recompute_fulfillment(order: Order, *, actor=None) -> str:
     """Re-derive fulfillment status from item delivery. Must run inside a transaction."""
     order = Order.objects.select_for_update().get(pk=order.pk)
@@ -315,11 +339,13 @@ def recompute_fulfillment(order: Order, *, actor=None) -> str:
     now = timezone.now()
     all_delivered = True
     code_short = False
+    delivered_ids: list[int] = []
     items = list(order.items.select_related("product").order_by("id"))
     for item in items:
         if _item_type(item) == FulfillmentType.CODE:
             assigned = assigned_code_count(item)
             if assigned >= item.quantity:
+                delivered_ids.append(item.id)
                 if item.delivered_at is None:
                     item.delivered_at = now
                     item.save(update_fields=["delivered_at"])
@@ -328,8 +354,11 @@ def recompute_fulfillment(order: Order, *, actor=None) -> str:
                 code_short = True
         elif item.delivered_at is None:
             all_delivered = False
+        else:
+            delivered_ids.append(item.id)
     if not items:
         all_delivered = False
+    _resolve_supplier_alerts(order, delivered_ids, codes_complete=not code_short and bool(items))
     if all_delivered:
         target = FulfillmentStatus.COMPLETED
     elif code_short:
@@ -370,13 +399,16 @@ def allocate_codes(order: Order, actor=None) -> AllocationResult:
     except Exception:  # noqa: BLE001 - supplier lookup must never block local delivery
         logger.exception("prefer_supplier lookup failed for order %s", order.order_number)
         supplier_first = set()
+    supplier_busy = supplier_busy_item_ids(items)
     for item in items:
         if _item_type(item) != FulfillmentType.CODE:
             continue
         have = assigned_code_count(item)
         need = item.quantity - have
-        if item.id in supplier_first:
-            need = 0  # mapping.prefer_supplier: 1Epin delivers this item (own stock is the fallback)
+        if item.id in supplier_first or item.id in supplier_busy:
+            # prefer_supplier: 1Epin delivers this item (own stock is the fallback); in flight: a
+            # 1Epin purchase may still deliver these codes - wait for it instead of delivering twice.
+            need = 0
         if need > 0:
             claimed = list(
                 DigitalCode.objects.select_for_update(skip_locked=True)
@@ -483,6 +515,13 @@ def _locked_paid_item(order: Order, item_id: int) -> tuple[Order, OrderItem]:
     return order, item
 
 
+def _assert_supplier_idle(item: OrderItem) -> None:
+    if item.id in supplier_busy_item_ids([item]):
+        from suppliers.services.fulfillment import IN_FLIGHT_ACTION_REASON
+
+        raise InventoryError(IN_FLIGHT_ACTION_REASON, status=409, code="supplier_in_flight")
+
+
 @transaction.atomic
 def attach_manual_code(order: Order, item_id: int, *, code: str, pin: str | None = None, actor=None) -> DigitalCode:
     """Attach a staff-entered code to a CODE item (e.g. bought from a supplier by hand)."""
@@ -494,6 +533,7 @@ def attach_manual_code(order: Order, item_id: int, *, code: str, pin: str | None
     order, item = _locked_paid_item(order, item_id)
     if _item_type(item) != FulfillmentType.CODE:
         raise InventoryError("Codes can only be attached to code items; mark top-ups delivered instead")
+    _assert_supplier_idle(item)
     code = (code or "").strip()
     pin = (pin or "").strip() or None
     if not code:

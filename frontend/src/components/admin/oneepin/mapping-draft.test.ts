@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DRAFT, draftFromMapping, estimateMargin, settingsFromDraft } from "@/components/admin/oneepin/mapping-draft";
+import {
+  DEFAULT_DRAFT,
+  draftFromMapping,
+  estimateMargin,
+  maxCostWarning,
+  settingsFromDraft,
+} from "@/components/admin/oneepin/mapping-draft";
 
 describe("mapping draft", () => {
   it("round-trips a mapping into the form", () => {
@@ -41,5 +47,14 @@ describe("mapping draft", () => {
     expect(estimateMargin(3000, "1", 2500)).toEqual({ costFils: 3000, marginFils: -500, marginPct: -20 });
     expect(estimateMargin(null, "1", 2500).costFils).toBeNull();
     expect(estimateMargin(1000, "x", 2500).costFils).toBeNull();
+  });
+
+  it("warns while typing a max cost below the current 1Epin cost", () => {
+    expect(maxCostWarning("4.000", 4254)).toMatch(/below 1Epin's current cost \(JOD 4\.254/);
+    expect(maxCostWarning("4.254", 4254)).toBeNull();
+    expect(maxCostWarning("5", 4254)).toBeNull();
+    expect(maxCostWarning("", 4254)).toBeNull();
+    expect(maxCostWarning("abc", 4254)).toBeNull();
+    expect(maxCostWarning("1", null)).toBeNull();
   });
 });

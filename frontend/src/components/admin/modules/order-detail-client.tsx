@@ -2,7 +2,7 @@
 
 import { useAdminAccess } from "@/components/admin/admin-access";
 import { RevealCodeDialog } from "@/components/admin/modules/reveal-code-dialog";
-import { OneEpinItemBlock } from "@/components/admin/oneepin/order-item-block";
+import { OneEpinItemBlock, itemSupplierOrder } from "@/components/admin/oneepin/order-item-block";
 import { ActionButton, MoreMenu, Notice } from "@/components/admin/ops/controls";
 import {
   attachItemCode,
@@ -15,6 +15,7 @@ import {
   resendDeliveryEmail,
   saveStaffNotes,
   transitionOrderStatus,
+  updateItemCustomerFields,
   type OrderAction,
   type OrderDetail,
   type OrderDetailItem,
@@ -189,6 +190,13 @@ function ItemCard({
   const summary = itemDeliverySummary(item, order);
   const delivered = item.codes_delivered ?? (item.codes ?? []).filter((c) => c.status !== "UNAVAILABLE").length;
   const notPaidReason = "Available once the order is paid.";
+  // Backend decides (e.g. disabled while a 1Epin purchase is in flight); fall back to "paid".
+  const staffAction = isCode ? item.staff_actions?.attach : item.staff_actions?.mark_delivered;
+  const actionEnabled = staffAction ? staffAction.enabled : paid;
+  const actionReason = staffAction ? staffAction.disabled_reason : paid ? "" : notPaidReason;
+  const supplierOrder = itemSupplierOrder(item);
+  const canEditFields = canFulfill && !isCode && paid && !item.delivered && !isOrderCancelled(order) && Boolean(onOrderUpdated);
+  const [editingFields, setEditingFields] = useState(false);
 
   return (
     <li className="py-3 text-sm">
@@ -232,8 +240,8 @@ function ItemCard({
               <ActionButton
                 small
                 label={isCode ? "Attach code" : "Mark delivered"}
-                enabled={paid}
-                reason={paid ? "" : notPaidReason}
+                enabled={actionEnabled}
+                reason={actionReason}
                 pending={pending}
                 onClick={isCode ? onAttach : onMarkDelivered}
               />
@@ -242,11 +250,29 @@ function ItemCard({
         </div>
       </div>
 
+      {item.review_reason ? (
+        <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900">
+          Needs a person: {item.review_reason}
+        </p>
+      ) : null}
+
       {fields.length ? (
         <div className="mt-2 rounded-lg bg-[#F7F8FC] px-3 py-2 text-xs">
-          <p className="mb-1 text-[11px] font-semibold text-[var(--clicks-muted)]">
-            {isCode ? "Details from the customer" : "Top-up details (where to deliver)"}
-          </p>
+          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold text-[var(--clicks-muted)]">
+              {isCode ? "Details from the customer" : "Top-up details (where to deliver)"}
+            </p>
+            {canEditFields ? (
+              <ActionButton
+                small
+                label="Edit top-up details"
+                enabled={!supplierOrder?.in_flight}
+                reason={supplierOrder?.in_flight ? "A 1Epin purchase is in progress — check it first" : ""}
+                pending={pending}
+                onClick={() => setEditingFields(true)}
+              />
+            ) : null}
+          </div>
           <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
             {fields.map((f) => (
               <div key={f.key} className="flex gap-2">
@@ -286,7 +312,112 @@ function ItemCard({
       ) : null}
 
       {onOrderUpdated ? <OneEpinItemBlock order={order} item={item} canFulfill={canFulfill} onOrderUpdated={onOrderUpdated} /> : null}
+      {editingFields && onOrderUpdated ? (
+        <EditTopupDetailsDialog
+          order={order}
+          item={item}
+          onClose={() => setEditingFields(false)}
+          onSaved={(next) => {
+            setEditingFields(false);
+            onOrderUpdated(next);
+          }}
+        />
+      ) : null}
     </li>
+  );
+}
+
+/** Editable rows: every field the customer filled in (labels from the order, keys as fallback). */
+export function editableFieldRows(item: OrderDetailItem): Array<{ key: string; label: string; value: string }> {
+  const rows: Array<{ key: string; label: string; value: string }> = [];
+  const seen = new Set<string>();
+  for (const detail of item.field_details ?? []) {
+    if (!detail.key || seen.has(detail.key)) continue;
+    seen.add(detail.key);
+    rows.push({ key: detail.key, label: detail.label_en || detail.key, value: detail.value == null ? "" : String(detail.value) });
+  }
+  for (const [key, raw] of Object.entries(item.customer_fields ?? {})) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({ key, label: key, value: raw == null ? "" : String(raw) });
+  }
+  return rows;
+}
+
+function EditTopupDetailsDialog({
+  order,
+  item,
+  onClose,
+  onSaved,
+}: {
+  order: OrderDetail;
+  item: OrderDetailItem;
+  onClose: () => void;
+  onSaved: (next: OrderDetail) => void;
+}) {
+  const token = useAdminToken();
+  const toast = useAdminToast();
+  const rows = editableFieldRows(item);
+  const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(rows.map((r) => [r.key, r.value])));
+  const [error, setError] = useState<{ message: string; field: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const changed = Object.fromEntries(
+    rows.filter((r) => (values[r.key] ?? "").trim() !== r.value.trim()).map((r) => [r.key, (values[r.key] ?? "").trim()]),
+  );
+  const dirty = Object.keys(changed).length > 0;
+
+  return (
+    <ConfirmDialog
+      open
+      title="Edit top-up details"
+      description="Correct what the customer typed (e.g. a wrong player ID) before retrying with 1Epin or delivering by hand. The change is checked like at checkout and recorded in the order history."
+      confirmLabel="Save details"
+      cancelLabel="Go back"
+      pending={saving}
+      confirmDisabled={!dirty}
+      onCancel={onClose}
+      onConfirm={() =>
+        void (async () => {
+          if (!token || !dirty) return;
+          setSaving(true);
+          setError(null);
+          try {
+            const next = await updateItemCustomerFields(token, order.order_number || order.id, item.id, changed);
+            toast.push("Top-up details saved", "success");
+            onSaved(next);
+          } catch (err) {
+            const body = (err as { body?: { field?: unknown } })?.body;
+            setError({
+              message: adminErrorSummary(err, "The details could not be saved."),
+              field: typeof body?.field === "string" ? body.field : "",
+            });
+          } finally {
+            setSaving(false);
+          }
+        })()
+      }
+    >
+      <div className="space-y-3">
+        {rows.map((row) => (
+          <FormField
+            key={row.key}
+            label={row.label}
+            htmlFor={`edit-field-${row.key}`}
+            error={error?.field === row.key ? error.message : undefined}
+          >
+            <input
+              id={`edit-field-${row.key}`}
+              autoComplete="off"
+              className={`${adminInputClass} font-mono`}
+              value={values[row.key] ?? ""}
+              maxLength={255}
+              onChange={(e) => setValues((v) => ({ ...v, [row.key]: e.target.value }))}
+            />
+          </FormField>
+        ))}
+        {error && !error.field ? <Notice tone="error">{error.message}</Notice> : null}
+      </div>
+    </ConfirmDialog>
   );
 }
 
@@ -606,14 +737,14 @@ export function OrderDetailClient({ id }: { id: string }) {
         actions={
           <>
             {canFulfill && paid && !cancelled && undeliveredCodeItems.length ? (
-              <button
-                type="button"
-                className="admin-btn admin-btn-primary"
-                disabled={pending}
+              <ActionButton
+                variant="primary"
+                label="Deliver codes from stock"
+                enabled={order.actions?.deliver_from_stock ? order.actions.deliver_from_stock.enabled : true}
+                reason={order.actions?.deliver_from_stock?.disabled_reason ?? ""}
+                pending={pending}
                 onClick={() => setConfirmFulfill(true)}
-              >
-                Deliver codes from stock
-              </button>
+              />
             ) : null}
             {canNotify && paid ? (
               <button

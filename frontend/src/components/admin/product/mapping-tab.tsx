@@ -141,6 +141,7 @@ export function MappingTab({
     return {
       id: v.id,
       product: String(v.product ?? slug),
+      productSlug: slug,
       productName: productName ?? v.product_name ?? "",
       name: v.name_en || v.sku,
       sku: v.sku,
@@ -154,7 +155,7 @@ export function MappingTab({
       <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Supplier (1Epin)</h2>
       <p className="mb-4 mt-0.5 max-w-3xl text-xs text-[var(--clicks-muted)]">
         Link a product option to a 1Epin product so 1Epin can deliver it when a customer pays. A link only counts as stock (keeps the
-        option on sale with no codes of our own) in live mode, with “Buy automatically” on and a recently synced catalog. Changes
+        option on sale with no codes of our own) in live mode — and in mock mode on a development computer — with “Buy automatically” on and a recently synced catalog. Changes
         here are saved immediately.
       </p>
 

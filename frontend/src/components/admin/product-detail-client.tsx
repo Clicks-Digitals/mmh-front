@@ -16,6 +16,7 @@ import { FormErrorSummary } from "@/components/admin/ui/form-field";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage, errorCode } from "@/components/admin/lib/errors";
+import { jodInputToFils } from "@/components/admin/lib/money";
 import {
   GENERAL_FIELD_LABELS,
   fieldDraftToPayload,
@@ -366,7 +367,11 @@ function ProductEditor({
   const showSave = canWrite && (tab === "general" || tab === "variants" || tab === "fields");
   const variantRows = variants
     .filter((v) => !v.delete && v.id)
-    .map((v) => ({ id: v.id!, sku: v.sku, name_en: v.name_en, price_fils: 0 }));
+    .map((v) => {
+      // The saved price is what customers pay now (unsaved edits are not live yet).
+      const saved = initial.variants.find((x) => x.id === v.id);
+      return { id: v.id!, sku: v.sku, name_en: v.name_en, price_fils: jodInputToFils(saved?.price ?? v.price) ?? 0 };
+    });
   const unsavedNote = dirty ? " Your unsaved changes will be discarded." : "";
 
   return (

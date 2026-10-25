@@ -126,7 +126,7 @@ class AdminSupplierEndpointTests(TestCase):
         self.assertEqual(set(res.data), STATUS_KEYS)
 
     def test_ping_without_credentials_is_not_ok(self):
-        with override_settings(ONEEPIN_EMAIL="", ONEEPIN_PASSWORD=""):
+        with override_settings(ONEEPIN_EMAIL="", ONEEPIN_PASSWORD="", SUPPLIER_MODE="test"):
             res = auth_client(self.admin).post("/api/v1/admin/1epin/ping/")
         self.assertEqual(res.status_code, 409)
         self.assertFalse(res.data["ok"])

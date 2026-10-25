@@ -26,7 +26,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 const PAGE_SIZE = 25;
-const DEFAULTS = { status: "", created_from: "", created_to: "", search: "" };
+const DEFAULTS = { status: "", created_from: "", created_to: "", search: "", needs_review: "" };
 
 export function canCheckSupplierOrder(status: string | null | undefined): boolean {
   return Boolean(status) && status !== "COMPLETED";
@@ -46,6 +46,7 @@ export function OneEpinOrdersClient() {
       created_from: s.created_from || undefined,
       created_to: s.created_to || undefined,
       search: s.search || undefined,
+      needs_review: s.needs_review === "1" ? 1 : undefined,
     });
     return { items: data.results ?? [], count: data.count ?? 0 };
   });
@@ -93,6 +94,16 @@ export function OneEpinOrdersClient() {
           <input type="date" className="admin-input h-9 w-auto!" value={state.created_to} onChange={(e) => set({ created_to: e.target.value })} />
         </label>
       </Filters>
+      {state.needs_review === "1" ? (
+        <div className="-mt-2 mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          <span>
+            Showing purchases that need a person: the latest attempt failed or stopped, and the customer&apos;s order is still open.
+          </span>
+          <button type="button" className="font-semibold text-[var(--clicks-blue)]" onClick={() => set({ needs_review: "" })}>
+            Show all
+          </button>
+        </div>
+      ) : null}
       <div className="-mt-2 mb-4 flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by status">
         <span className="text-[12px] text-[var(--clicks-muted)]">Status:</span>
         {SUPPLIER_ORDER_STATUSES.map((s) => {
@@ -181,7 +192,11 @@ export function OneEpinOrdersClient() {
             render: (r) => (r.quantity !== r.units ? `${r.quantity} (for ${r.units})` : r.quantity),
           },
           { key: "cost", header: "Cost", className: "tabular-nums whitespace-nowrap", render: (r) => jodText(r.cost_jod) },
-          { key: "status", header: "Status", render: (r) => <SupplierStatusBadge status={r.status} label={r.status_label} /> },
+          {
+            key: "status",
+            header: "Status",
+            render: (r) => <SupplierStatusBadge status={r.status} label={r.status_label} supersededBy={r.superseded ? r.superseded_by_attempt : null} />,
+          },
           {
             key: "message",
             header: "Message",

@@ -134,7 +134,7 @@ export function modeExplanation(mode: string | null | undefined): string {
     case "test":
       return "Test: we talk to 1Epin's test server with a test account. No real money is spent and codes are not real.";
     case "mock":
-      return "Mock (practice): 1Epin is simulated on our own server. Nothing leaves the shop, orders complete with fake codes. Safe for trying things out.";
+      return "Mock (practice): 1Epin is simulated on our own server. Nothing leaves the shop, orders complete with fake codes. On a development computer a product linked to 1Epin counts as in stock, so you can buy it end to end without importing codes. Safe for trying things out.";
     default:
       return "The mode is set by your developer on the server (SUPPLIER_MODE).";
   }
@@ -171,6 +171,19 @@ const STATUS: Record<string, { label: string; tone: Tone; help: string }> = {
 };
 
 export const SUPPLIER_ORDER_STATUSES = Object.keys(STATUS);
+
+/** An earlier attempt when a later one exists: shown as history, never as "Needs review". */
+export function supersededLabel(supersededBy: number | null | undefined): string {
+  return supersededBy ? `Replaced by attempt ${supersededBy}` : "";
+}
+
+/** Attempt numbers (of one order item) that a later attempt replaced (completed ones never are). */
+export function supersededAttempts(attempts: ReadonlyArray<{ attempt: number; status: string }>): Map<number, number> {
+  const latest = attempts.reduce((max, a) => Math.max(max, a.attempt), 0);
+  const out = new Map<number, number>();
+  for (const a of attempts) if (a.attempt < latest && a.status !== "COMPLETED") out.set(a.attempt, latest);
+  return out;
+}
 
 export function supplierStatusLabel(status: string | null | undefined, fallback?: string | null): string {
   if (!status) return fallback || "Not ordered from 1Epin";
@@ -225,6 +238,10 @@ export function alertKindLabel(kind: string | null | undefined, fallback?: strin
       return "Price changed";
     case "duplicate_code":
       return "Duplicate code";
+    case "cost_limit":
+      return "Cost above limit";
+    case "out_of_stock":
+      return "Out of stock after payment";
     default:
       return fallback || kind || "Alert";
   }
@@ -307,7 +324,8 @@ const STOCK_REASONS: Record<string, string> = {
   ignored: "This link is switched off (ignored).",
   unmapped_variant: "It is not linked to a specific product option.",
   supplier_inactive: "The 1Epin supplier is switched off.",
-  live_disabled: "1Epin is not in live mode, so it can't promise stock to customers.",
+  live_disabled:
+    "This mode doesn't buy from 1Epin on demand, so it can't promise stock to customers (test mode without ONEEPIN_TEST_COUNTS_AS_STOCK, or mock mode outside development).",
   unsupported_supplier: "Only 1Epin can buy automatically.",
   auto_buy_off: "“Buy automatically” is off.",
   catalog_missing: "1Epin doesn't list this product any more (or the catalog was never synced).",

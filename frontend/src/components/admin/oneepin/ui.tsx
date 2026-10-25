@@ -9,6 +9,7 @@ import {
   supplierStatusHelp,
   supplierStatusLabel,
   supplierStatusTone,
+  supersededLabel,
   type Tone,
 } from "@/components/admin/oneepin/labels";
 import { cn } from "@/lib/cn";
@@ -82,16 +83,19 @@ export function SupplierStatusBadge({
   status,
   label,
   withHelp,
+  supersededBy,
 }: {
   status: string | null | undefined;
   label?: string | null;
   withHelp?: boolean;
+  /** A later attempt replaced this one: history, not something to review. */
+  supersededBy?: number | null;
 }) {
-  const text = supplierStatusLabel(status, label);
-  const help = supplierStatusHelp(status);
+  const text = supersededBy ? supersededLabel(supersededBy) : supplierStatusLabel(status, label);
+  const help = supersededBy ? "A newer attempt took over for this item; nothing to do here." : supplierStatusHelp(status);
   return (
     <span className="inline-flex max-w-xs flex-col items-start gap-0.5">
-      <Badge tone={supplierStatusTone(status)} className="normal-case tracking-normal">
+      <Badge tone={supersededBy ? "neutral" : supplierStatusTone(status)} className="normal-case tracking-normal">
         <span title={help || undefined}>{text}</span>
       </Badge>
       {withHelp && help ? <span className="text-[11px] leading-snug text-[var(--clicks-muted)]">{help}</span> : null}

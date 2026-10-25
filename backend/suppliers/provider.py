@@ -31,6 +31,7 @@ logger = logging.getLogger("suppliers")
 
 LIVE_DISABLED_MESSAGE = "Live 1Epin is disabled: set SUPPLIER_MODE=live and ONEEPIN_ALLOW_LIVE=true."
 SUPPLIER_SLUG = "1epin"
+MOCK_CONNECTION_MESSAGE = "Simulator — no real 1Epin connection"
 
 RESULT_MESSAGES = {
     "00": "Success",
@@ -52,6 +53,43 @@ RESULT_MESSAGES = {
     "16": "Maximum quantity exceeded",
     "17": "Minimum quantity not met",
 }
+
+# checkOrder ``OrderStatusMessage`` values (failed orders) in plain English for staff. The raw value
+# stays in the stored response / ``raw_reason`` so nothing is lost.
+ORDER_STATUS_MESSAGES = {
+    "wrong_player_id": "Wrong player ID - 1Epin could not find this game account",
+    "wrong_user_id": "Wrong player ID - 1Epin could not find this game account",
+    "invalid_player_id": "Wrong player ID - 1Epin could not find this game account",
+    "player_not_found": "Wrong player ID - 1Epin could not find this game account",
+    "wrong_zone_id": "Wrong zone / server ID for this game account",
+    "wrong_server_id": "Wrong zone / server ID for this game account",
+    "wrong_region": "The game account is in a region this product does not support",
+    "region_mismatch": "The game account is in a region this product does not support",
+    "out_of_stock": "1Epin is out of stock for this product",
+    "no_stock": "1Epin is out of stock for this product",
+    "no_balance": "Not enough 1Epin balance",
+    "insufficient_balance": "Not enough 1Epin balance",
+    "timeout": "The game publisher did not answer in time",
+    "cancelled": "1Epin cancelled the order",
+    "canceled": "1Epin cancelled the order",
+    "refunded": "1Epin refunded the order",
+    "failed": "1Epin could not complete the order",
+}
+
+# Result codes whose 1Epin ResultMessage carries useful details (e.g. the refused IP address).
+KEEP_RAW_MESSAGE_CODES = {"02"}
+
+
+def readable_order_status(raw: Any) -> str:
+    """``wrong_player_id`` -> "Wrong player ID - ..."; unknown values are tidied up, never dropped."""
+    text = str(raw or "").strip()
+    if not text:
+        return "1Epin could not complete the order"
+    key = text.lower().replace("-", "_").replace(" ", "_")
+    if key in ORDER_STATUS_MESSAGES:
+        return ORDER_STATUS_MESSAGES[key]
+    tidy = text.replace("_", " ").strip()
+    return (tidy[:1].upper() + tidy[1:])[:200]
 
 
 class SupplierError(RuntimeError):
@@ -94,9 +132,36 @@ class OneEpinResult:
         if self.network_error:
             return f"Could not reach 1Epin: {self.network_error}"
         base = RESULT_MESSAGES.get(self.code, "")
-        if self.message and base and self.message.lower() not in base.lower():
+        if (
+            self.code in KEEP_RAW_MESSAGE_CODES
+            and self.message
+            and base
+            and self.message.lower() not in base.lower()
+        ):
             return f"{base} ({self.message})"[:480]
         return (base or self.message or f"1Epin result {self.code}")[:480]
+
+    @property
+    def log_message(self) -> str:
+        """Message for the API log: the order outcome for addOrder/checkOrder, not just "Success"."""
+        if not self.ok:
+            return self.readable
+        if self.method == "addOrder":
+            return "Order accepted by 1Epin"
+        if self.method == "checkOrder":
+            try:
+                status_code = int(self.data.get("OrderStatusCode"))
+            except (TypeError, ValueError):
+                status_code = None
+            if status_code == 1:
+                pins = self.data.get("PinCodes") or []
+                count = len(pins) if isinstance(pins, list) else 0
+                return f"Order completed ({count} PIN(s))" if count else "Order completed"
+            if status_code == 2:
+                return f"Order failed: {readable_order_status(self.data.get('OrderStatusMessage'))}"[:480]
+            if status_code == 0:
+                return "Order still processing at 1Epin"
+        return self.message or "Success"
 
 
 def normalize_code(value: Any) -> str:
@@ -499,7 +564,7 @@ class OneEpinProvider:
             supplier,
             result.method,
             result.ok,
-            result.readable if not result.ok else (result.message or "Success"),
+            result.log_message,
             result.http_status,
             result_code=result.code,
             order_number=order_number,
@@ -551,7 +616,12 @@ class MockSupplierProvider(OneEpinProvider):
 
     def check_connection(self) -> dict:
         bal = self.get_balance()
-        return {"ok": bal.ok, "mode": "mock", "message": "Mock Mode - simulated 1Epin (no real purchases).", "code": bal.code}
+        return {
+            "ok": bal.ok,
+            "mode": "mock",
+            "message": MOCK_CONNECTION_MESSAGE if bal.ok else bal.message,
+            "code": bal.code,
+        }
 
 
 def live_enabled() -> bool:

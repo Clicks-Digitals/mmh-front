@@ -60,11 +60,18 @@ def trading_disabled_reason() -> str:
 
 
 def mapping_stock_mode_ok() -> bool:
-    """D10: mappings count as stock only in live mode (or test/mock with ONEEPIN_TEST_COUNTS_AS_STOCK)."""
+    """D10: mappings count as stock in live mode; in test mode only with ONEEPIN_TEST_COUNTS_AS_STOCK.
+
+    Mock mode (development only, where the simulator really "buys") counts them too, so a linked
+    product without local codes can be bought end to end on a laptop.
+    """
     if not trading_enabled():
         return False
-    if supplier_mode() == "live":
+    mode = supplier_mode()
+    if mode == "live":
         return True
+    if mode == "mock":
+        return bool(getattr(settings, "IS_DEVELOPMENT", False))
     return bool(getattr(settings, "ONEEPIN_TEST_COUNTS_AS_STOCK", False))
 
 

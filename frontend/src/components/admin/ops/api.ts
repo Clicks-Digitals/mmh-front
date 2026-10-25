@@ -50,7 +50,11 @@ export type OrderActions = {
   cancel: OrderAction;
   complete: OrderAction;
   refund: RefundAction;
+  /** "Deliver codes from stock" (disabled while a 1Epin purchase is in flight). */
+  deliver_from_stock?: { label?: string; enabled: boolean; disabled_reason: string; visible?: boolean };
 };
+
+export type ItemStaffAction = { enabled: boolean; disabled_reason: string };
 
 export type OrderFieldDetail = {
   key: string;
@@ -101,6 +105,10 @@ export type OrderDetailItem = {
   available_codes_for_variant?: number | null;
   sellable_codes_for_variant?: number | null;
   codes?: OrderItemCode[];
+  /** Attach code (CODE) / Mark delivered (top-up) with the reason when not possible. */
+  staff_actions?: { attach?: ItemStaffAction; mark_delivered?: ItemStaffAction };
+  /** Why this item needs a person ("" when nothing is wrong). */
+  review_reason?: string;
 };
 
 export type OrderPayment = Payment & {
@@ -259,6 +267,20 @@ export function markItemDelivered(token: string, id: number | string, itemId: nu
     token,
     method: "POST",
     body: JSON.stringify({ note }),
+  });
+}
+
+/** Staff correct the customer's top-up details (validated like checkout, audited). */
+export function updateItemCustomerFields(
+  token: string,
+  id: number | string,
+  itemId: number | string,
+  fields: Record<string, string>,
+) {
+  return adminFetch<OrderDetail>(orderPath(id, `items/${encodeURIComponent(String(itemId))}/customer-fields/`), {
+    token,
+    method: "PATCH",
+    body: JSON.stringify({ fields }),
   });
 }
 

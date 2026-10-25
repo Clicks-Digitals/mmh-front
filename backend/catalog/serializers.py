@@ -243,6 +243,8 @@ class VariantSerializer(serializers.ModelSerializer):
     available_quantity = serializers.SerializerMethodField()
     product_name = serializers.CharField(source="product.name_en", read_only=True)
     fulfillment_type = serializers.CharField(source="product.fulfillment_type", read_only=True)
+    product_slug = serializers.CharField(source="product.slug", read_only=True)
+    product_status = serializers.CharField(source="product.status", read_only=True)
 
     class Meta:
         model = ProductVariant
@@ -250,6 +252,8 @@ class VariantSerializer(serializers.ModelSerializer):
             "id",
             "product",
             "product_name",
+            "product_slug",
+            "product_status",
             "fulfillment_type",
             "sku",
             "external_id",

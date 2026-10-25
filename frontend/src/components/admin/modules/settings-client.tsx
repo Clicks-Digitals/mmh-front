@@ -11,8 +11,44 @@ import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage, adminFieldErrors } from "@/components/admin/lib/errors";
 import { useAdminQuery } from "@/hooks/use-admin-query";
-import { deleteSiteImage, getSiteSettings, updateSiteSettings, uploadSiteImage, type SiteImageTarget, type SiteSettings } from "@/lib/api/admin";
-import { useState } from "react";
+import {
+  asList,
+  deleteSiteImage,
+  getSiteSettings,
+  listBanners,
+  updateSiteSettings,
+  uploadSiteImage,
+  type Banner,
+  type SiteImageTarget,
+  type SiteSettings,
+} from "@/lib/api/admin";
+import { useAdminAccess } from "@/components/admin/admin-access";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+
+/** Live banners on the home page hide the home picture (the store shows the banner instead). */
+export function liveHomeBanners(banners: ReadonlyArray<Pick<Banner, "placement" | "status" | "published">>): number {
+  return banners.filter((b) => (b.placement ?? "HOME").toUpperCase() === "HOME" && b.status === "live").length;
+}
+
+function useLiveHomeBannerCount(token: string | undefined, enabled: boolean): number {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    if (!token || !enabled) return;
+    let cancelled = false;
+    listBanners(token, { page_size: 100 })
+      .then((data) => {
+        if (!cancelled) setCount(liveHomeBanners(asList(data).items));
+      })
+      .catch(() => {
+        // Advisory only: without banner access the note is simply not shown.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, enabled]);
+  return enabled ? count : 0;
+}
 
 // Shown on the storefront Contact page, footer, and floating chat buttons. Empty = hidden.
 const CONTACT_FIELDS = [
@@ -208,6 +244,9 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
 /** Store logo and home picture — uploaded here, bundled defaults until then. */
 function BrandPictures({ settings, token, onChanged }: { settings: SiteSettings; token?: string; onChanged: (s: SiteSettings) => void }) {
   const toast = useAdminToast();
+  const { can } = useAdminAccess();
+  const canBanners = can("content.read");
+  const liveBanners = useLiveHomeBannerCount(token, canBanners);
   const upload = async (target: SiteImageTarget, file: File) => {
     if (!token) return;
     onChanged(await uploadSiteImage(token, target, file));
@@ -246,6 +285,14 @@ function BrandPictures({ settings, token, onChanged }: { settings: SiteSettings;
         onUpload={(file) => upload("hero", file)}
         onRemove={() => remove("hero")}
       />
+      {liveBanners > 0 ? (
+        <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          A banner is showing on the home page — the home picture appears only when no banner is live.{" "}
+          <Link href="/admin/banners" className="font-semibold text-[var(--clicks-blue)] underline-offset-2 hover:underline">
+            Open Banners
+          </Link>
+        </p>
+      ) : null}
       <p className="text-[11px] text-[var(--clicks-muted)]">
         The home picture fills the top of the home page whenever no home banner is live. The logo appears in the header, footer and promo strip.
       </p>

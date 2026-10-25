@@ -1,6 +1,6 @@
 "use client";
 
-import { PayPalCheckout } from "@/components/checkout/paypal-checkout";
+import { PAYMENT_HANDLED, PayPalCheckout } from "@/components/checkout/paypal-checkout";
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/context/language-context";
 import { usePayPalConfig } from "@/hooks/use-paypal-config";
@@ -241,7 +241,7 @@ export function PaymentStep({
               const code = err instanceof ApiError ? apiErrorCode(err) : "";
               if (code === "already_paid") {
                 onPaid(current.orderNumber);
-                throw new Error("ALREADY_PAID");
+                throw new Error(PAYMENT_HANDLED);
               }
               if (code === "out_of_stock") {
                 setPrepared(null);
@@ -252,13 +252,13 @@ export function PaymentStep({
                   field: "",
                   lines: err instanceof ApiError ? parseStockLines(err.body) : [],
                 });
-                throw new Error("ALREADY_PAID");
+                throw new Error(PAYMENT_HANDLED);
               }
               if (code === "order_not_payable") {
                 setPrepared(null);
                 attempt.current = null;
                 fail({ code: "order_not_payable", message: "", field: "" });
-                throw new Error("ALREADY_PAID");
+                throw new Error(PAYMENT_HANDLED);
               }
               throw err;
             }

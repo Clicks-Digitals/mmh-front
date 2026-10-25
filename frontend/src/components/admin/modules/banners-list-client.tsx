@@ -9,6 +9,7 @@ import { DataTable } from "@/components/admin/ui/data-table";
 import { EmptyState } from "@/components/admin/ui/empty-state";
 import { ErrorState } from "@/components/admin/ui/error-state";
 import { Filters } from "@/components/admin/ui/filters";
+import { imageFileError } from "@/components/admin/ui/entity-image-field";
 import { FormField, adminInputClass } from "@/components/admin/ui/form-field";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { Pagination } from "@/components/admin/ui/pagination";
@@ -230,6 +231,12 @@ export function BannersListClient() {
 
   async function upload(target: "desktop" | "mobile", file: File) {
     if (!token || !editing) return;
+    // Same browser check as the other picture fields (type + size); the server checks again.
+    const fileError = imageFileError(file);
+    if (fileError) {
+      toast.push(fileError, "error");
+      return;
+    }
     setUploading(target);
     try {
       const updated = await uploadBannerImage(token, editing.id, file, target);

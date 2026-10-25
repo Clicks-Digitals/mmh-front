@@ -64,9 +64,20 @@ function loadPayPalSdk(src: string) {
   return promise;
 }
 
+/**
+ * Thrown by a `createOrder` callback that already showed its own message (already paid, out of
+ * stock, not payable). PayPal's own onError / onCancel that follow are then ignored, so they can
+ * never replace that message with a generic one (or with nothing).
+ */
+export const PAYMENT_HANDLED = "ALREADY_PAID";
+
+export function isHandledPaymentError(error: unknown): boolean {
+  return error instanceof Error && error.message === PAYMENT_HANDLED;
+}
+
 function errorText(error: unknown, fallback: string) {
   if (error instanceof ApiError) return error.message;
-  if (error instanceof Error && error.message && error.message !== "ALREADY_PAID") return error.message;
+  if (error instanceof Error && error.message && !isHandledPaymentError(error)) return error.message;
   return fallback;
 }
 
@@ -119,6 +130,8 @@ export function PayPalCheckout({
     if (!container) return;
     let cancelled = false;
     const busy = { current: false };
+    // The current attempt's createOrder already reported its problem: swallow PayPal's echoes.
+    const handled = { current: false };
 
     void (async () => {
       try {
@@ -159,9 +172,11 @@ export function PayPalCheckout({
             }
           },
           onCancel() {
+            if (handled.current) return;
             onCancelRef.current();
           },
           onError(error) {
+            if (handled.current || isHandledPaymentError(error)) return;
             onErrorRef.current(errorText(error, t("checkout.paypalUnavailable")));
           },
         });
@@ -171,10 +186,15 @@ export function PayPalCheckout({
         button.addEventListener("click", () => {
           if (busy.current) return;
           busy.current = true;
+          handled.current = false;
+          const order = createOrderRef.current().catch((error: unknown) => {
+            if (isHandledPaymentError(error)) handled.current = true;
+            throw error;
+          });
           void session
-            .start({ presentationMode: "auto" }, createOrderRef.current())
+            .start({ presentationMode: "auto" }, order)
             .catch((error: unknown) => {
-              if (error instanceof Error && error.message === "ALREADY_PAID") return;
+              if (handled.current || isHandledPaymentError(error)) return;
               onErrorRef.current(errorText(error, t("checkout.paypalUnavailable")));
             })
             .finally(() => {

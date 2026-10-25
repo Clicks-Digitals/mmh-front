@@ -85,3 +85,15 @@ export function estimateMargin(
   const marginPct = saleFils ? Math.round((marginFils * 10000) / saleFils) / 100 : null;
   return { costFils, marginFils, marginPct };
 }
+
+/**
+ * Live warning while typing a max cost: below today's 1Epin cost for one of our units means the
+ * automatic purchase would be skipped right away. null = no warning (empty / invalid / unknown cost).
+ */
+export function maxCostWarning(maxCostInput: string, costFils: number | null | undefined): string | null {
+  if (!maxCostInput.trim() || costFils === null || costFils === undefined) return null;
+  const limit = jodInputToFils(maxCostInput);
+  if (limit === null || Number.isNaN(limit)) return null;
+  if (limit >= costFils) return null;
+  return `This is below 1Epin's current cost (JOD ${(costFils / 1000).toFixed(3)} for one of ours): automatic purchases for this option would be skipped and orders would wait for a person.`;
+}

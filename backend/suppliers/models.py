@@ -189,6 +189,8 @@ class AlertKind(models.TextChoices):
     ORDER_FAILED = "order_failed", "Supplier order failed"
     PRICE_CHANGE = "price_change", "Price change"
     DUPLICATE_CODE = "duplicate_code", "Duplicate code"
+    COST_LIMIT = "cost_limit", "Cost above limit"
+    OUT_OF_STOCK = "out_of_stock", "Out of stock after payment"
 
 
 class SupplierAlert(models.Model):

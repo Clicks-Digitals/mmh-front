@@ -7,8 +7,9 @@
 * A supplier mapping counts as stock (D-1E-10) only when it is not ignored, linked to a
   variant, its supplier is the active 1Epin supplier, ``auto_buy`` is on, the mapped product is
   active in the synced 1Epin catalog of the current mode and was seen by a sync < 48 h ago, and
-  the mode can really buy: ``SUPPLIER_MODE=live`` + ``ONEEPIN_ALLOW_LIVE`` + credentials, or
-  test/mock mode with ``ONEEPIN_TEST_COUNTS_AS_STOCK=true`` (staging rehearsals).
+  the mode can really buy: ``SUPPLIER_MODE=live`` + ``ONEEPIN_ALLOW_LIVE`` + credentials, test
+  mode with ``ONEEPIN_TEST_COUNTS_AS_STOCK=true`` (staging rehearsals), or mock mode in
+  development (the simulator delivers, so linked products are buyable locally).
 * DIRECT_TOPUP variants follow the manual ``stock_status`` only.
 """
 
@@ -30,7 +31,7 @@ MAPPING_REASON_MESSAGES = {
     "ignored": "Ignored mapping - it does not count as stock.",
     "unmapped_variant": "Not linked to a variant - it does not count as stock.",
     "supplier_inactive": "Supplier is inactive - this mapping does not count as stock.",
-    "live_disabled": "Live purchasing is disabled (mock/test mode) - this mapping does not count as stock.",
+    "live_disabled": "This mode does not buy from 1Epin on demand (test mode without ONEEPIN_TEST_COUNTS_AS_STOCK, or mock outside development) - this mapping does not count as stock.",
     "unsupported_supplier": "Only 1Epin mappings can be bought automatically - it does not count as stock.",
     "auto_buy_off": "Auto-buy is off - this mapping does not count as stock.",
     "catalog_missing": "Not in the synced 1Epin catalog (or no longer sold) - it does not count as stock.",

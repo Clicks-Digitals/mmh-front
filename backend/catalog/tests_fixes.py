@@ -340,7 +340,7 @@ class SupplierMappingStockRuleTests(FixBase):
     def _public_variant(self):
         return self.client.get("/api/v1/catalog/products/fx-map/").json()["variants"][0]
 
-    @override_settings(ONEEPIN_ALLOW_LIVE=False, SUPPLIER_MODE="mock")
+    @override_settings(ONEEPIN_ALLOW_LIVE=False, SUPPLIER_MODE="mock", ONEEPIN_MOCK_FULFILLMENT=False)
     def test_live_disabled(self):
         row = self._mapping_row()
         self.assertFalse(row["counts_as_stock"])

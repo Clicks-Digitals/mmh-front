@@ -176,6 +176,8 @@ export type OneEpinMapping = {
   supplier_name?: string;
   product: string;
   product_name: string | null;
+  /** Product web address: admin product endpoints are addressed by slug, not id. */
+  product_slug?: string | null;
   variant: number | null;
   variant_name: string | null;
   variant_sku: string | null;
@@ -282,6 +284,11 @@ export type SupplierOrderRow = {
   player_user: string;
   status: SupplierOrderStatus | string;
   status_label: string;
+  /** A later attempt exists for the same item (shown as "Replaced by attempt N"). */
+  superseded?: boolean;
+  superseded_by_attempt?: number | null;
+  /** Raw 1Epin reason (e.g. "wrong_player_id") behind the readable message. */
+  raw_reason?: string;
   placed: boolean;
   result_code: string;
   order_status_code: number | null;
@@ -379,6 +386,12 @@ export type ItemSupplierOrder = {
   mapped: boolean;
   mapping_id: number | null;
   updated_at: string | null;
+  kind?: "epin" | "topup";
+  /** Top-ups: the player value a new purchase sends (rendered user template). */
+  player_user?: string | null;
+  player_user_error?: string;
+  /** Raw 1Epin reason (e.g. "wrong_player_id") behind the readable message. */
+  raw_reason?: string;
   actions: {
     check: ItemAction;
     retry: ItemAction;

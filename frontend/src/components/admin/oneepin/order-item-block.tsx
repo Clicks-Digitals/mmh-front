@@ -82,6 +82,11 @@ export function OneEpinItemBlock({
           <p className="text-[11px] font-semibold text-[var(--clicks-muted)]">1Epin</p>
           <SupplierStatusBadge status={so.status} label={so.status_label} withHelp />
           {so.message ? <p className="text-[var(--clicks-text)]">{so.message}</p> : null}
+          {so.raw_reason ? (
+            <p className="text-[11px] text-[var(--clicks-muted)]">
+              1Epin said: <span className="font-mono">{so.raw_reason}</span>
+            </p>
+          ) : null}
           <p className="text-[11px] text-[var(--clicks-muted)]">
             {so.external_order_number ? (
               <>
@@ -142,6 +147,7 @@ export function OneEpinItemBlock({
         onCancel={() => setConfirm(null)}
         onConfirm={() => void run("retry")}
       >
+        <PlayerBox so={so} />
         {quote ? <QuoteBox quote={quote} /> : null}
       </ConfirmDialog>
 
@@ -155,9 +161,29 @@ export function OneEpinItemBlock({
         onCancel={() => setConfirm(null)}
         onConfirm={() => void run("buy")}
       >
+        <PlayerBox so={so} />
         {quote ? <QuoteBox quote={quote} /> : <p className="text-[13px] text-[var(--clicks-muted)]">No price available — sync the 1Epin catalog first.</p>}
       </ConfirmDialog>
     </div>
+  );
+}
+
+/** Top-ups: the exact player value 1Epin will receive, so a wrong ID is caught before paying. */
+function PlayerBox({ so }: { so: ItemSupplierOrder }) {
+  if (so.kind !== "topup") return null;
+  if (so.player_user_error) {
+    return (
+      <p role="alert" className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+        {so.player_user_error}. Fix it with “Edit top-up details” on the item first.
+      </p>
+    );
+  }
+  if (!so.player_user) return null;
+  return (
+    <p className="mb-2 rounded-lg bg-[#F7F8FC] px-3 py-2 text-[13px]">
+      Player ID sent to 1Epin: <span className="font-mono font-semibold text-[var(--clicks-navy)]">{so.player_user}</span>
+      <span className="block text-[11px] text-[var(--clicks-muted)]">Wrong? Close this and use “Edit top-up details” on the item.</span>
+    </p>
   );
 }
 

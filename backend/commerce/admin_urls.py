@@ -20,6 +20,7 @@ from commerce.views import (
     AdminOrderStaffNotesView,
     AdminPaymentExportView,
     AdminOrderItemCodeView,
+    AdminOrderItemCustomerFieldsView,
     AdminOrderItemDeliveredView,
     AdminOrderResendEmailView,
     AdminOrderTransitionView,
@@ -54,6 +55,7 @@ urlpatterns = [
     path("orders/<str:pk>/fulfill/", AdminOrderFulfillView.as_view()),
     path("orders/<str:pk>/items/<int:item_id>/codes/", AdminOrderItemCodeView.as_view()),
     path("orders/<str:pk>/items/<int:item_id>/mark-delivered/", AdminOrderItemDeliveredView.as_view()),
+    path("orders/<str:pk>/items/<int:item_id>/customer-fields/", AdminOrderItemCustomerFieldsView.as_view()),
     path("orders/<str:pk>/resend-email/", AdminOrderResendEmailView.as_view()),
     path("", include(router.urls)),
 ]

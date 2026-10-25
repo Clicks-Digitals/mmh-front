@@ -9,7 +9,37 @@ from suppliers.models import IN_FLIGHT_STATUSES, SupplierOrder, SupplierStatus
 from suppliers.services.config import fils_display, trading_disabled_reason, trading_enabled
 
 
-def supplier_order_payload(so: SupplierOrder) -> dict:
+def latest_attempts(item_ids) -> dict[int, int]:
+    """{order_item_id: highest attempt number}."""
+    from django.db.models import Max
+
+    ids = [int(i) for i in item_ids if i]
+    if not ids:
+        return {}
+    rows = SupplierOrder.objects.filter(order_item_id__in=ids).values("order_item_id").annotate(m=Max("attempt"))
+    return {row["order_item_id"]: row["m"] for row in rows}
+
+
+def raw_reason(so: SupplierOrder) -> str:
+    """The raw 1Epin reason behind the readable message (OrderStatusMessage or ResultCode)."""
+    check = (so.response_payload or {}).get("checkOrder") or {}
+    if so.order_status_code == 2 and check.get("OrderStatusMessage"):
+        return str(check["OrderStatusMessage"])[:200]
+    if so.result_code and so.result_code not in {"00", "07"}:
+        add = (so.response_payload or {}).get("addOrder") or {}
+        message = str(add.get("ResultMessage") or "").strip()
+        return f"{so.result_code} {message}".strip()[:200]
+    return ""
+
+
+def supplier_order_payload(so: SupplierOrder, *, latest_attempts: dict | None = None) -> dict:
+    latest = (latest_attempts or {}).get(so.order_item_id)
+    if latest_attempts is None:
+        latest = (
+            SupplierOrder.objects.filter(order_item_id=so.order_item_id).order_by("-attempt").values_list("attempt", flat=True).first()
+        )
+    superseded_by = latest if (latest and latest > so.attempt and so.status != SupplierStatus.COMPLETED) else None
+    label = SupplierStatus(so.status).label if so.status in SupplierStatus.values else so.status
     return {
         "id": so.id,
         "order_id": so.order_id,
@@ -25,7 +55,11 @@ def supplier_order_payload(so: SupplierOrder) -> dict:
         "units": so.units,
         "player_user": so.player_user,
         "status": so.status,
-        "status_label": SupplierStatus(so.status).label if so.status in SupplierStatus.values else so.status,
+        "status_label": f"Replaced by attempt {superseded_by}" if superseded_by else label,
+        # An earlier attempt when a later one exists: history, not something to review.
+        "superseded": bool(superseded_by),
+        "superseded_by_attempt": superseded_by,
+        "raw_reason": raw_reason(so),
         "placed": so.placed,
         "result_code": so.result_code,
         "order_status_code": so.order_status_code,
@@ -48,6 +82,17 @@ def supplier_order_payload(so: SupplierOrder) -> dict:
         "created_at": so.created_at,
         "updated_at": so.updated_at,
     }
+
+
+def _player_user_preview(item, mapping) -> tuple[str | None, str]:
+    if item.product.fulfillment_type == FulfillmentType.CODE or mapping is None:
+        return None, ""
+    from suppliers.services.mapping import TemplateError, render_user
+
+    try:
+        return render_user(mapping.user_template, item.customer_fields, item.field_details), ""
+    except TemplateError as exc:
+        return None, str(exc)
 
 
 def _action(enabled: bool, reason: str = "", **extra) -> dict:
@@ -105,6 +150,7 @@ def item_supplier_payload(item, *, order=None) -> dict | None:
     if not buy_reason and latest is not None and latest.status != SupplierStatus.MANUAL_REVIEW:
         buy_reason = "Use Retry with supplier"
     quote = buy_now_quote(item) if mapping is not None and not delivered else {}
+    player_user, player_user_error = _player_user_preview(item, mapping)
     return {
         "supplier_order_id": latest.id if latest else None,
         "status": latest.status if latest else None,
@@ -119,6 +165,11 @@ def item_supplier_payload(item, *, order=None) -> dict | None:
         "attempts": attempts,
         "mapped": mapping is not None,
         "mapping_id": mapping.id if mapping else None,
+        "kind": "epin" if is_code else "topup",
+        # Top-ups: the player/user value a new purchase will send (rendered mapping.user_template).
+        "player_user": player_user,
+        "player_user_error": player_user_error,
+        "raw_reason": raw_reason(latest) if latest else "",
         "updated_at": latest.updated_at if latest else None,
         "actions": {
             "check": check,

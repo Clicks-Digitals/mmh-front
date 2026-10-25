@@ -139,7 +139,8 @@ and `9002` (e-pin that stays "Processing" for 60 s). A top-up with player id `00
   allows re-sending, always with the **same** orderNumber (`07` = already placed -> checked). Staff
   "Retry with supplier" (new attempt) is only possible after a definitive failure.
 * `1 Completed` -> PINs stored encrypted as codes (source ONEEPIN; duplicates are never delivered and
-  raise an alert; surplus PINs go to stock) / top-up marked delivered ("Delivered via 1Epin").
+  raise an alert; surplus PINs go to stock) / top-up marked delivered with the neutral customer note "Your top-up has been added to your game account."
+  (Arabic for Arabic orders; the supplier is never named to the customer).
   `2 failed` -> FAILED + alert; `04` -> manual review + low-balance alert; `02/03` -> config alert;
   `01/05/06/09/11-17` -> manual review with the readable reason; `10` -> retried after the window.
 * Money guard: no auto-buy when the JOD cost exceeds `max_cost_fils` (per unit) or the sale price (unless

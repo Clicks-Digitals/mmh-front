@@ -896,6 +896,9 @@ class AdminVariantViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, views
         ftype = (self.request.query_params.get("fulfillment_type") or "").upper()
         if ftype:
             qs = qs.filter(product__fulfillment_type=ftype)
+        if str(self.request.query_params.get("exclude_archived") or "").lower() in {"1", "true", "yes"}:
+            # Pickers (e.g. the 1Epin link dialog) never offer archived products.
+            qs = qs.exclude(product__status=PublishStatus.ARCHIVED)
         return qs
 
     def get_serializer_context(self):

@@ -198,8 +198,20 @@ def _item_delivery_state(item: OrderItem) -> str:
     return "pending"
 
 
+def customer_delivery_note(item: OrderItem) -> str:
+    """The note the customer sees. Never names the supplier: an old automatic note such as
+    "Delivered via 1Epin" is shown as the neutral top-up note in the order's language."""
+    note = (item.delivery_note or "").strip()
+    if note and "1epin" in note.lower():
+        from suppliers.services.fulfillment import topup_note
+
+        return topup_note(item.order)
+    return note
+
+
 class OrderItemSerializer(serializers.ModelSerializer):
     fulfillment_type = serializers.CharField(source="product.fulfillment_type", read_only=True)
+    delivery_note = serializers.SerializerMethodField()
     delivered = serializers.SerializerMethodField()
     delivery_state = serializers.SerializerMethodField()
     codes_delivered = serializers.SerializerMethodField()
@@ -236,6 +248,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "delivery_note",
             "codes",
         )
+
+    def get_delivery_note(self, obj: OrderItem) -> str:
+        return customer_delivery_note(obj)
 
     def get_delivered(self, obj: OrderItem) -> bool:
         return _item_delivered(obj)
@@ -719,6 +734,8 @@ class AdminOrderItemSerializer(OrderItemSerializer):
     show_delivery_method = serializers.SerializerMethodField()
     delivery_state_label = serializers.SerializerMethodField()
     supplier_order = serializers.SerializerMethodField()
+    staff_actions = serializers.SerializerMethodField()
+    review_reason = serializers.SerializerMethodField()
 
     class Meta(OrderItemSerializer.Meta):
         fields = OrderItemSerializer.Meta.fields + (
@@ -728,7 +745,56 @@ class AdminOrderItemSerializer(OrderItemSerializer):
             "available_codes_for_variant",
             "sellable_codes_for_variant",
             "supplier_order",
+            "staff_actions",
+            "review_reason",
         )
+
+    def _supplier_busy(self, obj: OrderItem) -> bool:
+        busy = self.context.get("supplier_busy_ids")
+        if busy is None:
+            from commerce.services.inventory import supplier_busy_item_ids
+
+            busy = supplier_busy_item_ids([obj])
+        return obj.id in busy
+
+    def get_staff_actions(self, obj: OrderItem) -> dict:
+        """attach (CODE) / mark_delivered (top-up) with enabled + disabled_reason (D8)."""
+        from suppliers.services.fulfillment import IN_FLIGHT_ACTION_REASON
+
+        paid = obj.order.payment_status in PAID_UNREFUNDED and obj.order.fulfillment_status != FulfillmentStatus.CANCELLED
+        is_code = obj.product.fulfillment_type == FulfillmentType.CODE
+        if not paid:
+            reason = "Available once the order is paid."
+        elif _item_delivered(obj):
+            reason = "Already delivered."
+        elif is_code and self._supplier_busy(obj):
+            reason = IN_FLIGHT_ACTION_REASON
+        else:
+            reason = ""
+        key = "attach" if is_code else "mark_delivered"
+        return {key: {"enabled": not reason, "disabled_reason": reason}}
+
+    def get_review_reason(self, obj: OrderItem) -> str:
+        """Why this undelivered item needs a person ("" when nothing is wrong)."""
+        order = obj.order
+        if order.payment_status not in PAID_UNREFUNDED or order.fulfillment_status in {
+            FulfillmentStatus.COMPLETED,
+            FulfillmentStatus.CANCELLED,
+        }:
+            return ""
+        if _item_delivered(obj):
+            return ""
+        from suppliers.models import IN_FLIGHT_STATUSES
+        from suppliers.services.fulfillment import NEEDS_REVIEW_STATUSES, latest_supplier_order
+
+        latest = latest_supplier_order(obj.id)
+        if latest is not None and latest.status in NEEDS_REVIEW_STATUSES:
+            return latest.message or "The 1Epin purchase needs a decision"
+        if obj.product.fulfillment_type == FulfillmentType.CODE and (latest is None or latest.status not in IN_FLIGHT_STATUSES):
+            from commerce.services.fulfillment import OUT_OF_STOCK_AFTER_PAYMENT
+
+            return OUT_OF_STOCK_AFTER_PAYMENT
+        return ""
 
     def get_supplier_order(self, obj: OrderItem):
         """1Epin status + staff actions for this item (None when the item is not supplier-related)."""
@@ -889,6 +955,7 @@ class AdminOrderSerializer(serializers.ModelSerializer):
             refund_reason = "Only paid orders can be refunded."
         else:
             refund_reason = ""
+        actions["deliver_from_stock"] = self._deliver_from_stock_action(obj)
         actions["refund"] = {
             "label": "Refund",
             "enabled": not refund_reason,
@@ -898,6 +965,34 @@ class AdminOrderSerializer(serializers.ModelSerializer):
             "via": "paypal" if summary["provider"] == "paypal" else "manual",
         }
         return actions
+
+    def _deliver_from_stock_action(self, obj: Order) -> dict:
+        from suppliers.services.fulfillment import IN_FLIGHT_ACTION_REASON
+
+        waiting = [
+            i
+            for i in obj.items.all()
+            if i.product.fulfillment_type == FulfillmentType.CODE and not _item_delivered(i)
+        ]
+        busy = self.context.get("supplier_busy_ids")
+        if busy is None:
+            from commerce.services.inventory import supplier_busy_item_ids
+
+            busy = supplier_busy_item_ids(waiting)
+        if obj.payment_status not in PAID_UNREFUNDED or obj.fulfillment_status == FulfillmentStatus.CANCELLED:
+            reason = "Available once the order is paid."
+        elif not waiting:
+            reason = "No code items are waiting for codes."
+        elif all(i.id in busy for i in waiting):
+            reason = IN_FLIGHT_ACTION_REASON
+        else:
+            reason = ""
+        return {
+            "label": "Deliver codes from stock",
+            "enabled": not reason,
+            "disabled_reason": reason,
+            "visible": bool(waiting),
+        }
 
     def get_display(self, obj: Order) -> dict:
         summary = self._summary(obj)
@@ -928,9 +1023,12 @@ def admin_order_payload(order: Order) -> dict:
         .get(pk=order.pk)
     )
     code_variants = [i.variant_id for i in order.items.all() if i.product.fulfillment_type == FulfillmentType.CODE]
+    from commerce.services.inventory import supplier_busy_item_ids
+
     context = {
         "available_counts": raw_available_code_counts(code_variants),
         "sellable_counts": available_code_counts(code_variants),
+        "supplier_busy_ids": supplier_busy_item_ids(list(order.items.all())),
     }
     return AdminOrderSerializer(order, context=context).data
 
@@ -1227,8 +1325,9 @@ def audit_entry_payload(entry: AuditLog) -> dict:
 def _oneepin_dashboard() -> dict | None:
     """1Epin balance warning for the dashboard (D-1E-8). Cached values only, no network."""
     try:
-        from suppliers.models import SupplierAlert, SupplierOrder, SupplierStatus
+        from suppliers.models import SupplierAlert
         from suppliers.provider import to_decimal
+        from suppliers.services.fulfillment import needs_review_order_count
         from suppliers.services.alerts import is_low
         from suppliers.services.config import supplier_mode
 
@@ -1242,7 +1341,7 @@ def _oneepin_dashboard() -> dict | None:
             "balance_checked_at": connection.last_checked_at if connection else None,
             "low_balance": is_low(to_decimal(balance)),
             "open_alerts": SupplierAlert.objects.filter(resolved=False).count(),
-            "manual_review_orders": SupplierOrder.objects.filter(status=SupplierStatus.MANUAL_REVIEW).count(),
+            "manual_review_orders": needs_review_order_count(),
         }
     except Exception:  # noqa: BLE001 - the dashboard must render
         logger.exception("Could not build the 1Epin dashboard block")
@@ -1577,6 +1676,8 @@ ORDER_HISTORY_LABELS = {
     "orders.manual_review": "Moved to needs review",
     "orders.resend_email": "Delivery e-mail resent",
     "orders.staff_notes": "Staff notes edited",
+    "orders.customer_fields_changed": "Top-up details corrected",
+    "orders.out_of_stock_after_payment": "Out of stock after payment",
     "codes.customer_reveal": "Customer viewed codes",
     "codes.refund_retired": "Codes retired after refund",
     "codes.reveal": "Staff revealed a code",
@@ -1623,7 +1724,17 @@ class AdminOrderFulfillView(_AdminFulfillBase):
     """POST admin/orders/<id>/fulfill/ -> re-run inventory allocation (e.g. after importing stock)."""
 
     def post(self, request, pk):
+        from commerce.services.inventory import supplier_busy_item_ids
+        from suppliers.services.fulfillment import IN_FLIGHT_ACTION_REASON
+
         order = get_admin_order(pk)
+        waiting = [
+            i
+            for i in order.items.select_related("product")
+            if i.product.fulfillment_type == FulfillmentType.CODE and not _item_delivered(i)
+        ]
+        if waiting and all(i.id in supplier_busy_item_ids(waiting) for i in waiting):
+            return Response({"detail": IN_FLIGHT_ACTION_REASON, "code": "supplier_in_flight"}, status=409)
         try:
             result = allocate_codes(order, actor=request.user)
         except InventoryError as exc:
@@ -1684,6 +1795,78 @@ class AdminOrderItemDeliveredView(_AdminFulfillBase):
             mark_item_delivered(order, item_id, note=serializer.validated_data.get("note") or "", actor=request.user)
         except InventoryError as exc:
             return self._error(exc)
+        return Response(admin_order_payload(order))
+
+
+class AdminItemCustomerFieldsSerializer(serializers.Serializer):
+    fields = serializers.DictField(child=serializers.CharField(allow_blank=True, max_length=255), allow_empty=False)
+
+
+class AdminOrderItemCustomerFieldsView(_AdminFulfillBase):
+    """PATCH admin/orders/<id>/items/<item_id>/customer-fields/ {fields: {key: value}}
+
+    Staff correct the customer's top-up details (e.g. a wrong player id) before retrying a 1Epin
+    purchase. Values are validated against the product's field definitions like at checkout and
+    every change is audited (old -> new). Not allowed once delivered or while 1Epin is working.
+    """
+
+    def patch(self, request, pk, item_id: int):
+        from django.db import transaction
+
+        from commerce.services.checkout import CheckoutError, _validate_fields
+        from commerce.services.inventory import supplier_busy_item_ids
+        from suppliers.services.fulfillment import IN_FLIGHT_ACTION_REASON
+
+        order = get_admin_order(pk)
+        serializer = AdminItemCustomerFieldsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(pk=order.pk)
+            item = order.items.select_related("product").filter(pk=item_id).first()
+            if item is None:
+                return Response({"detail": "Order item not found", "code": "not_found"}, status=404)
+            if order.fulfillment_status == FulfillmentStatus.CANCELLED:
+                return Response({"detail": "Order is cancelled", "code": "cancelled"}, status=409)
+            if _item_delivered(item):
+                return Response(
+                    {"detail": "This item is already delivered: its details can no longer change", "code": "item_complete"},
+                    status=409,
+                )
+            if item.id in supplier_busy_item_ids([item]):
+                return Response({"detail": IN_FLIGHT_ACTION_REASON, "code": "supplier_in_flight"}, status=409)
+            known = {f.key for f in item.product.fields.all()}
+            submitted = serializer.validated_data["fields"]
+            unknown = sorted(k for k in submitted if k not in known)
+            if unknown:
+                return Response(
+                    {"detail": f"Unknown field(s): {', '.join(unknown)}", "code": "unknown_field", "field": unknown[0]},
+                    status=400,
+                )
+            merged = {**(item.customer_fields or {}), **submitted}
+            try:
+                cleaned, details = _validate_fields(item.product, merged)
+            except CheckoutError as exc:
+                return Response(
+                    {"detail": exc.message, "code": getattr(exc, "code", "") or "invalid_field", "field": getattr(exc, "field", None)},
+                    status=400,
+                )
+            before = dict(item.customer_fields or {})
+            changes = {
+                key: {"from": before.get(key, ""), "to": cleaned.get(key, "")}
+                for key in sorted(set(before) | set(cleaned))
+                if str(before.get(key, "")) != str(cleaned.get(key, ""))
+            }
+            if changes:
+                item.customer_fields = cleaned
+                item.field_details = details
+                item.save(update_fields=["customer_fields", "field_details"])
+                AuditLog.objects.create(
+                    actor=request.user,
+                    action="orders.customer_fields_changed",
+                    entity_type="Order",
+                    entity_id=str(order.id),
+                    meta={"order_number": order.order_number, "item_id": item.id, "changes": changes},
+                )
         return Response(admin_order_payload(order))
 
 
