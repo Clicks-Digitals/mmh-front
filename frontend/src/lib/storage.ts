@@ -1,5 +1,6 @@
 export const STORAGE_KEYS = {
   cart: "mmh-cart",
+  coupon: "mmh-cart-coupon",
   wishlist: "mmh-wishlist",
   locale: "mmh-locale",
   recentSearches: "mmh-recent-searches",

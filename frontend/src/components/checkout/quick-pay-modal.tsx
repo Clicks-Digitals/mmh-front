@@ -86,7 +86,7 @@ export function QuickPayModal({
         </button>
 
         <div className="flex items-center gap-3 pe-10">
-          <span className="flex h-12 w-12 items-center justify-center rounded-full border border-line bg-elevated text-brand-deep">
+          <span className="flex h-12 w-12 items-center justify-center rounded-full border border-line bg-elevated text-gold">
             <ShoppingBag className="h-6 w-6" />
           </span>
           <h2 className="text-xl font-bold tracking-tight">{t("buy.payTitle")}</h2>
@@ -127,7 +127,7 @@ export function QuickPayModal({
                 autoComplete="email"
                 value={emailInput}
                 onChange={(event) => setEmail(event.target.value)}
-                hint={t("checkout.contactHint")}
+                hint={t(payload.product.fulfillmentType === "direct_topup" ? "checkout.contactHintTopup" : "checkout.contactHint")}
                 error={(showErrors && errors.email) || fieldServerError("email") || undefined}
               />
               <Field
@@ -139,7 +139,7 @@ export function QuickPayModal({
               />
               <p className="text-xs text-muted">
                 {t("checkout.signInOptional")}{" "}
-                <Link href={`/login?callbackUrl=${encodeURIComponent(pathname || "/")}`} className="font-semibold text-brand-deep hover:text-fg">
+                <Link href={`/login?callbackUrl=${encodeURIComponent(pathname || "/")}`} className="font-semibold text-gold hover:text-fg">
                   {t("account.signIn")}
                 </Link>
               </p>

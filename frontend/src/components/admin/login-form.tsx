@@ -3,6 +3,7 @@
 import { getSession, signIn, signOut } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
+import { LOGIN_ERROR_MESSAGES, loginErrorMessage, safeAdminRedirect } from "@/components/admin/ops/auth-helpers";
 
 export function AdminLoginForm() {
   const router = useRouter();
@@ -20,14 +21,23 @@ export function AdminLoginForm() {
           setPending(true);
           setError("");
           const data = new FormData(event.currentTarget);
-          const result = await signIn("credentials", {
-            email: String(data.get("email") ?? ""),
-            password: String(data.get("password") ?? ""),
-            redirect: false,
-          });
-          if (!result?.ok) {
+          let result: Awaited<ReturnType<typeof signIn>> | undefined;
+          try {
+            result = await signIn("credentials", {
+              email: String(data.get("email") ?? ""),
+              password: String(data.get("password") ?? ""),
+              portal: "admin",
+              redirect: false,
+            });
+          } catch {
             setPending(false);
-            setError("Invalid email or password.");
+            setError("Sign-in is not available right now. Try again in a minute.");
+            return;
+          }
+          // next-auth reports failures in `error` / `code` (ok can still be true).
+          if (!result || result.error || !result.ok) {
+            setPending(false);
+            setError(loginErrorMessage(result));
             return;
           }
 
@@ -35,12 +45,12 @@ export function AdminLoginForm() {
           if (session?.user?.kind !== "ADMIN") {
             await signOut({ redirect: false });
             setPending(false);
-            setError("This account is not an administrator.");
+            setError(LOGIN_ERROR_MESSAGES.not_staff);
             return;
           }
 
           setPending(false);
-          router.push(params.get("from") || "/admin");
+          router.push(safeAdminRedirect(params.get("from")));
           router.refresh();
         }}
       >
@@ -56,7 +66,7 @@ export function AdminLoginForm() {
           </div>
         </div>
         <h1 className="mt-6 text-[1.25rem] font-semibold tracking-tight text-[var(--clicks-navy)]">Sign in</h1>
-        <p className="mt-1 text-[13px] text-[var(--clicks-muted)]">Use your administrator credentials.</p>
+        <p className="mt-1 text-[13px] text-[var(--clicks-muted)]">Use your staff e-mail and password.</p>
         <label className="mt-6 block text-[12px] font-medium text-[var(--clicks-text)]">
           Email
           <input
@@ -80,13 +90,18 @@ export function AdminLoginForm() {
             <button
               type="button"
               className="absolute end-2.5 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[var(--clicks-blue)]"
+              aria-label={passwordVisible ? "Hide password" : "Show password"}
               onClick={() => setPasswordVisible((value) => !value)}
             >
               {passwordVisible ? "Hide" : "Show"}
             </button>
           </span>
         </label>
-        {error ? <p className="mt-3 text-[13px] text-[var(--clicks-error)]">{error}</p> : null}
+        {error ? (
+          <p role="alert" className="mt-3 text-[13px] text-[var(--clicks-error)]">
+            {error}
+          </p>
+        ) : null}
         <button type="submit" disabled={pending} className="admin-btn admin-btn-primary mt-6 h-10 w-full">
           {pending ? "Signing in…" : "Sign in"}
         </button>

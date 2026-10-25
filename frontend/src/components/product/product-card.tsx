@@ -57,7 +57,7 @@ export function ProductCard({
               <ProductCover
                 product={product}
                 shot="cover"
-                label={locale === "ar" ? product.nameAr : product.name}
+                label={product.imageAlts?.[0] || (locale === "ar" ? product.nameAr : product.name)}
                 showTypeBadge={false}
               />
             </div>
@@ -136,7 +136,7 @@ export function ProductCard({
             <ProductCover
               product={product}
               shot="cover"
-              label={locale === "ar" ? product.nameAr : product.name}
+              label={product.imageAlts?.[0] || (locale === "ar" ? product.nameAr : product.name)}
               showTypeBadge={false}
               className={list ? "aspect-auto h-full min-h-[132px] sm:min-h-[200px]" : undefined}
             />
@@ -194,7 +194,7 @@ export function ProductCard({
           </div>
         ) : null}
         <div className="mt-2 flex items-end justify-between gap-2 sm:mt-3 sm:gap-3">
-          <Price amount={product.priceJod} compareAt={product.compareAtPriceJod} locale={locale} className="[&>span:first-child]:text-brand-deep" />
+          <Price amount={product.priceJod} compareAt={product.compareAtPriceJod} locale={locale} className="[&>span:first-child]:text-gold" />
           <span className="hidden sm:inline">
             <StockBadge
               inStock={product.inStock}
@@ -360,7 +360,7 @@ export function ProductRail({ products }: { products: Product[] }) {
             disabled={!canPrev}
             aria-label={t("common.previous")}
           >
-            <ChevronLeft className="h-5 w-5 rtl:rotate-180" />
+            <ChevronLeft className="h-5 w-5 rtl-flip" />
           </button>
           <button
             type="button"
@@ -372,7 +372,7 @@ export function ProductRail({ products }: { products: Product[] }) {
             disabled={!canNext}
             aria-label={t("common.next")}
           >
-            <ChevronRight className="h-5 w-5 rtl:rotate-180" />
+            <ChevronRight className="h-5 w-5 rtl-flip" />
           </button>
         </>
       ) : null}

@@ -1,13 +1,22 @@
 "use client";
 
 import { useAdminAccess } from "@/components/admin/admin-access";
+import { Notice } from "@/components/admin/ops/controls";
+import { Badge } from "@/components/admin/ui/badge";
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
 import { EmptyState } from "@/components/admin/ui/empty-state";
 import { ErrorState } from "@/components/admin/ui/error-state";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage } from "@/components/admin/lib/errors";
-import { roleLabel } from "@/components/admin/lib/roles";
+import {
+  permissionDescription,
+  permissionFlags,
+  permissionTitle,
+  privilegedRoleWarning,
+  roleDescription,
+  roleLabel,
+} from "@/components/admin/lib/roles";
 import { useAdminQuery } from "@/hooks/use-admin-query";
 import { listPermissions, listRoles, updateRolePermissions, type RoleInfo } from "@/lib/api/admin";
 import { ApiError } from "@/lib/api/client";
@@ -90,8 +99,8 @@ export function RolesListClient() {
         title="Roles"
         description={
           isSuperAdmin
-            ? "What each admin role may do. Changes apply to every admin with that role on their next page load."
-            : "What each admin role may do. Only a super admin can change role permissions."
+            ? "What each staff role may do. Changes apply at once to everyone with that role."
+            : "What each staff role may do. Only a super admin can change them."
         }
         actions={
           selected && !readOnly ? (
@@ -125,24 +134,36 @@ export function RolesListClient() {
               >
                 {role.label || roleLabel(role.role)}
                 <span className="ms-1 text-[11px] font-normal text-[var(--clicks-muted)]">
-                  {role.permissions.includes("*") ? "· all" : `· ${role.permissions.length}`}
+                  {role.permissions.includes("*") ? "· everything" : `· ${role.permissions.length} permissions`}
                 </span>
+                {roleDescription(role.role) ? (
+                  <span className="mt-0.5 block text-[11px] font-normal leading-snug text-[var(--clicks-muted)]">
+                    {roleDescription(role.role)}
+                  </span>
+                ) : null}
               </button>
             ))}
           </div>
           <div className="rounded-xl border border-[var(--clicks-border)] bg-white p-4">
-            <p className="font-semibold text-[var(--clicks-navy)]">{current?.label || selected}</p>
-            <p className="mt-1 font-mono text-xs text-[var(--clicks-muted)]">{selected}</p>
+            <p className="font-semibold text-[var(--clicks-navy)]">{current?.label || roleLabel(selected)}</p>
+            {roleDescription(selected) ? (
+              <p className="mt-1 text-[13px] text-[var(--clicks-muted)]">{roleDescription(selected)}</p>
+            ) : null}
+            {privilegedRoleWarning(selected) ? (
+              <Notice tone="warning" className="mt-3">
+                {privilegedRoleWarning(selected)}
+              </Notice>
+            ) : null}
             {isFixed ? (
               <p className="mt-4 rounded-lg bg-[var(--clicks-bg)] px-3 py-2 text-sm text-[var(--clicks-muted)]">
-                Super admins always have every permission (“*”). This role cannot be edited.
+                Super admins can always do everything. This role cannot be changed.
               </p>
             ) : !isSuperAdmin ? (
               <p className="mt-3 text-xs text-[var(--clicks-muted)]">Read-only — only a super admin can edit permissions.</p>
             ) : null}
             {unknown.length ? (
               <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
-                Unknown permission keys rejected by the server: {unknown.join(", ")}
+                Some permissions were not accepted by the server: {unknown.map((k) => permissionTitle(k)).join(", ")}
               </p>
             ) : null}
             {!isFixed ? (
@@ -161,9 +182,15 @@ export function RolesListClient() {
                       checked={draft.has(perm.key)}
                       onChange={() => togglePerm(perm.key)}
                     />
-                    <span>
-                      <span className="font-medium text-[var(--clicks-navy)]">{perm.description || perm.key}</span>
-                      <span className="mt-0.5 block font-mono text-[11px] text-[var(--clicks-muted)]">{perm.key}</span>
+                    <span className="min-w-0" title={perm.key}>
+                      <span className="flex flex-wrap items-center gap-1.5 font-medium text-[var(--clicks-navy)]">
+                        {permissionTitle(perm.key, perm.description)}
+                        {permissionFlags(perm.key).includes("money") ? <Badge tone="error">Money</Badge> : null}
+                        {permissionFlags(perm.key).includes("secret") ? <Badge tone="warning">Secret codes</Badge> : null}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] text-[var(--clicks-muted)]">
+                        {permissionDescription(perm.key, perm.description)}
+                      </span>
                     </span>
                   </label>
                 ))}
@@ -176,8 +203,17 @@ export function RolesListClient() {
       <ConfirmDialog
         open={confirmSave}
         title={`Save ${selected ? roleLabel(selected) : ""} permissions?`}
-        description="Every administrator with this role gains or loses these permissions immediately."
-        confirmLabel="Save"
+        description={`Everyone with the ${selected ? roleLabel(selected) : ""} role gains or loses these permissions right away.${
+          draft.has("orders.write") && !current?.permissions.includes("orders.write")
+            ? " They will be able to refund and cancel orders."
+            : ""
+        }${
+          draft.has("codes.reveal") && !current?.permissions.includes("codes.reveal")
+            ? " They will be able to see full secret codes."
+            : ""
+        }`}
+        confirmLabel="Save permissions"
+        cancelLabel="Go back"
         pending={pending}
         onCancel={() => setConfirmSave(false)}
         onConfirm={() => void save()}

@@ -1,10 +1,10 @@
 "use client";
 
+import { CouponBox } from "@/components/cart/coupon-box";
 import { UsdEstimate } from "@/components/checkout/payment-step";
 import { ProductCover } from "@/components/product/product-artwork";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Field } from "@/components/ui/field";
 import { Price } from "@/components/ui/price";
 import { QuantitySelector } from "@/components/ui/quantity-selector";
 import { useCart } from "@/context/cart-context";
@@ -12,34 +12,40 @@ import { useLanguage } from "@/context/language-context";
 import { useToast } from "@/context/toast-context";
 import { useWishlist } from "@/context/wishlist-context";
 import { getProductById } from "@/data/products";
-import { cartHasRegionLocked, lineLimits, lineProblem, lineProblemKey, linePrice, maskAccountValue } from "@/lib/cart";
+import { CustomerFieldInput } from "@/components/product/customer-field-input";
+import {
+  cartHasRegionLocked,
+  lineDenomination,
+  lineFieldsText,
+  lineLimits,
+  lineProblem,
+  lineProblemKey,
+  linePrice,
+} from "@/lib/cart";
 import { formatDiscount } from "@/lib/coupon";
-import { customerFieldError, fieldErrorKey } from "@/lib/validation";
+import { lowStockCount } from "@/lib/quantity";
+import { customerFieldsValid, normalizeFieldValue } from "@/lib/validation";
 import type { CartItem, Product } from "@/types";
 import Link from "next/link";
 import { useState } from "react";
 
 function LineEditor({ item, product, onDone }: { item: CartItem; product: Product; onDone: () => void }) {
-  const { t, locale } = useLanguage();
+  const { t } = useLanguage();
   const { updateItemDigital } = useCart();
   const [values, setValues] = useState<Record<string, string>>(item.digital?.customerFields ?? {});
   const [submitted, setSubmitted] = useState(false);
   const fieldDefs = product.digitalOptions.requiredCustomerFields;
-  const errors = Object.fromEntries(fieldDefs.map((field) => [field.id, customerFieldError(field, values[field.id] ?? "")]));
-  const valid = Object.values(errors).every((error) => error === null);
+  const valid = customerFieldsValid(fieldDefs, values);
 
   return (
     <div className="mt-3 space-y-3 rounded-[10px] border border-line bg-card p-3">
       {fieldDefs.map((field) => (
-        <Field
+        <CustomerFieldInput
           key={field.id}
-          label={`${locale === "ar" ? field.labelAr || field.label : field.label}${field.required ? " *" : ""}`}
-          type={field.type === "email" ? "email" : field.type === "tel" ? "tel" : "text"}
-          placeholder={locale === "ar" ? field.placeholderAr : field.placeholder}
+          field={field}
           value={values[field.id] ?? ""}
-          maxLength={200}
-          error={submitted && errors[field.id] ? t(fieldErrorKey(errors[field.id])) : undefined}
-          onChange={(event) => setValues((current) => ({ ...current, [field.id]: event.target.value }))}
+          showError={submitted}
+          onChange={(value) => setValues((current) => ({ ...current, [field.id]: value }))}
         />
       ))}
       <div className="flex flex-wrap gap-2">
@@ -50,7 +56,7 @@ function LineEditor({ item, product, onDone }: { item: CartItem; product: Produc
               if (!valid || !item.digital) return;
               const cleaned = Object.fromEntries(
                 Object.entries(values)
-                  .map(([key, value]) => [key, value.trim()] as const)
+                  .map(([key, value]) => [key, normalizeFieldValue(value)] as const)
                   .filter(([, value]) => value),
               );
               updateItemDigital(item.lineId, { ...item.digital, customerFields: cleaned });
@@ -69,25 +75,10 @@ function LineEditor({ item, product, onDone }: { item: CartItem; product: Produc
 }
 
 export function CartPageView() {
-  const {
-    items,
-    updateQty,
-    removeItem,
-    subtotal,
-    total,
-    discountFils,
-    totalFils,
-    applyPromo,
-    removePromo,
-    promoError,
-    promoChecking,
-    promoCode,
-    hydrated,
-  } = useCart();
-  const { toggle } = useWishlist();
+  const { items, updateQty, removeItem, subtotal, total, discountFils, totalFils, promoCode, hydrated } = useCart();
+  const { add: addToWishlist } = useWishlist();
   const { t, locale } = useLanguage();
   const { push } = useToast();
-  const [code, setCode] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
 
   if (!hydrated) return <div className="container-mmh py-16 text-muted">{t("common.loading")}</div>;
@@ -125,11 +116,8 @@ export function CartPageView() {
               );
             }
             const limits = lineLimits(item, product);
-            const fieldsText = product.digitalOptions.requiredCustomerFields
-              .map((field) => item.digital?.customerFields?.[field.id])
-              .filter(Boolean)
-              .map((value) => maskAccountValue(value))
-              .join(" · ");
+            const fieldsText = lineFieldsText(item, product, locale);
+            const left = lowStockCount(lineDenomination(item, product)?.availableQuantity);
             return (
               <div key={item.lineId} className="mb-3 rounded-[12px] border border-line bg-card p-4">
                 <div className="flex gap-3 sm:gap-4">
@@ -153,6 +141,7 @@ export function CartPageView() {
                       {fieldsText ? ` · ${fieldsText}` : ""}
                     </p>
                     {problem ? <p className="mt-1 text-xs text-danger">{t(lineProblemKey(problem), { max: limits.max })}</p> : null}
+                    {!problem && left ? <p className="mt-1 text-xs text-amber">{t("stock.onlyNLeft", { count: left })}</p> : null}
                     <div className="mt-3 flex flex-wrap items-center gap-3">
                       <QuantitySelector
                         value={item.quantity}
@@ -168,8 +157,9 @@ export function CartPageView() {
                         type="button"
                         className="text-xs text-muted"
                         onClick={() => {
-                          toggle(product.id);
+                          addToWishlist(product.id);
                           removeItem(item.lineId);
+                          push({ title: t("cart.movedToWishlist"), tone: "success" });
                         }}
                       >
                         {t("cart.moveWishlist")}
@@ -212,30 +202,7 @@ export function CartPageView() {
           </div>
         </dl>
         <UsdEstimate totalFils={totalFils} className="mt-2 text-xs text-muted" />
-        {promoCode ? (
-          <div className="mt-4 flex items-center justify-between rounded-xl border border-success/30 bg-success/10 px-3 py-2 text-sm">
-            <span className="font-semibold text-success">{promoCode}</span>
-            <button type="button" className="text-xs text-muted hover:text-fg" onClick={removePromo}>
-              {t("cart.promoRemove")}
-            </button>
-          </div>
-        ) : (
-          <form
-            className="mt-4"
-            onSubmit={async (event) => {
-              event.preventDefault();
-              const result = await applyPromo(code);
-              if (result === "ok") push({ title: t("cart.promoOk"), tone: "success" });
-            }}
-          >
-            <Field label={t("cart.promo")} value={code} onChange={(event) => setCode(event.target.value)} maxLength={64} />
-            <Button type="submit" variant="secondary" className="mt-2 w-full" disabled={promoChecking || !code.trim()}>
-              {promoChecking ? t("cart.promoChecking") : t("cart.promoApply")}
-            </Button>
-          </form>
-        )}
-        {promoError === "invalid" ? <p className="mt-2 text-xs text-danger">{t("cart.promoBad")}</p> : null}
-        {promoError === "unavailable" ? <p className="mt-2 text-xs text-danger">{t("cart.promoUnavailable")}</p> : null}
+        <CouponBox />
         <Button className="mt-5 w-full" href={blocked ? undefined : "/checkout"} disabled={blocked}>
           {t("cart.checkout")}
         </Button>

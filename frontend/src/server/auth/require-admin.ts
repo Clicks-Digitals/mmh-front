@@ -51,6 +51,10 @@ export async function requireAdmin(permission?: PermissionKey): Promise<AdminUse
     redirect("/admin/login");
   }
 
+  // The API token could not be refreshed (expired refresh token, revoked session): every
+  // panel request would fail, so ask for a new sign-in instead of rendering empty pages.
+  if (!session.user.accessToken) redirect("/admin/login?reason=session");
+
   const fresh = await loadFreshAccess(session.user.accessToken);
   if (fresh?.revoked) redirect("/admin/login?reason=session");
 

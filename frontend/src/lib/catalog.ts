@@ -84,6 +84,26 @@ export function sortProducts(products: Product[], sort: SortOption): Product[] {
   }
 }
 
+/**
+ * ST-26: price filter bounds — negatives become 0 and a min above the max is swapped.
+ * `adjusted` tells the UI to explain the change.
+ */
+export function normalizePriceRange(
+  min: number | undefined,
+  max: number | undefined,
+): { min: number | undefined; max: number | undefined; adjusted: boolean } {
+  const clean = (value: number | undefined) =>
+    typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : undefined;
+  let low = clean(min);
+  let high = clean(max);
+  let adjusted = low !== min || high !== max;
+  if (typeof low === "number" && typeof high === "number" && low > high) {
+    [low, high] = [high, low];
+    adjusted = true;
+  }
+  return { min: low, max: high, adjusted };
+}
+
 export function parseFilterParams(
   searchParams: Record<string, string | string[] | undefined>,
 ): FilterState {
@@ -104,8 +124,10 @@ export function parseFilterParams(
     brand: pick("brand") ?? "",
     type: (pick("type") as FilterState["type"]) || "",
     kind: (pick("kind") as FilterState["kind"]) || "",
-    min: min ? Number(min) : undefined,
-    max: max ? Number(max) : undefined,
+    ...(() => {
+      const range = normalizePriceRange(min ? Number(min) : undefined, max ? Number(max) : undefined);
+      return { min: range.min, max: range.max };
+    })(),
     availability: pick("inStock") === "1" ? "in_stock" : "",
     discount: pick("discount") === "1",
     rating: rating ? Number(rating) : undefined,

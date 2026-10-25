@@ -10,13 +10,19 @@ export async function loadStoreSettings(): Promise<StoreSettings> {
     for (const key of Object.keys(contact) as Array<keyof SiteContact>) {
       contact[key] = String(data?.[key] ?? "").trim();
     }
+    // ST-13: fall back to the deployment's support address when Settings has none.
+    if (!contact.support_email) contact.support_email = (process.env.SUPPORT_EMAIL ?? "").trim();
     return {
       contact,
       storeName: String(data?.store_name ?? "").trim() || "MMH",
       maintenanceMode: data?.maintenance_mode === true,
     };
   } catch {
-    return { contact: EMPTY_SITE_CONTACT, storeName: "MMH", maintenanceMode: false };
+    return {
+      contact: { ...EMPTY_SITE_CONTACT, support_email: (process.env.SUPPORT_EMAIL ?? "").trim() },
+      storeName: "MMH",
+      maintenanceMode: false,
+    };
   }
 }
 

@@ -2,6 +2,24 @@
 
 import { useAdminAccess } from "@/components/admin/admin-access";
 import { RevealCodeDialog } from "@/components/admin/modules/reveal-code-dialog";
+import { ActionButton, MoreMenu, Notice } from "@/components/admin/ops/controls";
+import {
+  attachItemCode,
+  cancelOrder,
+  fulfillOrderFromStock,
+  getOrderDetail,
+  getOrderHistory,
+  markItemDelivered,
+  refundOrder,
+  resendDeliveryEmail,
+  saveStaffNotes,
+  transitionOrderStatus,
+  type OrderAction,
+  type OrderDetail,
+  type OrderDetailItem,
+  type OrderHistoryEntry,
+  type OrderItemCode,
+} from "@/components/admin/ops/api";
 import { Badge } from "@/components/admin/ui/badge";
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
 import { EmptyState } from "@/components/admin/ui/empty-state";
@@ -9,200 +27,592 @@ import { ErrorState } from "@/components/admin/ui/error-state";
 import { FormField, adminInputClass, adminTextareaClass } from "@/components/admin/ui/form-field";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
-import { adminErrorMessage, errorCode } from "@/components/admin/lib/errors";
-import { jodInputToFils } from "@/components/admin/lib/money";
+import { summarizeAuditMeta } from "@/components/admin/lib/audit";
+import { adminErrorSummary, errorCode } from "@/components/admin/lib/errors";
+import { formatJod, formatJodDiscount, jodInputToFils } from "@/components/admin/lib/money";
 import {
+  actionHint,
+  codeStatusText,
+  codeStatusTone,
+  customerStatusLabel,
+  deliveryMethodLabel,
+  deliveryStateTone,
+  fulfillmentButtons,
   fulfillmentStatusLabel,
+  isPaidLike,
+  itemFieldRows,
   paymentStatusLabel,
-  transitionIsDanger,
-  transitionLabel,
-  transitionNeedsConfirm,
-  transitionReasonRequired,
-  type TransitionKind,
+  refundViaText,
+  splitPaymentActions,
 } from "@/components/admin/lib/orders";
 import { formatAdminDateTime } from "@/lib/admin/format";
 import { useAdminQuery } from "@/hooks/use-admin-query";
-import {
-  attachOrderItemCode,
-  fulfillOrder,
-  getOrder,
-  markOrderItemDelivered,
-  resendOrderEmail,
-  transitionOrder,
-  type AdminOrder,
-  type AdminOrderCode,
-  type AdminOrderItem,
-} from "@/lib/api/admin";
-import { formatFils } from "@/server/money";
+import { useAdminToken } from "@/hooks/use-admin-token";
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 
-type TransitionDraft = { kind: TransitionKind; target: string; reason: string; amount: string };
+/* ─── Dialog drafts ─── */
 
-function CustomerFields({ fields }: { fields: AdminOrderItem["customer_fields"] }) {
-  const entries = Object.entries(fields ?? {}).filter(([, v]) => v !== "" && v != null);
-  if (!entries.length) return null;
+type StatusDraft = {
+  kind: "payment" | "fulfillment";
+  status: string;
+  label: string;
+  requiresReason: boolean;
+  danger: boolean;
+  description: string;
+  reason: string;
+};
+
+type RefundDraft = { mode: "all" | "part"; amount: string; reason: string; manual: boolean };
+
+const PROVIDER_LABELS: Record<string, string> = { paypal: "PayPal", manual: "Manual", free: "Free order (no payment)" };
+
+function providerLabel(provider: string | null | undefined): string {
+  if (!provider) return "—";
+  return PROVIDER_LABELS[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
+function statusDescription(kind: "payment" | "fulfillment", status: string): string {
+  if (kind === "payment") {
+    switch (status) {
+      case "PAID":
+        return "Use this only when the money arrived outside the website (cash, bank transfer…). Codes are delivered from stock right away and the customer gets an e-mail.";
+      case "AUTHORIZED":
+        return "Only for PayPal payments that were approved but not captured yet. You rarely need this.";
+      case "FAILED":
+        return "Marks the payment as failed. The customer can still pay again from their order page, or the order expires.";
+      default:
+        return "Changes the payment status.";
+    }
+  }
+  switch (status) {
+    case "COMPLETED":
+      return "Every item is delivered. This closes the order — no more delivery actions will be offered.";
+    case "FAILED":
+      return "Marks the delivery as failed. Use it when a supplier could not deliver; you can retry or refund afterwards.";
+    case "MANUAL_REVIEW":
+      return "Flags the order for a person to look at (e.g. missing stock).";
+    default:
+      return "Changes the delivery status shown to staff.";
+  }
+}
+
+const CONFIRM_FULFILLMENT = new Set(["COMPLETED", "FAILED"]);
+
+/* ─── Small pieces ─── */
+
+function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <dl className="mt-2 grid gap-x-4 gap-y-1 rounded-lg bg-[#F7F8FC] px-3 py-2 text-xs sm:grid-cols-2">
-      {entries.map(([key, value]) => (
-        <div key={key} className="flex gap-2">
-          <dt className="text-[var(--clicks-muted)]">{key.replaceAll("_", " ")}:</dt>
-          <dd className="break-all font-mono font-medium text-[var(--clicks-navy)]">{String(value)}</dd>
-        </div>
-      ))}
-    </dl>
+    <section className="admin-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">{title}</h2>
+        {action}
+      </div>
+      <div className="mt-3">{children}</div>
+    </section>
   );
 }
 
+function Row({ label, value, strong }: { label: string; value: React.ReactNode; strong?: boolean }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <dt className="text-[var(--clicks-muted)]">{label}</dt>
+      <dd className={`tabular-nums ${strong ? "font-semibold text-[var(--clicks-navy)]" : ""}`}>{value}</dd>
+    </div>
+  );
+}
+
+function CodeRow({
+  code,
+  orderPaymentStatus,
+  canReveal,
+  onReveal,
+}: {
+  code: OrderItemCode;
+  orderPaymentStatus: string;
+  canReveal: boolean;
+  onReveal: () => void;
+}) {
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-2 py-1.5">
+      <span className="font-mono">{code.masked}</span>
+      <span className="flex flex-wrap items-center gap-2 text-[11px] text-[var(--clicks-muted)]">
+        {code.delivered_at ? <span>Delivered {formatAdminDateTime(code.delivered_at)}</span> : null}
+        {code.customer_revealed_at ? (
+          <span className="font-medium text-emerald-700">
+            Revealed by customer {formatAdminDateTime(code.customer_revealed_at)}
+          </span>
+        ) : code.status === "DELIVERED" ? (
+          <span>Not opened by the customer yet</span>
+        ) : null}
+        <Badge tone={codeStatusTone(code)}>{codeStatusText(code, orderPaymentStatus)}</Badge>
+        {canReveal && code.status !== "UNAVAILABLE" ? (
+          <button type="button" className="font-semibold text-[var(--clicks-blue)]" onClick={onReveal}>
+            Reveal
+          </button>
+        ) : null}
+      </span>
+    </li>
+  );
+}
+
+function ItemCard({
+  item,
+  order,
+  canFulfill,
+  canReveal,
+  pending,
+  onAttach,
+  onMarkDelivered,
+  onReveal,
+}: {
+  item: OrderDetailItem;
+  order: OrderDetail;
+  canFulfill: boolean;
+  canReveal: boolean;
+  pending: boolean;
+  onAttach: () => void;
+  onMarkDelivered: () => void;
+  onReveal: (code: OrderItemCode) => void;
+}) {
+  const isCode = item.fulfillment_type === "CODE";
+  const paid = isPaidLike(order.payment_status);
+  const closed = order.fulfillment_status === "CANCELLED" || order.payment_status === "REFUNDED";
+  const fields = itemFieldRows(item);
+  const showMethod = item.show_delivery_method ?? isCode;
+  const state = item.delivery_state ?? (item.delivered ? "delivered" : "pending");
+  const stateLabel = item.delivery_state_label ?? (item.delivered ? "Delivered" : "Not delivered");
+  const delivered = item.codes_delivered ?? (item.codes ?? []).filter((c) => c.status !== "UNAVAILABLE").length;
+  const notPaidReason = "Available once the order is paid.";
+
+  return (
+    <li className="py-3 text-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-medium text-[var(--clicks-navy)]">
+            {item.product_name || "Item"}
+            {item.variant_name ? <span className="font-normal text-[var(--clicks-muted)]"> · {item.variant_name}</span> : null}
+          </p>
+          <p className="mt-0.5 text-xs text-[var(--clicks-muted)]">
+            Qty {item.quantity} × {formatJod(item.unit_price_fils)}
+            {item.platform_name ? ` · ${item.platform_name}` : ""}
+            {item.region_name ? ` · ${item.region_name}` : ""}
+          </p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <Badge tone="info">{isCode ? "Code" : "Direct top-up"}</Badge>
+            <Badge tone={deliveryStateTone(state)}>
+              {stateLabel}
+              {state === "delivered" && item.delivered_at ? ` ${formatAdminDateTime(item.delivered_at)}` : ""}
+            </Badge>
+            {isCode ? (
+              <span className="text-[11px] text-[var(--clicks-muted)]">
+                {delivered} of {item.quantity} code{item.quantity === 1 ? "" : "s"} delivered
+                {item.codes_pending ? ` · ${item.codes_pending} still to deliver` : ""}
+                {item.codes_pending && item.sellable_codes_for_variant != null
+                  ? ` · ${item.sellable_codes_for_variant} in stock`
+                  : ""}
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <div className="text-end">
+          <p className="font-medium tabular-nums">{formatJod(item.line_total_fils ?? item.unit_price_fils * item.quantity)}</p>
+          {canFulfill && !closed && !item.delivered ? (
+            <div className="mt-2 flex flex-wrap justify-end gap-1.5">
+              <ActionButton
+                small
+                label={isCode ? "Attach code" : "Mark delivered"}
+                enabled={paid}
+                reason={paid ? "" : notPaidReason}
+                pending={pending}
+                onClick={isCode ? onAttach : onMarkDelivered}
+              />
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {fields.length ? (
+        <div className="mt-2 rounded-lg bg-[#F7F8FC] px-3 py-2 text-xs">
+          <p className="mb-1 text-[11px] font-semibold text-[var(--clicks-muted)]">
+            {isCode ? "Details from the customer" : "Top-up details (where to deliver)"}
+          </p>
+          <dl className="grid gap-x-4 gap-y-1 sm:grid-cols-2">
+            {fields.map((f) => (
+              <div key={f.key} className="flex gap-2">
+                <dt className="text-[var(--clicks-muted)]">{f.label}:</dt>
+                <dd className="break-all font-mono font-medium text-[var(--clicks-navy)]">{f.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ) : null}
+
+      {showMethod && (item.delivery_method || item.delivery_contact) ? (
+        <p className="mt-2 text-xs text-[var(--clicks-muted)]">
+          Delivery: <span className="font-medium text-[var(--clicks-text)]">{deliveryMethodLabel(item.delivery_method)}</span>
+          {item.delivery_contact ? ` · ${item.delivery_contact}` : ""}
+        </p>
+      ) : null}
+      {item.delivery_note ? (
+        <p className="mt-1 text-xs text-[var(--clicks-muted)]">
+          Note to the customer <span className="italic">(visible to the customer)</span>:{" "}
+          <span className="text-[var(--clicks-text)]">{item.delivery_note}</span>
+        </p>
+      ) : null}
+
+      {item.codes?.length ? (
+        <ul className="mt-2 divide-y divide-[var(--clicks-border)] rounded-lg bg-[var(--clicks-bg)] px-3 py-1 text-xs">
+          {item.codes.map((c) => (
+            <CodeRow
+              key={String(c.id)}
+              code={c}
+              orderPaymentStatus={order.payment_status}
+              canReveal={canReveal}
+              onReveal={() => onReveal(c)}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+function historyDetail(entry: OrderHistoryEntry): string {
+  const meta = entry.meta ?? {};
+  const parts: string[] = [];
+  if (typeof meta.amount === "string") parts.push(meta.amount);
+  if (meta.changes && typeof meta.changes === "object") {
+    for (const [field, change] of Object.entries(meta.changes as Record<string, unknown>)) {
+      if (typeof change !== "string") continue;
+      const [from, to] = change.split("→");
+      const label = field === "payment_status" ? paymentStatusLabel : fulfillmentStatusLabel;
+      parts.push(`${field === "payment_status" ? "Payment" : "Delivery"}: ${label(from)} → ${label(to)}`);
+    }
+  }
+  if (typeof meta.reason === "string" && meta.reason) parts.push(`Reason: ${meta.reason}`);
+  if (typeof meta.masked === "string" && entry.action !== "orders.transition") parts.push(meta.masked);
+  if (parts.length) return parts.join(" · ");
+  if (entry.action === "orders.staff_notes") return "";
+  return summarizeAuditMeta(
+    Object.fromEntries(
+      Object.entries(meta).filter(([k]) => !["order_number", "email", "before", "after", "code_ids", "order_item_id"].includes(k)),
+    ),
+    3,
+  );
+}
+
+function OrderHistory({ orderKey, reloadKey, canAudit, orderNumber }: { orderKey: string; reloadKey: number; canAudit: boolean; orderNumber: string }) {
+  const { data, loading, error, reload } = useAdminQuery((tok) => getOrderHistory(tok, orderKey), [orderKey, reloadKey]);
+  const entries = data?.results ?? [];
+  return (
+    <Section
+      title="History"
+      action={
+        canAudit ? (
+          <Link
+            href={`/admin/audit?order_number=${encodeURIComponent(orderNumber)}`}
+            className="text-xs font-medium text-[var(--clicks-blue)]"
+          >
+            Open in audit log
+          </Link>
+        ) : null
+      }
+    >
+      {loading ? (
+        <div className="h-16 animate-pulse rounded-lg bg-[var(--clicks-bg)]" />
+      ) : error ? (
+        <ErrorState message={error} onRetry={reload} />
+      ) : entries.length ? (
+        <ol className="relative space-y-3 border-s border-[var(--clicks-border)] ps-4 text-[13px]">
+          {entries.map((entry) => {
+            const detail = historyDetail(entry);
+            return (
+              <li key={String(entry.id)} className="relative">
+                <span className="absolute -start-[21px] top-1.5 h-2 w-2 rounded-full bg-[var(--clicks-blue)]" aria-hidden />
+                <p className="font-medium text-[var(--clicks-navy)]">{entry.label || entry.action}</p>
+                <p className="text-[11px] text-[var(--clicks-muted)]">
+                  {formatAdminDateTime(entry.created_at)} · {entry.actor_name || entry.actor_email || "System"}
+                </p>
+                {detail ? <p className="mt-0.5 text-xs text-[var(--clicks-text)]">{detail}</p> : null}
+              </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <p className="text-sm text-[var(--clicks-muted)]">Nothing recorded yet — the order was just created.</p>
+      )}
+    </Section>
+  );
+}
+
+function StaffNotes({
+  order,
+  canWrite,
+  onSaved,
+}: {
+  order: OrderDetail;
+  canWrite: boolean;
+  onSaved: (next: OrderDetail) => void;
+}) {
+  const toast = useAdminToast();
+  const token = useAdminToken();
+  const saved = order.staff_notes ?? "";
+  const [draft, setDraft] = useState(saved);
+  const [base, setBase] = useState(saved);
+  const [pending, setPending] = useState(false);
+  // A save elsewhere (or another tab) changed the notes: take the new value unless editing.
+  if (saved !== base) {
+    setBase(saved);
+    if (draft === base) setDraft(saved);
+  }
+  const dirty = draft.trim() !== saved.trim();
+
+  if (!canWrite) {
+    return (
+      <Section title="Staff notes">
+        {saved ? (
+          <p className="whitespace-pre-wrap text-sm">{saved}</p>
+        ) : (
+          <p className="text-sm text-[var(--clicks-muted)]">No staff notes.</p>
+        )}
+      </Section>
+    );
+  }
+
+  return (
+    <Section title="Staff notes">
+      <textarea
+        aria-label="Staff notes"
+        className={adminTextareaClass}
+        value={draft}
+        maxLength={5000}
+        placeholder="e.g. Customer called, asked to deliver to a different Player ID."
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <p className="mt-1 text-[11px] text-[var(--clicks-muted)]">
+        Only staff can see these notes. Every change is recorded in the order history.
+      </p>
+      <div className="mt-2 flex justify-end gap-2">
+        {dirty ? (
+          <button type="button" className="admin-btn admin-btn-secondary h-8 text-xs" onClick={() => setDraft(saved)}>
+            Discard
+          </button>
+        ) : null}
+        <button
+          type="button"
+          disabled={!dirty || pending}
+          className="admin-btn admin-btn-primary h-8 text-xs disabled:opacity-55"
+          onClick={() =>
+            void (async () => {
+              if (!token) return;
+              setPending(true);
+              try {
+                const next = await saveStaffNotes(token, order.id, draft);
+                onSaved(next);
+                toast.push("Staff notes saved", "success");
+              } catch (err) {
+                toast.push(adminErrorSummary(err, "Could not save the notes."), "error");
+              } finally {
+                setPending(false);
+              }
+            })()
+          }
+        >
+          {pending ? "Saving…" : "Save notes"}
+        </button>
+      </div>
+    </Section>
+  );
+}
+
+/* ─── Page ─── */
+
 export function OrderDetailClient({ id }: { id: string }) {
   const toast = useAdminToast();
+  const router = useRouter();
   const { can } = useAdminAccess();
   const canWrite = can("orders.write");
   const canFulfill = can("orders.fulfill");
+  const canNotify = can("orders.notify") || canFulfill;
   const canReveal = can("codes.reveal");
+  const canAudit = can("audit.read");
+  const canCustomers = can("customers.read");
 
   const [pending, setPending] = useState(false);
-  const [transition, setTransition] = useState<TransitionDraft | null>(null);
-  const [attachItem, setAttachItem] = useState<AdminOrderItem | null>(null);
+  const [historyTick, setHistoryTick] = useState(0);
+  const [statusDraft, setStatusDraft] = useState<StatusDraft | null>(null);
+  const [refundDraft, setRefundDraft] = useState<RefundDraft | null>(null);
+  const [refundError, setRefundError] = useState("");
+  const [cancelDraft, setCancelDraft] = useState<{ reason: string } | null>(null);
+  const [attachItem, setAttachItem] = useState<OrderDetailItem | null>(null);
   const [attachForm, setAttachForm] = useState({ code: "", pin: "" });
-  const [deliverItem, setDeliverItem] = useState<AdminOrderItem | null>(null);
+  const [attachError, setAttachError] = useState("");
+  const [deliverItem, setDeliverItem] = useState<OrderDetailItem | null>(null);
   const [deliverNote, setDeliverNote] = useState("");
   const [confirmFulfill, setConfirmFulfill] = useState(false);
   const [confirmResend, setConfirmResend] = useState(false);
-  const [revealTarget, setRevealTarget] = useState<AdminOrderCode | null>(null);
+  const [revealTarget, setRevealTarget] = useState<OrderItemCode | null>(null);
 
   const { data: order, setData: setOrder, loading, error, reload, token } = useAdminQuery(
-    (tok) => getOrder(tok, id),
+    (tok) => getOrderDetail(tok, id),
     [id],
   );
 
-  async function run(action: (tok: string, o: AdminOrder) => Promise<AdminOrder | void>, success: string) {
+  // OR-22: show the order number (not the internal id) in the address bar / breadcrumb.
+  const orderNumber = order?.order_number;
+  useEffect(() => {
+    if (orderNumber && decodeURIComponent(id) !== orderNumber) {
+      router.replace(`/admin/orders/${encodeURIComponent(orderNumber)}`);
+    }
+  }, [id, orderNumber, router]);
+
+  async function run(
+    action: (tok: string, o: OrderDetail) => Promise<OrderDetail | void>,
+    success: string,
+    onError?: (message: string, err: unknown) => boolean,
+  ): Promise<boolean> {
     if (!token || !order) return false;
     setPending(true);
     try {
       const next = await action(token, order);
-      if (next) setOrder(next);
+      if (next && typeof next === "object" && "order_number" in next) setOrder(next);
+      else reload();
+      setHistoryTick((n) => n + 1);
       toast.push(success, "success");
       return true;
     } catch (err) {
-      const code = errorCode(err);
-      if (code === "refund_first") {
-        toast.push(`${adminErrorMessage(err)} Use a refund transition, then cancel.`, "error");
-      } else {
-        toast.push(adminErrorMessage(err, "Action failed"), "error");
-      }
+      const message = adminErrorSummary(err, "That did not work. Try again.");
+      if (!onError || !onError(message, err)) toast.push(message, "error");
+      // The order may have moved on (another tab, webhook): show its real state.
+      if (errorCode(err)) reload();
       return false;
     } finally {
       setPending(false);
     }
   }
 
-  if (loading) return <div className="admin-card h-48 animate-pulse" />;
+  if (loading && !order) return <div className="admin-card h-48 animate-pulse" />;
   if (error) return <ErrorState message={error} onRetry={reload} />;
-  if (!order) return <EmptyState title="Order not found" />;
+  if (!order) return <EmptyState title="Order not found" description="Check the order number and try again." />;
 
   const items = order.items ?? [];
-  const hasPaypal = Boolean(order.payments?.some((p) => p.provider === "paypal"));
-  const paypalRefundable = Boolean(
-    order.payments?.some((p) => p.provider === "paypal" && (p.status === "PAID" || p.status === "PARTIALLY_REFUNDED")),
-  );
-  const isPaid = order.payment_status === "PAID";
+  const actions = order.actions;
+  const paid = isPaidLike(order.payment_status);
+  const cancelled = order.fulfillment_status === "CANCELLED" || order.payment_status === "CANCELLED";
   const undeliveredCodeItems = items.filter((i) => i.fulfillment_type === "CODE" && !i.delivered);
-  const paymentOptions = order.allowed_payment_transitions ?? [];
-  const fulfillmentOptions = order.allowed_fulfillment_transitions ?? [];
+  const summary = order.refund_summary;
+  const refund = actions?.refund;
+  const remainingFils = refund?.remaining_fils ?? summary?.remaining_fils ?? order.refund_remaining_fils ?? 0;
+  const refundedFils = summary?.refunded_fils ?? order.refunded_fils ?? 0;
+  const via = refundViaText(refund?.via);
+  const { primary: paymentPrimary, advanced: paymentAdvanced } = splitPaymentActions(actions?.payment);
+  const fulfillmentActions = fulfillmentButtons(actions?.fulfillment);
 
-  function openTransition(kind: TransitionKind, target: string) {
-    const draft = { kind, target, reason: "", amount: "" };
-    if (!transitionNeedsConfirm(kind, target) && !transitionReasonRequired(kind, target)) {
-      void submitTransition(draft);
+  function openStatus(kind: "payment" | "fulfillment", action: OrderAction) {
+    if (!action.status || !action.enabled) return;
+    const draft: StatusDraft = {
+      kind,
+      status: action.status,
+      label: action.label,
+      requiresReason: Boolean(action.requires_reason),
+      danger: action.status === "FAILED",
+      description: statusDescription(kind, action.status),
+      reason: "",
+    };
+    const needsConfirm = kind === "payment" || CONFIRM_FULFILLMENT.has(action.status) || draft.requiresReason;
+    if (!needsConfirm) {
+      void submitStatus(draft);
       return;
     }
-    setTransition(draft);
+    setStatusDraft(draft);
   }
 
-  async function submitTransition(draft: TransitionDraft) {
-    const body: Parameters<typeof transitionOrder>[2] = {};
-    if (draft.kind === "payment") body.payment_status = draft.target;
-    else body.fulfillment_status = draft.target;
+  async function submitStatus(draft: StatusDraft) {
+    const body: { payment_status?: string; fulfillment_status?: string; reason?: string } =
+      draft.kind === "payment" ? { payment_status: draft.status } : { fulfillment_status: draft.status };
     if (draft.reason.trim()) body.reason = draft.reason.trim();
-    if (draft.kind === "payment" && draft.target === "PARTIALLY_REFUNDED") {
-      const fils = jodInputToFils(draft.amount);
-      if (fils != null) {
-        if (Number.isNaN(fils) || fils <= 0) {
-          toast.push("Enter a valid refund amount in JOD", "error");
-          return;
-        }
-        body.refund_amount_fils = fils;
-      }
+    const ok = await run((tok, o) => transitionOrderStatus(tok, o.id, body), `${draft.label} — done`);
+    if (ok) setStatusDraft(null);
+  }
+
+  // Refund dialog validation (D5)
+  const refundAmountFils =
+    refundDraft?.mode === "part" ? jodInputToFils(refundDraft.amount) : refundDraft ? remainingFils : null;
+  let refundInputError = "";
+  if (refundDraft?.mode === "part" && refundDraft.amount.trim()) {
+    if (refundAmountFils == null || Number.isNaN(refundAmountFils) || refundAmountFils <= 0) {
+      refundInputError = "Enter an amount in JOD, e.g. 2.500";
+    } else if (refundAmountFils > remainingFils) {
+      refundInputError = `That is more than the ${formatJod(remainingFils)} that can still be refunded.`;
     }
+  }
+  const refundValid =
+    refundDraft != null &&
+    !refundInputError &&
+    refundAmountFils != null &&
+    !Number.isNaN(refundAmountFils) &&
+    refundAmountFils > 0;
+
+  async function submitRefund() {
+    if (!refundDraft || !refundValid || refundAmountFils == null) return;
+    setRefundError("");
+    const body: { amount_fils?: number; reason?: string; manual?: boolean } = {};
+    if (refundDraft.mode === "part") body.amount_fils = refundAmountFils;
+    if (refundDraft.reason.trim()) body.reason = refundDraft.reason.trim();
+    if (refund?.via !== "paypal" || refundDraft.manual) body.manual = true;
     const ok = await run(
-      (tok, o) => transitionOrder(tok, o.id, body),
-      `${transitionLabel(draft.kind, draft.target, { currentPayment: order?.payment_status, hasPaypal })} — done`,
+      (tok, o) => refundOrder(tok, o.id, body),
+      `Refund of ${formatJod(refundAmountFils)} recorded`,
+      (message, err) => {
+        const code = errorCode(err);
+        if (["refund_exceeds_remaining", "invalid_amount", "nothing_to_refund", "refund_pending", "not_refundable"].includes(code ?? "") || (err as { status?: number })?.status === 502) {
+          setRefundError(
+            (err as { status?: number })?.status === 502
+              ? `PayPal did not accept the refund: ${message} Nothing was refunded.`
+              : message,
+          );
+          return true;
+        }
+        return false;
+      },
     );
-    if (ok) setTransition(null);
+    if (ok) setRefundDraft(null);
   }
 
-  const partialAmountFils = transition ? jodInputToFils(transition.amount) : null;
-  const transitionInvalid = Boolean(
-    transition &&
-      ((transitionReasonRequired(transition.kind, transition.target) && !transition.reason.trim()) ||
-        (transition.target === "PARTIALLY_REFUNDED" &&
-          paypalRefundable &&
-          (partialAmountFils == null || Number.isNaN(partialAmountFils) || partialAmountFils <= 0)) ||
-        (partialAmountFils != null && Number.isNaN(partialAmountFils))),
-  );
-
-  function transitionDescription(t: TransitionDraft): string {
-    if (t.kind === "payment") {
-      switch (t.target) {
-        case "PAID":
-          return "Use only when payment was received outside the website (e.g. bank transfer). Paying triggers stock allocation and the customer e-mail.";
-        case "REFUNDED":
-          return paypalRefundable
-            ? "This sends a refund through PayPal for the remaining captured amount. Delivered codes are not recovered automatically."
-            : "Marks the order refunded. Return the money to the customer through the original channel.";
-        case "PARTIALLY_REFUNDED":
-          return paypalRefundable
-            ? "Sends a partial PayPal refund for the amount below."
-            : "Marks the order partially refunded. Return the money through the original channel.";
-        case "CANCELLED":
-          return "Cancels the order. Paid orders must be refunded first.";
-        default:
-          return `Change payment status to ${paymentStatusLabel(t.target)}.`;
-      }
-    }
-    if (t.target === "COMPLETED") return "Marks the whole order delivered. Make sure every item reached the customer.";
-    if (t.target === "CANCELLED") return "Cancels fulfillment. Paid orders must be refunded first.";
-    return `Change fulfillment status to ${fulfillmentStatusLabel(t.target)}.`;
-  }
+  const statusLine = [
+    `Placed ${formatAdminDateTime(order.created_at)}`,
+    order.customer_status ? `Customer sees: ${customerStatusLabel(order.customer_status)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <div>
       <PageHeader
         title={`Order ${order.order_number}`}
-        description={`Placed ${formatAdminDateTime(order.created_at)}${
-          order.updated_at ? ` · updated ${formatAdminDateTime(order.updated_at)}` : ""
-        }`}
+        description={statusLine}
         actions={
           <>
-            {canFulfill && isPaid && undeliveredCodeItems.length ? (
+            {canFulfill && paid && !cancelled && undeliveredCodeItems.length ? (
               <button
                 type="button"
                 className="admin-btn admin-btn-primary"
                 disabled={pending}
                 onClick={() => setConfirmFulfill(true)}
               >
-                Deliver from stock
+                Deliver codes from stock
               </button>
             ) : null}
-            {canFulfill && isPaid ? (
+            {canNotify && paid ? (
               <button
                 type="button"
                 className="admin-btn admin-btn-secondary"
                 disabled={pending}
                 onClick={() => setConfirmResend(true)}
               >
-                Resend email
+                Resend e-mail to customer
               </button>
             ) : null}
             <Link href="/admin/orders" className="text-sm font-medium text-[var(--clicks-blue)]">
@@ -212,349 +622,466 @@ export function OrderDetailClient({ id }: { id: string }) {
         }
       />
 
-      {order.fulfillment_status === "MANUAL_REVIEW" ? (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-900">
-          This order needs manual review — usually not enough codes in stock or a supplier problem. Import codes and
-          use “Deliver from stock”, attach codes by hand, or mark top-ups delivered.
-        </div>
-      ) : null}
+      <div className="mb-4 space-y-2">
+        {cancelled ? (
+          <Notice tone="info">This order is cancelled. Nothing else needs to be done.</Notice>
+        ) : order.payment_status === "REFUNDED" ? (
+          <Notice tone="info">
+            This order was fully refunded. Its codes are retired and can no longer be viewed by the customer.
+          </Notice>
+        ) : !paid ? (
+          <Notice tone="warning">
+            Waiting for the customer to pay. Delivery starts automatically once payment arrives. Unpaid orders expire
+            after 72 hours.
+            {order.reserved_until ? ` Stock is held for this order until ${formatAdminDateTime(order.reserved_until)}.` : ""}
+          </Notice>
+        ) : order.fulfillment_status === "MANUAL_REVIEW" ? (
+          <Notice tone="warning">
+            This order needs a person to finish it — usually there were not enough codes in stock or a supplier problem.
+            Import codes and use “Deliver codes from stock”, attach codes by hand, or mark top-ups delivered.
+          </Notice>
+        ) : order.fulfillment_status !== "COMPLETED" ? (
+          <Notice tone="info">Paid — deliver the remaining items below.</Notice>
+        ) : null}
+      </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-2">
-          <div className="admin-card p-4">
-            <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Items</h2>
+        <div className="min-w-0 space-y-4 lg:col-span-2">
+          <Section title="Items">
             {items.length ? (
-              <ul className="mt-3 divide-y divide-[var(--clicks-border)]">
-                {items.map((item) => {
-                  const isCode = item.fulfillment_type === "CODE";
-                  const liveCodes = (item.codes ?? []).filter((c) => c.status !== "UNAVAILABLE").length;
-                  return (
-                    <li key={String(item.id)} className="py-3 text-sm">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="font-medium text-[var(--clicks-navy)]">
-                            {item.product_name || "Item"}
-                            {item.variant_name ? (
-                              <span className="font-normal text-[var(--clicks-muted)]"> · {item.variant_name}</span>
-                            ) : null}
-                          </p>
-                          <p className="mt-0.5 text-xs text-[var(--clicks-muted)]">
-                            Qty {item.quantity} × {formatFils(item.unit_price_fils)} JOD
-                            {item.platform_name ? ` · ${item.platform_name}` : ""}
-                            {item.region_name ? ` · ${item.region_name}` : ""}
-                          </p>
-                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                            <Badge tone="info">{isCode ? "Code" : "Direct top-up"}</Badge>
-                            {item.delivered ? (
-                              <Badge tone="success">
-                                Delivered{item.delivered_at ? ` ${formatAdminDateTime(item.delivered_at)}` : ""}
-                              </Badge>
-                            ) : (
-                              <Badge tone="warning">Not delivered</Badge>
-                            )}
-                            {isCode ? (
-                              <span className="text-[11px] text-[var(--clicks-muted)]">
-                                {liveCodes}/{item.quantity} codes
-                                {item.available_codes_for_variant != null
-                                  ? ` · ${item.available_codes_for_variant} in stock for this variant`
-                                  : ""}
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="text-end">
-                          <p className="tabular-nums font-medium">
-                            {formatFils(item.line_total_fils ?? item.unit_price_fils * item.quantity)} JOD
-                          </p>
-                          {canFulfill && isPaid && !item.delivered ? (
-                            <div className="mt-2 flex flex-wrap justify-end gap-1.5">
-                              {isCode ? (
-                                <button
-                                  type="button"
-                                  className="admin-btn admin-btn-secondary h-8 text-xs"
-                                  onClick={() => {
-                                    setAttachForm({ code: "", pin: "" });
-                                    setAttachItem(item);
-                                  }}
-                                >
-                                  Attach code
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  className="admin-btn admin-btn-secondary h-8 text-xs"
-                                  onClick={() => {
-                                    setDeliverNote("");
-                                    setDeliverItem(item);
-                                  }}
-                                >
-                                  Mark delivered
-                                </button>
-                              )}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <CustomerFields fields={item.customer_fields} />
-
-                      {item.delivery_method || item.delivery_contact ? (
-                        <p className="mt-2 text-xs text-[var(--clicks-muted)]">
-                          Delivery:{" "}
-                          <span className="font-medium text-[var(--clicks-text)]">
-                            {item.delivery_method === "email"
-                              ? "By e-mail"
-                              : item.delivery_method === "account"
-                                ? "In account"
-                                : item.delivery_method || "—"}
-                          </span>
-                          {item.delivery_contact ? ` · ${item.delivery_contact}` : ""}
-                        </p>
-                      ) : null}
-                      {item.delivery_note ? (
-                        <p className="mt-1 text-xs text-[var(--clicks-muted)]">
-                          Delivery note: <span className="text-[var(--clicks-text)]">{item.delivery_note}</span>
-                        </p>
-                      ) : null}
-
-                      {item.codes?.length ? (
-                        <ul className="mt-2 space-y-1 rounded-lg bg-[var(--clicks-bg)] px-3 py-2 text-xs">
-                          {item.codes.map((c) => (
-                            <li key={String(c.id)} className="flex flex-wrap items-center justify-between gap-2">
-                              <span className="font-mono">{c.masked}</span>
-                              <span className="flex flex-wrap items-center gap-2">
-                                {c.source ? (
-                                  <span className="text-[11px] text-[var(--clicks-muted)]">
-                                    {c.source.replaceAll("_", " ").toLowerCase()}
-                                  </span>
-                                ) : null}
-                                {c.delivered_at ? (
-                                  <span className="text-[11px] text-[var(--clicks-muted)]">
-                                    {formatAdminDateTime(c.delivered_at)}
-                                  </span>
-                                ) : null}
-                                <Badge status={c.status || "AVAILABLE"} />
-                                {canReveal ? (
-                                  <button
-                                    type="button"
-                                    className="text-[11px] font-semibold text-[var(--clicks-blue)]"
-                                    onClick={() => setRevealTarget(c)}
-                                  >
-                                    Reveal
-                                  </button>
-                                ) : null}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-                    </li>
-                  );
-                })}
+              <ul className="divide-y divide-[var(--clicks-border)]">
+                {items.map((item) => (
+                  <ItemCard
+                    key={String(item.id)}
+                    item={item}
+                    order={order}
+                    canFulfill={canFulfill}
+                    canReveal={canReveal}
+                    pending={pending}
+                    onAttach={() => {
+                      setAttachForm({ code: "", pin: "" });
+                      setAttachError("");
+                      setAttachItem(item);
+                    }}
+                    onMarkDelivered={() => {
+                      setDeliverNote("");
+                      setDeliverItem(item);
+                    }}
+                    onReveal={(code) => setRevealTarget(code)}
+                  />
+                ))}
               </ul>
             ) : (
-              <p className="mt-2 text-sm text-[var(--clicks-muted)]">No line items.</p>
+              <p className="text-sm text-[var(--clicks-muted)]">No items.</p>
             )}
-          </div>
+          </Section>
 
-          <div className="admin-card p-4">
-            <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Payments</h2>
+          <Section title="Payments">
             {order.payments?.length ? (
-              <ul className="mt-3 divide-y divide-[var(--clicks-border)] text-sm">
+              <ul className="divide-y divide-[var(--clicks-border)] text-sm">
                 {order.payments.map((p) => (
-                  <li key={String(p.id)} className="flex items-start justify-between gap-3 py-2">
+                  <li key={String(p.id)} className={`flex items-start justify-between gap-3 py-2 ${p.voided ? "opacity-60" : ""}`}>
                     <div className="min-w-0 text-xs text-[var(--clicks-muted)]">
-                      <p className="text-sm font-medium capitalize text-[var(--clicks-navy)]">{p.provider || "manual"}</p>
-                      {p.external_ref ? <p>Ref {p.external_ref}</p> : null}
-                      {p.provider_order_id ? <p>Provider order {p.provider_order_id}</p> : null}
-                      {p.provider_capture_id ? <p>Capture {p.provider_capture_id}</p> : null}
+                      <p className="text-sm font-medium text-[var(--clicks-navy)]">{providerLabel(p.provider)}</p>
                       {p.provider_amount ? (
                         <p>
-                          Charged {p.provider_amount} {p.currency || ""}
+                          Charged {p.provider_currency || p.currency || ""} {p.provider_amount}
                         </p>
                       ) : null}
+                      {p.capture_id || p.provider_capture_id ? <p>PayPal capture {p.capture_id || p.provider_capture_id}</p> : null}
+                      {p.external_ref ? <p>Reference {p.external_ref}</p> : null}
                       <p>
-                        Created {formatAdminDateTime(p.created_at)}
+                        Started {formatAdminDateTime(p.created_at)}
                         {p.paid_at ? ` · paid ${formatAdminDateTime(p.paid_at)}` : ""}
                       </p>
+                      {p.voided ? <p>Voided — this attempt is no longer needed.</p> : null}
                     </div>
                     <div className="shrink-0 text-end">
-                      <p className="tabular-nums">{formatFils(p.amount_fils)} JOD</p>
+                      <p className="tabular-nums">{p.amount_display || formatJod(p.amount_fils)}</p>
                       <Badge status={p.status}>{paymentStatusLabel(p.status)}</Badge>
+                      {p.refunded_fils ? (
+                        <p className="mt-1 text-[11px] text-[var(--clicks-muted)]">
+                          Refunded {p.refunded_display || formatJod(p.refunded_fils)}
+                        </p>
+                      ) : null}
                     </div>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="mt-2 text-sm text-[var(--clicks-muted)]">No payment records.</p>
+              <p className="text-sm text-[var(--clicks-muted)]">No payment attempts yet.</p>
             )}
-          </div>
+          </Section>
 
           {order.refunds?.length ? (
-            <div className="admin-card p-4">
-              <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Refunds</h2>
-              <ul className="mt-3 divide-y divide-[var(--clicks-border)] text-sm">
-                {order.refunds.map((r, idx) => (
-                  <li key={`${r.payment_id}-${r.id || idx}`} className="flex items-center justify-between gap-3 py-2">
-                    <div className="text-xs text-[var(--clicks-muted)]">
-                      <p className="text-sm font-medium capitalize text-[var(--clicks-navy)]">{r.provider}</p>
-                      {r.id ? <p>Refund {r.id}</p> : null}
-                    </div>
-                    <div className="text-end">
-                      <p className="tabular-nums">
-                        {r.amount} {r.currency}
+            <Section title="Refunds">
+              <ul className="divide-y divide-[var(--clicks-border)] text-sm">
+                {order.refunds.map((r) => (
+                  <li key={String(r.id)} className="flex items-start justify-between gap-3 py-2">
+                    <div className="min-w-0 text-xs text-[var(--clicks-muted)]">
+                      <p className="text-sm font-medium text-[var(--clicks-navy)]">
+                        {r.provider === "paypal" ? "Through PayPal" : "Manual refund"}
                       </p>
-                      {r.status ? <Badge status={r.status} /> : null}
+                      <p>
+                        {formatAdminDateTime(r.created_at)}
+                        {r.actor_email ? ` · by ${r.actor_email}` : ""}
+                      </p>
+                      {r.reason ? <p>Reason: {r.reason}</p> : null}
+                      {r.provider_amount ? (
+                        <p>
+                          Sent {r.provider_currency || ""} {r.provider_amount}
+                          {r.provider_refund_id ? ` · PayPal refund ${r.provider_refund_id}` : ""}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="shrink-0 text-end">
+                      <p className="font-medium tabular-nums">{r.amount_display || formatJod(r.amount_fils)}</p>
+                      <Badge status={r.status} />
                     </div>
                   </li>
                 ))}
               </ul>
-            </div>
+              <dl className="mt-2 space-y-1 border-t border-[var(--clicks-border)] pt-2 text-xs">
+                <Row label="Refunded in total" value={order.display?.refunded || formatJod(refundedFils)} strong />
+                <Row label="Can still be refunded" value={order.display?.refund_remaining || formatJod(remainingFils)} />
+              </dl>
+            </Section>
           ) : null}
+
+          <OrderHistory
+            orderKey={String(order.id)}
+            reloadKey={historyTick}
+            canAudit={canAudit}
+            orderNumber={order.order_number}
+          />
         </div>
 
-        <div className="space-y-4">
-          <div className="admin-card p-4">
+        <div className="min-w-0 space-y-4">
+          <section className="admin-card p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-[var(--clicks-muted)]">Total</p>
-            <p className="mt-2 text-2xl font-semibold tabular-nums">{formatFils(order.total_fils)} JOD</p>
+            <p className="mt-2 text-2xl font-semibold tabular-nums">{order.display?.total || formatJod(order.total_fils)}</p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Badge status={order.payment_status}>{paymentStatusLabel(order.payment_status)}</Badge>
               <Badge status={order.fulfillment_status}>{fulfillmentStatusLabel(order.fulfillment_status)}</Badge>
             </div>
-            <dl className="mt-4 space-y-1 text-xs text-[var(--clicks-muted)]">
-              <div className="flex justify-between">
-                <dt>Subtotal</dt>
-                <dd className="tabular-nums">{formatFils(order.subtotal_fils ?? order.total_fils)} JOD</dd>
-              </div>
-              <div className="flex justify-between">
-                <dt>Discount{order.coupon_code ? ` (${order.coupon_code})` : ""}</dt>
-                <dd className="tabular-nums">−{formatFils(order.discount_fils ?? 0)} JOD</dd>
-              </div>
+            <dl className="mt-4 space-y-1 text-xs">
+              <Row label="Subtotal" value={order.display?.subtotal || formatJod(order.subtotal_fils ?? order.total_fils)} />
+              <Row
+                label={`Discount${order.coupon_code ? ` (${order.coupon_code})` : ""}`}
+                value={formatJodDiscount(order.discount_fils)}
+              />
+              {refundedFils ? <Row label="Refunded" value={formatJodDiscount(refundedFils)} /> : null}
+              {paid ? <Row label="Can still be refunded" value={formatJod(remainingFils)} /> : null}
+              {order.payment_provider ? <Row label="Paid with" value={providerLabel(order.payment_provider)} /> : null}
             </dl>
-          </div>
+          </section>
 
-          <div className="admin-card space-y-1 p-4 text-sm">
-            <p className="font-semibold text-[var(--clicks-navy)]">Customer</p>
+          {canWrite ? (
+            <section className="admin-card space-y-4 p-4">
+              <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Order actions</h2>
+
+              {fulfillmentActions.length || actions?.complete ? (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-[var(--clicks-muted)]">Delivery status</p>
+                  <div className="flex flex-wrap gap-2">
+                    {fulfillmentActions.map((a) => (
+                      <ActionButton
+                        key={a.status}
+                        small
+                        label={a.label}
+                        enabled={a.enabled}
+                        reason={actionHint(a)}
+                        pending={pending}
+                        onClick={() => openStatus("fulfillment", a)}
+                      />
+                    ))}
+                    {actions?.complete && order.fulfillment_status !== "COMPLETED" && !cancelled ? (
+                      <ActionButton
+                        small
+                        variant="primary"
+                        label={actions.complete.label || "Set status: Completed"}
+                        enabled={actions.complete.enabled}
+                        reason={actionHint(actions.complete)}
+                        pending={pending}
+                        onClick={() =>
+                          openStatus("fulfillment", { ...actions.complete, status: "COMPLETED" })
+                        }
+                      />
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              {paymentPrimary.length || paymentAdvanced.length ? (
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-[var(--clicks-muted)]">Payment</p>
+                  <div className="flex flex-wrap items-start gap-2">
+                    {paymentPrimary.map((a) => (
+                      <ActionButton
+                        key={a.status}
+                        small
+                        label={a.label}
+                        enabled={a.enabled}
+                        reason={actionHint(a)}
+                        pending={pending}
+                        onClick={() => openStatus("payment", a)}
+                      />
+                    ))}
+                    <MoreMenu
+                      items={paymentAdvanced.map((a) => ({
+                        key: a.status ?? a.label,
+                        label: a.label,
+                        description: a.status ? statusDescription("payment", a.status) : undefined,
+                        disabled: !a.enabled || pending,
+                        reason: actionHint(a),
+                        danger: a.status === "FAILED",
+                        onSelect: () => openStatus("payment", a),
+                      }))}
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              {refund && (paid || refundedFils > 0) ? (
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-[var(--clicks-muted)]">Refund</p>
+                  <ActionButton
+                    small
+                    variant="danger"
+                    label={via.button}
+                    enabled={refund.enabled}
+                    reason={actionHint(refund)}
+                    pending={pending}
+                    onClick={() => {
+                      setRefundError("");
+                      setRefundDraft({ mode: "all", amount: "", reason: "", manual: false });
+                    }}
+                  />
+                  {refund.enabled ? (
+                    <p className="text-[11px] text-[var(--clicks-muted)]">
+                      Up to {refund.remaining_display || formatJod(remainingFils)} can still be refunded. You can refund in
+                      several parts.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {actions?.cancel && !cancelled ? (
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-[var(--clicks-muted)]">Cancel</p>
+                  <ActionButton
+                    small
+                    variant="danger"
+                    label={actions.cancel.label || "Cancel order"}
+                    enabled={actions.cancel.enabled}
+                    reason={actionHint(actions.cancel)}
+                    pending={pending}
+                    onClick={() => setCancelDraft({ reason: "" })}
+                  />
+                </div>
+              ) : null}
+
+              {cancelled ? <p className="text-xs text-[var(--clicks-muted)]">Cancelled orders have no further actions.</p> : null}
+            </section>
+          ) : (
+            <section className="admin-card p-4 text-xs text-[var(--clicks-muted)]">
+              Your role can view this order but cannot change its status, refund or cancel it.
+            </section>
+          )}
+
+          <section className="admin-card space-y-1 p-4 text-sm">
+            <h2 className="font-semibold text-[var(--clicks-navy)]">Customer</h2>
             <p>{order.full_name || "—"}</p>
-            <p className="break-all text-[var(--clicks-muted)]">{order.email || "—"}</p>
+            <p className="break-all text-[var(--clicks-muted)]">
+              {canCustomers && order.email ? (
+                <Link href={`/admin/customers?search=${encodeURIComponent(order.email)}`} className="text-[var(--clicks-blue)]">
+                  {order.email}
+                </Link>
+              ) : (
+                order.email || "—"
+              )}
+            </p>
             {order.phone ? <p className="text-[var(--clicks-muted)]">{order.phone}</p> : null}
-            <p className="text-xs text-[var(--clicks-muted)]">{order.user ? "Registered account" : "Guest checkout"}</p>
+            <p className="text-xs text-[var(--clicks-muted)]">{order.user ? "Registered account" : "Guest checkout (no account)"}</p>
+            {order.locale ? (
+              <p className="text-xs text-[var(--clicks-muted)]">
+                E-mails are sent in {order.locale === "ar" ? "Arabic" : "English"}.
+              </p>
+            ) : null}
             <div className="pt-2 text-xs text-[var(--clicks-muted)]">
-              <p>Region confirmed: {order.region_confirmed ? "yes" : "no"}</p>
-              <p>Refund policy accepted: {order.refund_confirmed ? "yes" : "no"}</p>
+              <p>Confirmed the region: {order.region_confirmed ? "yes" : "no"}</p>
+              <p>Accepted the refund policy: {order.refund_confirmed ? "yes" : "no"}</p>
             </div>
             {order.notes ? (
               <div className="pt-2">
-                <p className="text-xs font-semibold text-[var(--clicks-navy)]">Order notes</p>
+                <p className="text-xs font-semibold text-[var(--clicks-navy)]">Note from the customer</p>
                 <p className="whitespace-pre-wrap text-xs">{order.notes}</p>
               </div>
             ) : null}
-          </div>
+          </section>
 
-          {canWrite ? (
-            <div className="admin-card p-4">
-              <p className="text-sm font-semibold text-[var(--clicks-navy)]">Payment status</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {paymentOptions.length ? (
-                  paymentOptions.map((status) => (
-                    <button
-                      key={status}
-                      type="button"
-                      disabled={pending}
-                      onClick={() => openTransition("payment", status)}
-                      className={`admin-btn h-8 text-xs disabled:opacity-60 ${
-                        transitionIsDanger(status) ? "admin-btn-danger" : "admin-btn-secondary"
-                      }`}
-                    >
-                      {transitionLabel("payment", status, { currentPayment: order.payment_status, hasPaypal })}
-                    </button>
-                  ))
-                ) : (
-                  <p className="text-xs text-[var(--clicks-muted)]">No payment changes possible from this status.</p>
-                )}
-              </div>
-              <p className="mt-4 text-sm font-semibold text-[var(--clicks-navy)]">Fulfillment status</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {fulfillmentOptions.length ? (
-                  fulfillmentOptions.map((status) => (
-                    <button
-                      key={status}
-                      type="button"
-                      disabled={pending}
-                      onClick={() => openTransition("fulfillment", status)}
-                      className={`admin-btn h-8 text-xs disabled:opacity-60 ${
-                        transitionIsDanger(status) ? "admin-btn-danger" : "admin-btn-secondary"
-                      }`}
-                    >
-                      {transitionLabel("fulfillment", status)}
-                    </button>
-                  ))
-                ) : (
-                  <p className="text-xs text-[var(--clicks-muted)]">No fulfillment changes possible from this status.</p>
-                )}
-              </div>
-              {order.can_cancel === false && isPaid ? (
-                <p className="mt-3 text-[11px] text-[var(--clicks-muted)]">
-                  Paid orders can only be cancelled after a refund.
-                </p>
-              ) : null}
-            </div>
-          ) : null}
+          <StaffNotes order={order} canWrite={canWrite} onSaved={(next) => {
+            setOrder(next);
+            setHistoryTick((n) => n + 1);
+          }} />
         </div>
       </div>
 
+      {/* Status change (payment / delivery) */}
       <ConfirmDialog
-        open={Boolean(transition)}
-        title={
-          transition
-            ? `${transitionLabel(transition.kind, transition.target, { currentPayment: order.payment_status, hasPaypal })}?`
-            : ""
-        }
-        description={transition ? transitionDescription(transition) : undefined}
-        danger={transition ? transitionIsDanger(transition.target) : false}
-        confirmLabel="Confirm"
+        open={Boolean(statusDraft)}
+        title={statusDraft ? `${statusDraft.label}?` : ""}
+        description={statusDraft?.description}
+        danger={statusDraft?.danger}
+        confirmLabel={statusDraft?.label ?? "Confirm"}
+        cancelLabel="Go back"
         pending={pending}
-        confirmDisabled={transitionInvalid}
-        onCancel={() => setTransition(null)}
-        onConfirm={() => transition && void submitTransition(transition)}
+        confirmDisabled={Boolean(statusDraft?.requiresReason && !statusDraft.reason.trim())}
+        onCancel={() => setStatusDraft(null)}
+        onConfirm={() => statusDraft && void submitStatus(statusDraft)}
       >
-        {transition && transition.target === "PARTIALLY_REFUNDED" ? (
-          <FormField
-            label="Refund amount (JOD)"
-            htmlFor="refund-amount"
-            required={paypalRefundable}
-            hint={`Order total ${formatFils(order.total_fils)} JOD. Sent to PayPal as fils (1 JOD = 1000 fils).`}
-          >
-            <input
-              id="refund-amount"
-              inputMode="decimal"
-              className={adminInputClass}
-              value={transition.amount}
-              onChange={(e) => setTransition((t) => (t ? { ...t, amount: e.target.value } : t))}
-            />
-          </FormField>
-        ) : null}
-        {transition ? (
+        {statusDraft ? (
           <FormField
             label="Reason"
-            htmlFor="transition-reason"
-            required={transitionReasonRequired(transition.kind, transition.target)}
-            hint="Saved in the audit log."
+            htmlFor="status-reason"
+            required={statusDraft.requiresReason}
+            hint={statusDraft.requiresReason ? "Required. Saved in the order history, e.g. “Paid by bank transfer, ref 1234”." : "Optional. Saved in the order history."}
           >
             <textarea
-              id="transition-reason"
+              id="status-reason"
               className={adminTextareaClass}
-              value={transition.reason}
+              value={statusDraft.reason}
               maxLength={500}
-              onChange={(e) => setTransition((t) => (t ? { ...t, reason: e.target.value } : t))}
+              onChange={(e) => setStatusDraft((d) => (d ? { ...d, reason: e.target.value } : d))}
             />
           </FormField>
         ) : null}
       </ConfirmDialog>
 
+      {/* Refund (D5) */}
+      <ConfirmDialog
+        open={Boolean(refundDraft)}
+        title={via.button}
+        description={via.explain}
+        danger
+        confirmLabel={refundValid && refundAmountFils ? `Refund ${formatJod(refundAmountFils)}` : "Refund"}
+        cancelLabel="Go back"
+        pending={pending}
+        confirmDisabled={!refundValid}
+        onCancel={() => setRefundDraft(null)}
+        onConfirm={() => void submitRefund()}
+      >
+        {refundDraft ? (
+          <>
+            <dl className="space-y-1 rounded-lg bg-[var(--clicks-bg)] px-3 py-2 text-xs">
+              <Row label="Paid" value={summary?.paid_display || formatJod(summary?.paid_fils ?? order.total_fils)} />
+              <Row label="Already refunded" value={summary?.refunded_display || formatJod(refundedFils)} />
+              <Row label="Can still be refunded" value={formatJod(remainingFils)} strong />
+            </dl>
+            <fieldset className="space-y-2 text-sm">
+              <legend className="sr-only">How much to refund</legend>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="refund-mode"
+                  checked={refundDraft.mode === "all"}
+                  onChange={() => setRefundDraft((d) => (d ? { ...d, mode: "all" } : d))}
+                />
+                Everything left ({formatJod(remainingFils)})
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="refund-mode"
+                  checked={refundDraft.mode === "part"}
+                  onChange={() => setRefundDraft((d) => (d ? { ...d, mode: "part" } : d))}
+                />
+                Only part of it
+              </label>
+            </fieldset>
+            {refundDraft.mode === "part" ? (
+              <FormField
+                label="Amount to refund (JOD)"
+                htmlFor="refund-amount"
+                required
+                hint={`Up to ${formatJod(remainingFils)}. Example: 2.500`}
+                error={refundInputError}
+              >
+                <input
+                  id="refund-amount"
+                  inputMode="decimal"
+                  autoComplete="off"
+                  className={adminInputClass}
+                  value={refundDraft.amount}
+                  onChange={(e) => {
+                    setRefundError("");
+                    setRefundDraft((d) => (d ? { ...d, amount: e.target.value } : d));
+                  }}
+                />
+              </FormField>
+            ) : null}
+            <FormField label="Reason" htmlFor="refund-reason" hint="Optional. Shown in the order history.">
+              <textarea
+                id="refund-reason"
+                className={adminTextareaClass}
+                value={refundDraft.reason}
+                maxLength={500}
+                onChange={(e) => setRefundDraft((d) => (d ? { ...d, reason: e.target.value } : d))}
+              />
+            </FormField>
+            {refund?.via === "paypal" ? (
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={refundDraft.manual}
+                  onChange={(e) => setRefundDraft((d) => (d ? { ...d, manual: e.target.checked } : d))}
+                />
+                <span>I already returned this money another way — only record it, do not send it through PayPal.</span>
+              </label>
+            ) : null}
+            <p className="text-[11px] text-[var(--clicks-muted)]">
+              Codes the customer already received are not taken back. A full refund retires the codes so they can no
+              longer be viewed. The customer gets a refund e-mail.
+            </p>
+            {refundError ? <Notice tone="error">{refundError}</Notice> : null}
+          </>
+        ) : null}
+      </ConfirmDialog>
+
+      {/* Cancel (D7) */}
+      <ConfirmDialog
+        open={Boolean(cancelDraft)}
+        title="Cancel this order?"
+        description="The order is closed for good: the customer can no longer pay for it and any reserved stock is released. The customer gets a cancellation e-mail."
+        danger
+        confirmLabel="Cancel order"
+        cancelLabel="Keep order"
+        pending={pending}
+        onCancel={() => setCancelDraft(null)}
+        onConfirm={() =>
+          void (async () => {
+            if (!cancelDraft) return;
+            const ok = await run((tok, o) => cancelOrder(tok, o.id, cancelDraft.reason.trim() || undefined), "Order cancelled");
+            if (ok) setCancelDraft(null);
+          })()
+        }
+      >
+        <FormField label="Reason" htmlFor="cancel-reason" hint="Optional. Saved in the order history.">
+          <textarea
+            id="cancel-reason"
+            className={adminTextareaClass}
+            value={cancelDraft?.reason ?? ""}
+            maxLength={500}
+            onChange={(e) => setCancelDraft((d) => (d ? { reason: e.target.value } : d))}
+          />
+        </FormField>
+      </ConfirmDialog>
+
+      {/* Attach code */}
       <ConfirmDialog
         open={Boolean(attachItem)}
-        title="Attach code"
+        title="Attach a code"
         description={
           attachItem
             ? `Delivers this code to the customer for “${attachItem.product_name}${
@@ -562,20 +1089,26 @@ export function OrderDetailClient({ id }: { id: string }) {
               }”. Double-check it — the customer can see it immediately.`
             : undefined
         }
-        confirmLabel="Attach & deliver"
+        confirmLabel="Attach and deliver"
+        cancelLabel="Go back"
         pending={pending}
         confirmDisabled={!attachForm.code.trim()}
         onCancel={() => setAttachItem(null)}
         onConfirm={() =>
           void (async () => {
             if (!attachItem) return;
+            setAttachError("");
             const ok = await run(
               (tok, o) =>
-                attachOrderItemCode(tok, o.id, attachItem.id, {
+                attachItemCode(tok, o.id, attachItem.id, {
                   code: attachForm.code.trim(),
                   ...(attachForm.pin.trim() ? { pin: attachForm.pin.trim() } : {}),
                 }),
-              "Code attached",
+              "Code attached and delivered",
+              (message) => {
+                setAttachError(message);
+                return true;
+              },
             );
             if (ok) setAttachItem(null);
           })()
@@ -590,7 +1123,7 @@ export function OrderDetailClient({ id }: { id: string }) {
             onChange={(e) => setAttachForm((f) => ({ ...f, code: e.target.value }))}
           />
         </FormField>
-        <FormField label="PIN" htmlFor="attach-pin" hint="Only if the card has a separate PIN / serial.">
+        <FormField label="PIN" htmlFor="attach-pin" hint="Only if the card has a separate PIN or serial.">
           <input
             id="attach-pin"
             autoComplete="off"
@@ -599,30 +1132,33 @@ export function OrderDetailClient({ id }: { id: string }) {
             onChange={(e) => setAttachForm((f) => ({ ...f, pin: e.target.value }))}
           />
         </FormField>
+        {attachError ? <Notice tone="error">{attachError}</Notice> : null}
       </ConfirmDialog>
 
+      {/* Mark top-up delivered */}
       <ConfirmDialog
         open={Boolean(deliverItem)}
-        title="Mark top-up delivered?"
-        description="Confirm the top-up was credited to the customer's account. The customer receives a delivery e-mail."
+        title="Mark this top-up delivered?"
+        description="Confirm the top-up reached the customer's game account. The customer gets a delivery e-mail."
         confirmLabel="Mark delivered"
+        cancelLabel="Go back"
         pending={pending}
         onCancel={() => setDeliverItem(null)}
         onConfirm={() =>
           void (async () => {
             if (!deliverItem) return;
             const ok = await run(
-              (tok, o) => markOrderItemDelivered(tok, o.id, deliverItem.id, { note: deliverNote.trim() }),
-              "Item marked delivered",
+              (tok, o) => markItemDelivered(tok, o.id, deliverItem.id, deliverNote.trim()),
+              "Top-up marked delivered",
             );
             if (ok) setDeliverItem(null);
           })()
         }
       >
         <FormField
-          label="Delivery note"
+          label="Message to the customer"
           htmlFor="deliver-note"
-          hint="Optional — e.g. supplier transaction id. Shown to staff only."
+          hint="Optional. Visible to the customer on their order page and in the e-mail — e.g. “Added 660 UC to your account.” Put internal details in Staff notes instead."
         >
           <textarea
             id="deliver-note"
@@ -636,14 +1172,15 @@ export function OrderDetailClient({ id }: { id: string }) {
 
       <ConfirmDialog
         open={confirmFulfill}
-        title="Deliver from stock?"
-        description="Assigns available codes from inventory to the undelivered code items and e-mails the customer. Items without enough stock stay in manual review."
+        title="Deliver codes from stock?"
+        description="Takes codes from your stock for the items still waiting and e-mails them to the customer. Items without enough stock stay in “Needs review”."
         confirmLabel="Deliver"
+        cancelLabel="Go back"
         pending={pending}
         onCancel={() => setConfirmFulfill(false)}
         onConfirm={() =>
           void (async () => {
-            const ok = await run((tok, o) => fulfillOrder(tok, o.id), "Fulfillment ran");
+            const ok = await run((tok, o) => fulfillOrderFromStock(tok, o.id), "Delivery from stock finished");
             if (ok) setConfirmFulfill(false);
           })()
         }
@@ -651,9 +1188,10 @@ export function OrderDetailClient({ id }: { id: string }) {
 
       <ConfirmDialog
         open={confirmResend}
-        title="Resend delivery e-mail?"
-        description={`Sends the delivery e-mail(s) again to ${order.email}.`}
-        confirmLabel="Resend"
+        title="Resend the e-mail?"
+        description={`Sends the delivery e-mail again to ${order.email}.`}
+        confirmLabel="Resend e-mail"
+        cancelLabel="Go back"
         pending={pending}
         onCancel={() => setConfirmResend(false)}
         onConfirm={() =>
@@ -661,11 +1199,12 @@ export function OrderDetailClient({ id }: { id: string }) {
             if (!token) return;
             setPending(true);
             try {
-              const res = await resendOrderEmail(token, order.id);
-              toast.push(res.detail || `E-mail sent to ${res.to}`, "success");
+              const res = await resendDeliveryEmail(token, order.id);
+              toast.push(res.to ? `E-mail sent to ${res.to}` : res.detail || "E-mail sent", "success");
               setConfirmResend(false);
+              setHistoryTick((n) => n + 1);
             } catch (err) {
-              toast.push(adminErrorMessage(err, "E-mail failed"), "error");
+              toast.push(adminErrorSummary(err, "The e-mail could not be sent."), "error");
             } finally {
               setPending(false);
             }
@@ -676,6 +1215,7 @@ export function OrderDetailClient({ id }: { id: string }) {
       <RevealCodeDialog
         target={revealTarget ? { id: revealTarget.id, masked: revealTarget.masked } : null}
         onClose={() => setRevealTarget(null)}
+        onRevealed={() => setHistoryTick((n) => n + 1)}
       />
     </div>
   );

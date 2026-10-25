@@ -2,10 +2,14 @@
 
 import { useAdminAccess } from "@/components/admin/admin-access";
 import { ADMIN_LIST_PAGE_SIZE } from "@/components/admin/admin-list-page";
+import { listAdministratorRows, type AdminUserRow } from "@/components/admin/ops/api";
+import { passwordAcceptable } from "@/components/admin/ops/auth-helpers";
+import { Notice } from "@/components/admin/ops/controls";
+import { OpsTable } from "@/components/admin/ops/ops-table";
+import { PasswordField } from "@/components/admin/ops/password-field";
 import { AdminModal } from "@/components/admin/ui/admin-modal";
 import { Badge } from "@/components/admin/ui/badge";
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
-import { DataTable } from "@/components/admin/ui/data-table";
 import { EmptyState } from "@/components/admin/ui/empty-state";
 import { ErrorState } from "@/components/admin/ui/error-state";
 import { Filters } from "@/components/admin/ui/filters";
@@ -13,46 +17,136 @@ import { FormField, adminInputClass } from "@/components/admin/ui/form-field";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { Pagination } from "@/components/admin/ui/pagination";
 import { useAdminToast } from "@/components/admin/ui/toast";
-import { adminErrorMessage, adminFieldErrors } from "@/components/admin/lib/errors";
-import { assignableRoles, canManageAdmin, roleLabel } from "@/components/admin/lib/roles";
-import { formatAdminDateTime } from "@/lib/admin/format";
-import { useAdminResource } from "@/hooks/use-admin-resource";
+import { adminErrorSummary, adminFieldErrors } from "@/components/admin/lib/errors";
 import {
-  asList,
-  createAdministrator,
-  listAdministrators,
-  updateAdministrator,
-  type AdminUser,
-} from "@/lib/api/admin";
-import { useState } from "react";
+  ADMIN_ROLES,
+  assignableRoles,
+  canManageAdmin,
+  privilegedRoleWarning,
+  roleDescription,
+  roleLabel,
+} from "@/components/admin/lib/roles";
+import { formatAdminDateTime } from "@/lib/admin/format";
+import { useAdminQuery } from "@/hooks/use-admin-query";
+import { asList, createAdministrator, updateAdministrator } from "@/lib/api/admin";
+import { useEffect, useState } from "react";
 
 const emptyCreate = { email: "", password: "", full_name: "", role: "VIEWER", title: "" };
+const CREATE_FIELDS = ["email", "password", "full_name", "role", "title"];
 
 type EditForm = { full_name: string; title: string; role: string; disabled: boolean; password: string };
 
-export function AdministratorsListClient() {
+function withoutKey(errors: Record<string, string>, key: string) {
+  if (!errors[key]) return errors;
+  const next = { ...errors };
+  delete next[key];
+  return next;
+}
+
+function RoleSelect({
+  id,
+  value,
+  options,
+  allowed,
+  disabled,
+  hint,
+  error,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  options: string[];
+  allowed: string[];
+  disabled?: boolean;
+  hint: string;
+  error?: string;
+  onChange: (role: string) => void;
+}) {
+  const warning = privilegedRoleWarning(value);
+  return (
+    <FormField label="Role" htmlFor={id} hint={hint} error={error}>
+      <select id={id} className={adminInputClass} disabled={disabled} value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map((r) => (
+          <option key={r} value={r} disabled={!allowed.includes(r)}>
+            {roleLabel(r)} — {roleDescription(r)}
+          </option>
+        ))}
+      </select>
+      {roleDescription(value) ? (
+        <p className="rounded-lg bg-[var(--clicks-bg)] px-3 py-2 text-[12px] text-[var(--clicks-text)]">
+          <span className="font-semibold">{roleLabel(value)}:</span> {roleDescription(value)}
+        </p>
+      ) : null}
+      {warning ? <Notice tone="warning">{warning}</Notice> : null}
+    </FormField>
+  );
+}
+
+export function AdministratorsListClient({ initialSearch = "" }: { initialSearch?: string }) {
   const toast = useAdminToast();
   const { can, role: myRole, userId } = useAdminAccess();
   const canWrite = can("admins.write");
   const roles = assignableRoles(myRole);
-  const { token, page, setPage, search, setSearch, items, count, loading, error, reload } =
-    useAdminResource<AdminUser>(async (tok, p, s) => {
-      const data = await listAdministrators(tok, { page: p, page_size: ADMIN_LIST_PAGE_SIZE, search: s || undefined });
-      return asList(data);
-    });
+
+  const [searchInput, setSearchInput] = useState(initialSearch);
+  const [search, setSearch] = useState(initialSearch);
+  const [roleFilter, setRoleFilter] = useState("");
+  const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      setSearch(searchInput.trim());
+      setPage(1);
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [searchInput]);
+
+  const { data, loading, error, reload, token } = useAdminQuery(
+    async (tok) =>
+      asList(
+        await listAdministratorRows(tok, {
+          page,
+          page_size: ADMIN_LIST_PAGE_SIZE,
+          search: search || undefined,
+          role: roleFilter || undefined,
+        }),
+      ),
+    [page, search, roleFilter],
+  );
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState(emptyCreate);
-  const [editing, setEditing] = useState<AdminUser | null>(null);
+  const [editing, setEditing] = useState<AdminUserRow | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({ full_name: "", title: "", role: "VIEWER", disabled: false, password: "" });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState("");
   const [confirmEdit, setConfirmEdit] = useState(false);
   const [pending, setPending] = useState(false);
+
+  function setCreate<K extends keyof typeof emptyCreate>(key: K, value: string) {
+    setCreateForm((f) => ({ ...f, [key]: value }));
+    setErrors((e) => withoutKey(e, key));
+    setFormError("");
+  }
+
+  function setEdit<K extends keyof EditForm>(key: K, value: EditForm[K]) {
+    setEditForm((f) => ({ ...f, [key]: value }));
+    setErrors((e) => withoutKey(e, key));
+    setFormError("");
+  }
+
+  function failed(err: unknown, fallback: string) {
+    const fields = adminFieldErrors(err);
+    setErrors(fields);
+    const inline = Object.keys(fields).filter((k) => CREATE_FIELDS.includes(k) || k === "disabled");
+    setFormError(inline.length ? "Please fix the highlighted fields." : adminErrorSummary(err, fallback));
+  }
 
   async function create() {
     if (!token) return;
     setPending(true);
     setErrors({});
+    setFormError("");
     try {
       await createAdministrator(token, {
         email: createForm.email.trim(),
@@ -61,23 +155,23 @@ export function AdministratorsListClient() {
         role: createForm.role,
         title: createForm.title.trim() || undefined,
       });
-      toast.push("Administrator created", "success");
+      toast.push("Staff account created", "success");
       setCreateOpen(false);
       setCreateForm(emptyCreate);
       reload();
     } catch (err) {
-      setErrors(adminFieldErrors(err));
-      toast.push(adminErrorMessage(err, "Create failed"), "error");
+      failed(err, "Could not create the account.");
     } finally {
       setPending(false);
     }
   }
 
-  function openEdit(row: AdminUser) {
+  function openEdit(row: AdminUserRow) {
     setEditing(row);
     setErrors({});
+    setFormError("");
     setEditForm({
-      full_name: row.first_name ?? "",
+      full_name: [row.first_name, row.last_name].filter(Boolean).join(" "),
       title: row.title ?? "",
       role: row.role,
       disabled: Boolean(row.disabled),
@@ -85,9 +179,9 @@ export function AdministratorsListClient() {
     });
   }
 
-  function editBody(row: AdminUser) {
+  function editBody(row: AdminUserRow) {
     const body: Parameters<typeof updateAdministrator>[2] = {};
-    const currentName = row.first_name ?? "";
+    const currentName = [row.first_name, row.last_name].filter(Boolean).join(" ");
     if (editForm.full_name.trim() && editForm.full_name.trim() !== currentName) body.full_name = editForm.full_name.trim();
     if (editForm.title.trim() !== (row.title ?? "")) body.title = editForm.title.trim();
     if (editForm.role !== row.role) body.role = editForm.role;
@@ -105,16 +199,16 @@ export function AdministratorsListClient() {
     }
     setPending(true);
     setErrors({});
+    setFormError("");
     try {
       await updateAdministrator(token, editing.id, body);
-      toast.push("Administrator updated", "success");
+      toast.push("Staff account saved", "success");
       setEditing(null);
       setConfirmEdit(false);
       reload();
     } catch (err) {
-      setErrors(adminFieldErrors(err));
       setConfirmEdit(false);
-      toast.push(adminErrorMessage(err, "Update failed"), "error");
+      failed(err, "Could not save the account.");
     } finally {
       setPending(false);
     }
@@ -124,12 +218,16 @@ export function AdministratorsListClient() {
   const pendingBody = editing ? editBody(editing) : {};
   const sensitive = Boolean(pendingBody.role || pendingBody.disabled !== undefined || pendingBody.password);
   const editRoleOptions = editing && !roles.includes(editing.role) ? [editing.role, ...roles] : roles;
+  const createReady =
+    createForm.email.trim() && createForm.full_name.trim() && passwordAcceptable(createForm.password, createForm.email);
+  const editPasswordOk = !editForm.password || passwordAcceptable(editForm.password, editing?.email ?? "");
+  const rows = data?.items ?? [];
 
   return (
     <div>
       <PageHeader
         title="Administrators"
-        description="Staff accounts that can sign in to this panel."
+        description="Staff accounts that can sign in to this panel. The role decides what each person can see and do."
         actions={
           canWrite ? (
             <button
@@ -137,21 +235,49 @@ export function AdministratorsListClient() {
               onClick={() => {
                 setCreateForm(emptyCreate);
                 setErrors({});
+                setFormError("");
                 setCreateOpen(true);
               }}
               className="admin-btn admin-btn-primary"
             >
-              New admin
+              New staff account
             </button>
           ) : null
         }
       />
-      <Filters search={search} onSearchChange={setSearch} searchPlaceholder="Search admins…" />
-      <DataTable
+      <Filters
+        search={searchInput}
+        onSearchChange={setSearchInput}
+        searchPlaceholder="Name or e-mail…"
+        filters={[
+          {
+            key: "role",
+            label: "Role",
+            value: roleFilter,
+            onChange: (v) => {
+              setRoleFilter(v);
+              setPage(1);
+            },
+            options: [{ value: "", label: "Any role" }, ...ADMIN_ROLES.map((r) => ({ value: r, label: roleLabel(r) }))],
+          },
+        ]}
+        onClear={() => {
+          setSearchInput("");
+          setRoleFilter("");
+          setPage(1);
+        }}
+      />
+      <OpsTable<AdminUserRow>
+        rows={rows}
+        loading={loading && !data}
+        rowKey={(r) => String(r.id)}
+        empty={<EmptyState title="No staff accounts found" description={search ? "Try another name or e-mail." : undefined} />}
+        error={error ? <ErrorState message={error} onRetry={reload} /> : null}
         columns={[
           {
             key: "name",
-            header: "Admin",
+            header: "Name",
+            primary: true,
             render: (r) => (
               <div>
                 <p className="font-medium">
@@ -162,112 +288,92 @@ export function AdministratorsListClient() {
               </div>
             ),
           },
-          { key: "email", header: "Email", render: (r) => r.email },
-          { key: "role", header: "Role", render: (r) => roleLabel(r.role) },
+          { key: "email", header: "E-mail", render: (r) => <span className="break-all">{r.email}</span> },
+          { key: "role", header: "Role", render: (r) => r.role_label || roleLabel(r.role) },
           {
             key: "status",
             header: "Status",
             render: (r) => <Badge status={r.disabled ? "DISABLED" : "ACTIVE"}>{r.disabled ? "Disabled" : "Active"}</Badge>,
           },
-          { key: "login", header: "Last login", render: (r) => <span className="text-xs">{formatAdminDateTime(r.last_login)}</span> },
+          {
+            key: "login",
+            header: "Last sign-in",
+            className: "whitespace-nowrap",
+            render: (r) => <span className="text-xs">{r.last_login ? formatAdminDateTime(r.last_login) : "Never"}</span>,
+          },
           ...(canWrite
             ? [
                 {
                   key: "actions",
                   header: "",
-                  render: (r: AdminUser) =>
+                  render: (r: AdminUserRow) =>
                     canManageAdmin(myRole, r.role) || String(r.id) === String(userId) ? (
                       <button type="button" className="text-xs font-medium text-[var(--clicks-blue)]" onClick={() => openEdit(r)}>
                         Edit
                       </button>
                     ) : (
-                      <span className="text-[11px] text-[var(--clicks-muted)]">Super admin only</span>
+                      <span className="text-[11px] text-[var(--clicks-muted)]">Only a super admin can edit this account</span>
                     ),
                 },
               ]
             : []),
         ]}
-        rows={items}
-        loading={loading}
-        rowKey={(r) => String(r.id)}
-        empty={<EmptyState title="No administrators" />}
-        error={error ? <ErrorState message={error} onRetry={reload} /> : null}
       />
-      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={count} onPageChange={setPage} />
+      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={data?.count ?? 0} onPageChange={setPage} />
 
-      <AdminModal open={createOpen} onClose={() => setCreateOpen(false)} title="New administrator">
+      <AdminModal open={createOpen} onClose={() => setCreateOpen(false)} title="New staff account">
         <div className="space-y-3">
           <FormField label="Full name" htmlFor="ad-name" required error={errors.full_name}>
             <input
               id="ad-name"
               className={adminInputClass}
               value={createForm.full_name}
-              onChange={(e) => setCreateForm((f) => ({ ...f, full_name: e.target.value }))}
+              onChange={(e) => setCreate("full_name", e.target.value)}
             />
           </FormField>
-          <FormField label="Email" htmlFor="ad-email" required error={errors.email}>
+          <FormField label="E-mail" htmlFor="ad-email" required hint="They sign in with this address." error={errors.email}>
             <input
               id="ad-email"
               type="email"
+              autoComplete="off"
               className={adminInputClass}
               value={createForm.email}
-              onChange={(e) => setCreateForm((f) => ({ ...f, email: e.target.value }))}
+              onChange={(e) => setCreate("email", e.target.value)}
             />
           </FormField>
-          <FormField
+          <PasswordField
+            id="ad-pass"
             label="Password"
-            htmlFor="ad-pass"
             required
-            hint="At least 12 characters; not too common or similar to the e-mail."
+            value={createForm.password}
+            email={createForm.email}
             error={errors.password}
-          >
-            <input
-              id="ad-pass"
-              type="password"
-              autoComplete="new-password"
-              className={adminInputClass}
-              value={createForm.password}
-              onChange={(e) => setCreateForm((f) => ({ ...f, password: e.target.value }))}
-            />
-          </FormField>
-          <FormField
-            label="Role"
-            htmlFor="ad-role"
-            hint={myRole === "SUPER_ADMIN" ? "See the Roles page for what each role can do." : "Only a super admin can create Admin or Super admin accounts."}
+            onChange={(v) => setCreate("password", v)}
+          />
+          <RoleSelect
+            id="ad-role"
+            value={createForm.role}
+            options={roles}
+            allowed={roles}
+            hint={myRole === "SUPER_ADMIN" ? "Pick the smallest role that lets them do their job." : "Only a super admin can create Admin or Super admin accounts."}
             error={errors.role}
-          >
-            <select
-              id="ad-role"
-              className={adminInputClass}
-              value={createForm.role}
-              onChange={(e) => setCreateForm((f) => ({ ...f, role: e.target.value }))}
-            >
-              {roles.map((r) => (
-                <option key={r} value={r}>
-                  {roleLabel(r)}
-                </option>
-              ))}
-            </select>
-          </FormField>
+            onChange={(v) => setCreate("role", v)}
+          />
           <FormField label="Job title" htmlFor="ad-title" hint="Optional, e.g. “Support lead”." error={errors.title}>
-            <input
-              id="ad-title"
-              className={adminInputClass}
-              value={createForm.title}
-              onChange={(e) => setCreateForm((f) => ({ ...f, title: e.target.value }))}
-            />
+            <input id="ad-title" className={adminInputClass} value={createForm.title} onChange={(e) => setCreate("title", e.target.value)} />
           </FormField>
+          {formError ? <Notice tone="error">{formError}</Notice> : null}
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" className="admin-btn admin-btn-secondary" onClick={() => setCreateOpen(false)}>
               Cancel
             </button>
             <button
               type="button"
-              disabled={pending || !createForm.email.trim() || !createForm.full_name.trim() || createForm.password.length < 12}
+              disabled={pending || !createReady}
               onClick={() => void create()}
               className="admin-btn admin-btn-primary disabled:opacity-60"
             >
-              {pending ? "Creating…" : "Create"}
+              {pending ? "Creating…" : "Create account"}
             </button>
           </div>
         </div>
@@ -277,83 +383,58 @@ export function AdministratorsListClient() {
         open={Boolean(editing)}
         onClose={() => setEditing(null)}
         title={editing ? `Edit ${editing.email}` : ""}
-        description={editing ? `Last login: ${formatAdminDateTime(editing.last_login)}` : undefined}
+        description={editing ? `Last sign-in: ${editing.last_login ? formatAdminDateTime(editing.last_login) : "never"}` : undefined}
       >
         {editing ? (
           <div className="space-y-3">
             <FormField label="Full name" htmlFor="ed-name" error={errors.full_name}>
-              <input
-                id="ed-name"
-                className={adminInputClass}
-                value={editForm.full_name}
-                onChange={(e) => setEditForm((f) => ({ ...f, full_name: e.target.value }))}
-              />
+              <input id="ed-name" className={adminInputClass} value={editForm.full_name} onChange={(e) => setEdit("full_name", e.target.value)} />
             </FormField>
             <FormField label="Job title" htmlFor="ed-title" error={errors.title}>
-              <input
-                id="ed-title"
-                className={adminInputClass}
-                value={editForm.title}
-                onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))}
-              />
+              <input id="ed-title" className={adminInputClass} value={editForm.title} onChange={(e) => setEdit("title", e.target.value)} />
             </FormField>
-            <FormField
-              label="Role"
-              htmlFor="ed-role"
-              hint={isSelf ? "You cannot change your own role." : "Takes effect on their next page load."}
+            <RoleSelect
+              id="ed-role"
+              value={editForm.role}
+              options={editRoleOptions}
+              allowed={roles}
+              disabled={isSelf}
+              hint={isSelf ? "You cannot change your own role." : "They are signed out and must sign in again with the new role."}
               error={errors.role}
-            >
-              <select
-                id="ed-role"
-                className={adminInputClass}
-                disabled={isSelf}
-                value={editForm.role}
-                onChange={(e) => setEditForm((f) => ({ ...f, role: e.target.value }))}
-              >
-                {editRoleOptions.map((r) => (
-                  <option key={r} value={r} disabled={!roles.includes(r)}>
-                    {roleLabel(r)}
-                  </option>
-                ))}
-              </select>
-            </FormField>
+              onChange={(v) => setEdit("role", v)}
+            />
             <div className="space-y-1">
               <label className="flex items-center gap-2 text-sm font-medium">
                 <input
                   type="checkbox"
                   disabled={isSelf}
                   checked={editForm.disabled}
-                  onChange={(e) => setEditForm((f) => ({ ...f, disabled: e.target.checked }))}
+                  onChange={(e) => setEdit("disabled", e.target.checked)}
                 />
                 Account disabled
               </label>
               <p className="ps-6 text-[11px] text-[var(--clicks-muted)]">
-                {isSelf ? "You cannot disable your own account." : "Disabled admins are signed out and cannot sign in."}
+                {isSelf ? "You cannot disable your own account." : "Disabled staff are signed out at once and cannot sign in."}
               </p>
               {errors.disabled ? <p className="ps-6 text-[11px] text-[var(--clicks-error)]">{errors.disabled}</p> : null}
             </div>
-            <FormField
-              label="Set new password"
-              htmlFor="ed-pass"
-              hint="Leave empty to keep the current password. Min 12 characters; signs them out everywhere."
+            <PasswordField
+              id="ed-pass"
+              label="Set a new password"
+              value={editForm.password}
+              email={editing.email}
+              optionalHint="Leave empty to keep the current password. A new password signs them out everywhere."
               error={errors.password}
-            >
-              <input
-                id="ed-pass"
-                type="password"
-                autoComplete="new-password"
-                className={adminInputClass}
-                value={editForm.password}
-                onChange={(e) => setEditForm((f) => ({ ...f, password: e.target.value }))}
-              />
-            </FormField>
+              onChange={(v) => setEdit("password", v)}
+            />
+            {formError ? <Notice tone="error">{formError}</Notice> : null}
             <div className="flex justify-end gap-2 pt-2">
               <button type="button" className="admin-btn admin-btn-secondary" onClick={() => setEditing(null)}>
                 Cancel
               </button>
               <button
                 type="button"
-                disabled={pending || (editForm.password.length > 0 && editForm.password.length < 12)}
+                disabled={pending || !editPasswordOk}
                 onClick={() => (sensitive ? setConfirmEdit(true) : void saveEdit())}
                 className="admin-btn admin-btn-primary disabled:opacity-60"
               >
@@ -368,16 +449,20 @@ export function AdministratorsListClient() {
         open={confirmEdit}
         title="Apply these account changes?"
         description={[
-          pendingBody.role ? `Role → ${roleLabel(pendingBody.role)}.` : "",
-          pendingBody.disabled === true ? "The account will be disabled and signed out." : "",
-          pendingBody.disabled === false ? "The account will be re-enabled." : "",
-          pendingBody.password ? "The password will be replaced and all sessions signed out." : "",
+          pendingBody.role ? `New role: ${roleLabel(pendingBody.role)}. ${privilegedRoleWarning(pendingBody.role)}` : "",
+          pendingBody.disabled === true ? "The account will be disabled and signed out at once." : "",
+          pendingBody.disabled === false ? "The account will be able to sign in again." : "",
+          pendingBody.password ? "The password will be replaced and every session signed out." : "",
+          pendingBody.role && !pendingBody.password && pendingBody.disabled === undefined
+            ? "They will be signed out and must sign in again."
+            : "",
         ]
           .filter(Boolean)
           .join(" ")}
-        danger={pendingBody.disabled === true}
+        danger={pendingBody.disabled === true || Boolean(privilegedRoleWarning(pendingBody.role))}
         pending={pending}
-        confirmLabel="Apply"
+        confirmLabel="Apply changes"
+        cancelLabel="Go back"
         onCancel={() => setConfirmEdit(false)}
         onConfirm={() => void saveEdit()}
       />

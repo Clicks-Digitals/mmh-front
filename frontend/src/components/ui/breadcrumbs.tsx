@@ -35,7 +35,7 @@ export function Breadcrumbs({
                 href={item.href}
                 className={cn(
                   "font-medium hover:text-fg",
-                  onAccent ? "text-white/85 hover:text-gold" : "text-brand-deep",
+                  onAccent ? "text-white/85 hover:text-gold" : "text-gold",
                 )}
               >
                 {item.label}
@@ -46,7 +46,7 @@ export function Breadcrumbs({
               </span>
             )}
             {!last ? (
-              <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 rtl:rotate-180", onAccent && "text-white/45")} />
+              <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 rtl-flip", onAccent && "text-white/45")} />
             ) : null}
           </span>
         );

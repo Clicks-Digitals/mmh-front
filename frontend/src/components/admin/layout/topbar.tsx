@@ -1,5 +1,10 @@
 "use client";
 
+import { useAdminAccess } from "@/components/admin/admin-access";
+import { useBreadcrumbLabels } from "@/components/admin/layout/breadcrumbs";
+import { useNavigationGuard } from "@/components/admin/layout/navigation-guard";
+import { shortcutLabel } from "@/components/admin/lib/command-search";
+import { roleLabel as formatRole } from "@/components/admin/lib/roles";
 import { AdminAvatar } from "@/components/admin/ui/avatar";
 import { cn } from "@/lib/cn";
 import { ChevronDown, LogOut, Menu, Search, Settings, X } from "lucide-react";
@@ -31,10 +36,13 @@ const LABELS: Record<string, string> = {
   pages: "Pages",
   administrators: "Administrators",
   roles: "Roles",
-  audit: "Audit",
+  audit: "Audit log",
   settings: "Settings",
   new: "New",
 };
+
+/** Paths that are only URL groupings (they redirect), so their crumb is not a link. */
+const NOT_LINKABLE = new Set(["/admin/integrations"]);
 
 function breadcrumbLabel(segment: string) {
   return LABELS[segment] ?? segment.replaceAll("-", " ");
@@ -54,14 +62,24 @@ export function AdminTopbar({
   const pathname = usePathname();
   const [menu, setMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const overrides = useBreadcrumbLabels();
+  const { can } = useAdminAccess();
+  const canSettings = can("settings.manage");
+  const { confirmDiscard } = useNavigationGuard();
+  const [shortcut, setShortcut] = useState("Ctrl K");
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setShortcut(shortcutLabel(navigator.platform || navigator.userAgent)), 0);
+    return () => window.clearTimeout(t);
+  }, []);
 
   const crumbs = useMemo(() => {
     const parts = pathname.split("/").filter(Boolean);
-    return parts.map((part, index) => ({
-      label: breadcrumbLabel(part),
-      href: "/" + parts.slice(0, index + 1).join("/"),
-    }));
-  }, [pathname]);
+    return parts.map((part, index) => {
+      const href = "/" + parts.slice(0, index + 1).join("/");
+      return { label: overrides[href] ?? breadcrumbLabel(decodeURIComponent(part)), href };
+    });
+  }, [pathname, overrides]);
 
   useEffect(() => {
     if (!menu) return;
@@ -72,7 +90,7 @@ export function AdminTopbar({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [menu]);
 
-  const roleLabel = role.replaceAll("_", " ");
+  const roleLabel = formatRole(role);
 
   return (
     <header className="z-20 flex h-14 shrink-0 items-center gap-3 border-b border-[var(--clicks-border)] bg-white px-4">
@@ -86,21 +104,29 @@ export function AdminTopbar({
       </button>
 
       <nav aria-label="Breadcrumb" className="hidden min-w-0 items-center gap-1.5 text-[13px] md:flex">
-        {crumbs.map((crumb, index) => (
-          <span key={crumb.href} className="flex min-w-0 items-center gap-1.5">
-            {index > 0 ? <span className="text-[var(--clicks-border-strong)]">/</span> : null}
-            <span
-              className={cn(
-                "truncate",
-                index === crumbs.length - 1
-                  ? "font-semibold text-[var(--clicks-navy)]"
-                  : "text-[var(--clicks-muted)]",
+        {crumbs.map((crumb, index) => {
+          const last = index === crumbs.length - 1;
+          return (
+            <span key={crumb.href} className="flex min-w-0 items-center gap-1.5">
+              {index > 0 ? <span className="text-[var(--clicks-border-strong)]">/</span> : null}
+              {last || NOT_LINKABLE.has(crumb.href) ? (
+                <span
+                  aria-current={last ? "page" : undefined}
+                  className={cn(
+                    "max-w-[280px] truncate",
+                    last ? "font-semibold text-[var(--clicks-navy)]" : "text-[var(--clicks-muted)]",
+                  )}
+                >
+                  {crumb.label}
+                </span>
+              ) : (
+                <Link href={crumb.href} className="max-w-[200px] truncate text-[var(--clicks-muted)] hover:text-[var(--clicks-blue)]">
+                  {crumb.label}
+                </Link>
               )}
-            >
-              {crumb.label}
             </span>
-          </span>
-        ))}
+          );
+        })}
       </nav>
 
       <button
@@ -111,7 +137,7 @@ export function AdminTopbar({
         <Search className="h-3.5 w-3.5 shrink-0" />
         <span className="flex-1 truncate">Search products, orders, customers…</span>
         <kbd className="hidden rounded border border-[var(--clicks-border)] bg-white px-1.5 py-0.5 text-[10px] font-medium text-[var(--clicks-muted)] lg:inline">
-          ⌘K
+          {shortcut}
         </kbd>
       </button>
 
@@ -138,7 +164,7 @@ export function AdminTopbar({
               <span className="block max-w-[140px] truncate text-[13px] font-semibold leading-tight text-[var(--clicks-navy)]">
                 {name}
               </span>
-              <span className="block max-w-[140px] truncate text-[10px] uppercase tracking-[0.06em] text-[var(--clicks-muted)]">
+              <span className="block max-w-[140px] truncate text-[11px] text-[var(--clicks-muted)]">
                 {roleLabel}
               </span>
             </span>
@@ -154,6 +180,7 @@ export function AdminTopbar({
                 <p className="truncate text-[13px] font-semibold text-[var(--clicks-navy)]">{name}</p>
                 <p className="truncate text-[11px] text-[var(--clicks-muted)]">{roleLabel}</p>
               </div>
+              {canSettings ? (
               <Link
                 href="/admin/settings"
                 role="menuitem"
@@ -163,11 +190,15 @@ export function AdminTopbar({
                 <Settings className="h-3.5 w-3.5 text-[var(--clicks-muted)]" />
                 Settings
               </Link>
+              ) : null}
               <button
                 type="button"
                 role="menuitem"
                 className="flex h-9 w-full items-center gap-2 px-3 text-[13px] text-[var(--clicks-error)] hover:bg-red-50"
-                onClick={() => signOut({ callbackUrl: "/admin/login" })}
+                onClick={() => {
+                  setMenu(false);
+                  confirmDiscard(() => void signOut({ callbackUrl: "/admin/login" }), { confirmLabel: "Discard and sign out" });
+                }}
               >
                 <LogOut className="h-3.5 w-3.5" />
                 Sign out

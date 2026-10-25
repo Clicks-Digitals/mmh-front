@@ -19,7 +19,7 @@ export function Price({ amount, compareAt, locale = "en", size = "md", className
 
   return (
     <span className={cn("inline-flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-semibold tracking-tight", className)}>
-      <span className={cn("text-brand-deep", sizes[size])}>{formatJod(amount, locale)}</span>
+      <span className={cn("text-gold", sizes[size])}>{formatJod(amount, locale)}</span>
       {compareAt && compareAt > amount ? (
         <span className="text-sm font-normal text-subtle line-through">{formatJod(compareAt, locale)}</span>
       ) : null}

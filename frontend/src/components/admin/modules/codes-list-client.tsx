@@ -15,7 +15,7 @@ import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage } from "@/components/admin/lib/errors";
 import { formatAdminDateTime } from "@/lib/admin/format";
 import { useAdminQuery } from "@/hooks/use-admin-query";
-import { useAdminResource } from "@/hooks/use-admin-resource";
+import { useAdminUrlResource } from "@/hooks/use-admin-url-resource";
 import {
   deactivateCode,
   fetchAllPages,
@@ -29,38 +29,45 @@ import { useState } from "react";
 
 const STATUSES = [
   { value: "", label: "Any status" },
-  { value: "AVAILABLE", label: "Available" },
-  { value: "RESERVED", label: "Reserved" },
+  { value: "AVAILABLE", label: "Available (ready to sell)" },
+  { value: "RESERVED", label: "Reserved (being delivered)" },
   { value: "DELIVERED", label: "Delivered" },
-  { value: "UNAVAILABLE", label: "Deactivated" },
+  { value: "UNAVAILABLE", label: "Deactivated / retired" },
 ];
 
-export function CodesListClient({ initialVariant = "", initialStatus = "" }: { initialVariant?: string; initialStatus?: string }) {
+const SOURCE_LABEL: Record<string, string> = { CSV_IMPORT: "File import", MANUAL: "Added by hand", SUPPLIER: "Supplier" };
+
+/** CA-11 / RO-11: only code variants have code stock; one paginated request set, reused. */
+export function codeVariantLabel(v: Pick<AdminVariant, "sku" | "name_en" | "product_name">): string {
+  const name = [v.product_name, v.name_en].filter(Boolean).join(" — ");
+  return name ? `${name} (${v.sku})` : v.sku;
+}
+
+/** Filters come from the URL (?variant=, ?status=, ?search=), so links from products/inventory work. */
+export function CodesListClient() {
   const toast = useAdminToast();
   const { can } = useAdminAccess();
   const canReveal = can("codes.reveal");
   const canManage = can("codes.manage");
-  const [status, setStatus] = useState(initialStatus);
-  const [variant, setVariant] = useState(initialVariant);
 
   const { data: variants } = useAdminQuery<AdminVariant[]>((tok) =>
-    fetchAllPages((params) => listVariants(tok, params)).catch(() => []),
+    fetchAllPages((params) => listVariants(tok, { ...params, fulfillment_type: "CODE" })).catch(() => []),
   );
 
-  const { token, page, setPage, search, setSearch, items, count, loading, error, reload } =
-    useAdminResource<DigitalCodeRow>(
-      async (tok, p, s) => {
-        const data = await listCodes(tok, {
-          page: p,
-          page_size: ADMIN_LIST_PAGE_SIZE,
-          search: s || undefined,
-          status: status || undefined,
-          variant: variant || undefined,
-        });
-        return { items: data.results, count: data.count };
-      },
-      [status, variant],
-    );
+  const { state, set, reset, page, hasFilters, token, items, count, loading, error, reload } = useAdminUrlResource<
+    DigitalCodeRow,
+    { search: string; status: string; variant: string; ordering: string }
+  >({ search: "", status: "", variant: "", ordering: "" }, async (tok, s) => {
+    const data = await listCodes(tok, {
+      page: Number(s.page) || 1,
+      page_size: ADMIN_LIST_PAGE_SIZE,
+      search: s.search.trim() || undefined,
+      status: s.status || undefined,
+      variant: s.variant || undefined,
+      ordering: s.ordering || "-created_at",
+    });
+    return { items: data.results, count: data.count };
+  });
 
   const [revealTarget, setRevealTarget] = useState<DigitalCodeRow | null>(null);
   const [deactivateTarget, setDeactivateTarget] = useState<DigitalCodeRow | null>(null);
@@ -71,7 +78,7 @@ export function CodesListClient({ initialVariant = "", initialStatus = "" }: { i
     setPending(true);
     try {
       await deactivateCode(token, deactivateTarget.id);
-      toast.push("Code deactivated", "success");
+      toast.push("Code deactivated — it will not be sold", "success");
       setDeactivateTarget(null);
       reload();
     } catch (err) {
@@ -82,14 +89,14 @@ export function CodesListClient({ initialVariant = "", initialStatus = "" }: { i
   }
 
   const columns: DataTableColumn<DigitalCodeRow>[] = [
-    { key: "masked", header: "Code", render: (r) => <span className="font-mono text-xs">{r.masked}</span> },
+    { key: "masked", header: "Code", mobilePrimary: true, render: (r) => <span className="font-mono text-xs">{r.masked}</span> },
     {
       key: "variant",
       header: "Variant",
       render: (r) => (
         <div>
-          <p className="font-mono text-xs">{r.variant_sku || "—"}</p>
-          {r.variant_name ? <p className="text-[11px] text-[var(--clicks-muted)]">{r.variant_name}</p> : null}
+          <p className="text-xs">{r.variant_name || "—"}</p>
+          {r.variant_sku ? <p className="font-mono text-[11px] text-[var(--clicks-muted)]">{r.variant_sku}</p> : null}
         </div>
       ),
     },
@@ -112,13 +119,34 @@ export function CodesListClient({ initialVariant = "", initialStatus = "" }: { i
     {
       key: "status",
       header: "Status",
+      sortKey: "status",
       render: (r) => (
-        <Badge status={r.status || "AVAILABLE"}>{STATUSES.find((s) => s.value === r.status)?.label ?? r.status}</Badge>
+        <Badge status={r.status || "AVAILABLE"}>{r.status_label || STATUSES.find((s) => s.value === r.status)?.label || r.status}</Badge>
       ),
     },
-    { key: "source", header: "Source", render: (r) => <span className="text-xs">{r.source?.replaceAll("_", " ").toLowerCase() || "—"}</span> },
-    { key: "created", header: "Added", render: (r) => <span className="text-xs">{formatAdminDateTime(r.created_at)}</span> },
-    { key: "revealed", header: "Last revealed", render: (r) => <span className="text-xs">{formatAdminDateTime(r.revealed_at)}</span> },
+    { key: "source", header: "Added by", mobileHidden: true, render: (r) => <span className="text-xs">{SOURCE_LABEL[r.source ?? ""] ?? r.source ?? "—"}</span> },
+    {
+      key: "created",
+      header: "Added",
+      sortKey: "created_at",
+      sortFirst: "desc",
+      render: (r) => <span className="text-xs">{formatAdminDateTime(r.created_at)}</span>,
+    },
+    {
+      key: "revealed",
+      header: "Seen",
+      render: (r) => (
+        <span className="text-xs">
+          {r.customer_revealed_at ? <span className="block">Customer: {formatAdminDateTime(r.customer_revealed_at)}</span> : null}
+          {r.revealed_at ? (
+            <span className="block text-[var(--clicks-muted)]">
+              Staff{r.revealed_by_email ? ` (${r.revealed_by_email})` : ""}: {formatAdminDateTime(r.revealed_at)}
+            </span>
+          ) : null}
+          {!r.customer_revealed_at && !r.revealed_at ? "—" : null}
+        </span>
+      ),
+    },
   ];
   if (canReveal || canManage) {
     columns.push({
@@ -141,11 +169,13 @@ export function CodesListClient({ initialVariant = "", initialStatus = "" }: { i
     });
   }
 
+  const variantOptions = variants ?? [];
+
   return (
     <div>
       <PageHeader
         title="Digital codes"
-        description="Code inventory (always masked). Revealing a code is audit-logged."
+        description="All codes in stock and delivered. Codes are always shown masked; revealing one is recorded in the activity log."
         actions={
           canManage ? (
             <Link href="/admin/codes/import" className="admin-btn admin-btn-primary">
@@ -155,55 +185,51 @@ export function CodesListClient({ initialVariant = "", initialStatus = "" }: { i
         }
       />
       <Filters
-        search={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Masked code, SKU or order number…"
+        search={state.search}
+        onSearchChange={(v) => set({ search: v })}
+        searchPlaceholder="Paste a full code, the last characters, a SKU or an order number…"
+        searchHint="Tip: paste the complete code to check whether it is already in stock or delivered."
         filters={[
-          {
-            key: "status",
-            label: "Status",
-            value: status,
-            onChange: (v) => {
-              setStatus(v);
-              setPage(1);
-            },
-            options: STATUSES,
-          },
+          { key: "status", label: "Status", value: state.status, onChange: (v) => set({ status: v }), options: STATUSES },
           {
             key: "variant",
             label: "Variant",
-            value: variant,
-            onChange: (v) => {
-              setVariant(v);
-              setPage(1);
-            },
+            value: state.variant,
+            onChange: (v) => set({ variant: v }),
             options: [
-              { value: "", label: "All variants" },
-              ...(variant && !(variants ?? []).some((v) => String(v.id) === variant)
-                ? [{ value: variant, label: `Variant #${variant}` }]
+              { value: "", label: "All code variants" },
+              ...(state.variant && !variantOptions.some((v) => String(v.id) === state.variant)
+                ? [{ value: state.variant, label: `Variant #${state.variant}` }]
                 : []),
-              ...(variants ?? []).map((v) => ({
-                value: String(v.id),
-                label: `${v.sku}${v.name_en ? ` — ${v.name_en}` : ""}`,
-              })),
+              ...variantOptions.map((v) => ({ value: String(v.id), label: codeVariantLabel(v) })),
             ],
           },
         ]}
-        onClear={() => {
-          setSearch("");
-          setStatus("");
-          setVariant("");
-        }}
+        onClear={reset}
       />
       <DataTable
         columns={columns}
         rows={items}
         loading={loading}
         rowKey={(r) => String(r.id)}
-        empty={<EmptyState title="No codes" description="No codes match these filters." />}
+        ordering={state.ordering}
+        defaultOrdering="-created_at"
+        onOrderingChange={(next) => set({ ordering: next === "-created_at" ? "" : next })}
+        empty={
+          <EmptyState
+            title={hasFilters ? "No codes match" : "No codes yet"}
+            description={
+              state.search
+                ? "This code is not in the system. Check for typos — searching the full code finds it whatever its PIN."
+                : hasFilters
+                  ? "No codes match these filters."
+                  : "Import a file of codes to start selling code products."
+            }
+          />
+        }
         error={error ? <ErrorState message={error} onRetry={reload} /> : null}
       />
-      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={count} onPageChange={setPage} />
+      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={count} onPageChange={(p) => set({ page: String(p) })} />
 
       <RevealCodeDialog
         target={revealTarget ? { id: revealTarget.id, masked: revealTarget.masked } : null}
@@ -216,7 +242,7 @@ export function CodesListClient({ initialVariant = "", initialStatus = "" }: { i
         title="Deactivate code?"
         description={
           deactivateTarget
-            ? `Code ${deactivateTarget.masked} will no longer be sold or delivered. Use this for invalid or duplicate codes. This cannot be undone from the panel.`
+            ? `Code ${deactivateTarget.masked} will no longer be sold or delivered. Use this for invalid or duplicate codes. This can't be undone from the panel.`
             : undefined
         }
         danger

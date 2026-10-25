@@ -11,6 +11,8 @@ export type CouponQuote = {
   discount_jod?: number;
   total_fils?: number;
   total_jod?: number;
+  /** D6: the coupon makes this order free (no PayPal). */
+  free_order?: boolean;
 };
 
 export function validateCoupon(code: string, subtotalFils: number, email?: string) {
@@ -25,6 +27,8 @@ export type CreatedOrder = ApiOrder & {
   checkout_token?: string;
   paypal_amount?: string;
   paypal_currency?: string;
+  /** D6: total 0 → the order is already PAID with provider "free". */
+  free_order?: boolean;
 };
 
 export function createOrder(payload: Record<string, unknown>, token?: string) {
@@ -54,6 +58,18 @@ export function revealOrderCodes(orderNumber: string, { accessToken, token }: { 
   });
 }
 
-export function myOrders(token: string) {
-  return apiFetch<ApiOrder[] | { results: ApiOrder[]; next?: string | null }>("/orders/mine/?page_size=100", { token });
+export function myOrders(token: string, { paidOnly = false }: { paidOnly?: boolean } = {}) {
+  return apiFetch<ApiOrder[] | { results: ApiOrder[]; next?: string | null }>(
+    `/orders/mine/?page_size=100${paidOnly ? "&paid_only=1" : ""}`,
+    { token },
+  );
+}
+
+/** D1/D7: cancel an unpaid order (owner JWT or the order access token). */
+export function cancelOrder(orderNumber: string, { accessToken, token }: { accessToken?: string; token?: string }) {
+  return apiFetch<ApiOrder>(`/orders/${encodeURIComponent(orderNumber)}/cancel/`, {
+    method: "POST",
+    body: JSON.stringify(accessToken ? { access_token: accessToken } : {}),
+    token,
+  });
 }

@@ -6,8 +6,9 @@ import { SelectField } from "@/components/ui/select-field";
 import { choiceClass } from "@/components/ui/control";
 import { CATEGORIES } from "@/data/categories";
 import { getSnapshotCategories, getSnapshotProducts } from "@/lib/catalog-snapshot";
-import { uniqueBrands, uniqueKinds, uniquePlatforms, uniqueRegions, priceRange } from "@/data/products";
-import { emptyFilters } from "@/lib/catalog";
+import { uniqueBrands, uniqueKinds, uniquePlatformOptions, uniqueRegions, priceRange } from "@/data/products";
+import { emptyFilters, normalizePriceRange } from "@/lib/catalog";
+import { useState } from "react";
 import { useLanguage } from "@/context/language-context";
 import type { FilterState, FulfillmentType, ProductKind } from "@/types";
 import { cn } from "@/lib/cn";
@@ -17,17 +18,33 @@ interface FiltersProps {
   onChange: (next: FilterState) => void;
   lockedCategory?: string;
   showReset?: boolean;
+  /** ST-26: shown when the price bounds were corrected (negative / swapped). */
+  priceNote?: string;
 }
 
 const KINDS: ProductKind[] = ["gift_card", "wallet", "game_currency", "subscription", "direct_topup", "digital_code"];
 
-export function FilterSidebar({ value, onChange, lockedCategory, showReset = true }: FiltersProps) {
+export function FilterSidebar(props: FiltersProps) {
+  // Remount when the applied bounds change so the price inputs show the corrected values.
+  return <FilterSidebarInner key={`${props.value.min ?? ""}|${props.value.max ?? ""}`} {...props} />;
+}
+
+function FilterSidebarInner({ value, onChange, lockedCategory, showReset = true, priceNote }: FiltersProps) {
   const { t, locale } = useLanguage();
   const range = priceRange();
   const databaseCategories = getSnapshotCategories();
   const categories = databaseCategories.length ? databaseCategories : CATEGORIES;
   const hasReviews = getSnapshotProducts().some((product) => product.reviewCount > 0);
   const set = (patch: Partial<FilterState>) => onChange({ ...value, ...patch });
+  const [minText, setMinText] = useState(value.min != null ? String(value.min) : "");
+  const [maxText, setMaxText] = useState(value.max != null ? String(value.max) : "");
+  const applyPrice = () => {
+    const parse = (text: string) => (text.trim() === "" || !Number.isFinite(Number(text)) ? undefined : Number(text));
+    const min = parse(minText);
+    const max = parse(maxText);
+    const range = normalizePriceRange(min, max);
+    if (range.adjusted || min !== value.min || max !== value.max) set({ min, max });
+  };
 
   return (
     <aside className="space-y-6">
@@ -85,23 +102,36 @@ export function FilterSidebar({ value, onChange, lockedCategory, showReset = tru
           </option>
         ))}
       </SelectField>
-      <div className="grid grid-cols-2 gap-2">
-        <Field
-          label={`${t("filter.price")} · ${t("filter.min")}`}
-          type="number"
-          min={range.min}
-          max={range.max}
-          value={value.min ?? ""}
-          onChange={(event) => set({ min: event.target.value === "" ? undefined : Number(event.target.value) })}
-        />
-        <Field
-          label={t("filter.max")}
-          type="number"
-          min={range.min}
-          max={range.max}
-          value={value.max ?? ""}
-          onChange={(event) => set({ max: event.target.value === "" ? undefined : Number(event.target.value) })}
-        />
+      <div>
+        <div className="grid grid-cols-2 gap-2">
+          <Field
+            label={`${t("filter.price")} · ${t("filter.min")}`}
+            type="number"
+            min={0}
+            max={range.max || undefined}
+            inputMode="decimal"
+            value={minText}
+            onChange={(event) => setMinText(event.target.value)}
+            onBlur={applyPrice}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") applyPrice();
+            }}
+          />
+          <Field
+            label={t("filter.max")}
+            type="number"
+            min={0}
+            max={range.max || undefined}
+            inputMode="decimal"
+            value={maxText}
+            onChange={(event) => setMaxText(event.target.value)}
+            onBlur={applyPrice}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") applyPrice();
+            }}
+          />
+        </div>
+        {priceNote ? <p className="mt-1 text-xs text-amber" role="status">{priceNote}</p> : null}
       </div>
       <SelectField
         label={t("filter.platform")}
@@ -109,9 +139,9 @@ export function FilterSidebar({ value, onChange, lockedCategory, showReset = tru
         onChange={(event) => set({ platform: event.target.value })}
       >
         <option value="">{t("common.viewAll")}</option>
-        {uniquePlatforms().map((platform) => (
-          <option key={platform} value={platform}>
-            {platform}
+        {uniquePlatformOptions().map((platform) => (
+          <option key={platform.slug} value={platform.slug}>
+            {locale === "ar" ? platform.nameAr : platform.name}
           </option>
         ))}
       </SelectField>

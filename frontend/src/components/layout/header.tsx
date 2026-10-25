@@ -61,7 +61,7 @@ export function Header() {
           </div>
           <Link
             href="/account"
-            className={cn(ICON_HIT, "hidden h-10 w-10 rounded-xl sm:inline-flex sm:h-11 sm:w-11")}
+            className={cn(ICON_HIT, "h-10 w-10 rounded-xl sm:h-11 sm:w-11")}
             aria-label={t("nav.account")}
           >
             <User className="h-5 w-5" />
@@ -75,7 +75,7 @@ export function Header() {
             <span className="relative">
               <ShoppingBag className="h-5 w-5 text-fg" />
               {hydrated && itemCount > 0 ? (
-                <span className="absolute -end-2 -top-2 min-w-4 rounded-full bg-gold px-1 text-[10px] font-bold leading-4 text-brand-deep">
+                <span className="absolute -end-2 -top-2 min-w-4 rounded-full bg-gold px-1 text-[10px] font-bold leading-4 text-gold">
                   {itemCount}
                 </span>
               ) : null}

@@ -12,16 +12,22 @@ import { FocusMode } from "@/components/ui/focus-mode";
 import { PageCurtain } from "@/components/layout/page-curtain";
 import { Providers } from "@/context/providers";
 import { CatalogBoot } from "@/components/storefront/catalog-boot";
-import { resolveStorefrontCategories, resolveStorefrontProducts } from "@/server/catalog/resolve";
-import { getServerLocale } from "@/server/locale";
+import { isMaintenanceExempt, PATHNAME_HEADER } from "@/lib/maintenance";
+import { resolveMenuCategories, resolveStorefrontCategories, resolveStorefrontProducts } from "@/server/catalog/resolve";
+import { loadFooterPages } from "@/server/legal-page";
+import { getServerLocale, serverT } from "@/server/locale";
 import { loadStoreSettings } from "@/server/site-contact";
+import { headers } from "next/headers";
 
 export const dynamic = "force-dynamic";
 
 export default async function StorefrontLayout({ children }: { children: React.ReactNode }) {
-  const [settings, locale] = await Promise.all([loadStoreSettings(), getServerLocale()]);
+  const [settings, locale, requestHeaders] = await Promise.all([loadStoreSettings(), getServerLocale(), headers()]);
+  const pathname = requestHeaders.get(PATHNAME_HEADER) ?? "";
 
-  if (settings.maintenanceMode) {
+  // D21: browse pages normally get a 503 from src/proxy.ts; this is the fallback when the proxy's
+  // cached settings are a few seconds behind. Order, account and help pages stay available.
+  if (settings.maintenanceMode && !(pathname && isMaintenanceExempt(pathname))) {
     return (
       <div className="flex min-h-full flex-col bg-deep text-fg">
         <Providers locale={locale}>
@@ -31,20 +37,27 @@ export default async function StorefrontLayout({ children }: { children: React.R
     );
   }
 
-  const [products, categories] = await Promise.all([
+  const [products, categories, menuCategories, footerPages] = await Promise.all([
     resolveStorefrontProducts().catch(() => []),
     resolveStorefrontCategories().catch(() => []),
+    resolveMenuCategories(),
+    loadFooterPages(),
   ]);
   return (
     <div className="flex min-h-full flex-col bg-deep text-fg">
       <Providers locale={locale}>
-        <CatalogBoot products={products} categories={categories}>
+        <CatalogBoot products={products} categories={categories} menuCategories={menuCategories}>
           <FocusMode />
           <PageCurtain />
+          {settings.maintenanceMode ? (
+            <div className="bg-amber/15 px-4 py-2 text-center text-xs font-medium text-amber" role="status">
+              {(await serverT()).t("maintenance.banner")}
+            </div>
+          ) : null}
           <AnnouncementBar />
           <Header />
           <main className="flex-1">{children}</main>
-          <Footer contact={settings.contact} storeName={settings.storeName} />
+          <Footer contact={settings.contact} storeName={settings.storeName} pages={footerPages} />
           <FloatingContactButtons contact={settings.contact} />
           <CartDrawer />
           <MobileMenu />

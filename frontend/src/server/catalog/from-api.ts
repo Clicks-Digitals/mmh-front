@@ -56,6 +56,7 @@ type ApiProduct = {
     available?: boolean;
     min_quantity?: number;
     max_quantity?: number;
+    available_quantity?: number | null;
     region?: { slug: string; name_en: string; name_ar: string; currency?: string } | null;
     name_en: string;
     name_ar: string;
@@ -76,8 +77,12 @@ type ApiProduct = {
     placeholder_ar: string;
     help_text_en?: string;
     help_text_ar?: string;
+    input_format?: string;
+    min_length?: number | null;
+    max_length?: number | null;
+    options?: Array<{ value: string; label_en?: string; label_ar?: string }> | null;
   }>;
-  media?: Array<{ url: string; is_primary?: boolean; sort_order?: number }>;
+  media?: Array<{ url: string; alt?: string; is_primary?: boolean; sort_order?: number }>;
   primary_image_url?: string;
   created_at?: string;
 };
@@ -88,11 +93,42 @@ type ApiCategory = {
   href: string;
   parent?: string | null;
   artwork_key: string;
+  artwork_url?: string;
+  sort_order?: number;
+  show_in_menu?: boolean;
   name_en: string;
   name_ar: string;
   description_en: string;
   description_ar: string;
 };
+
+const SUPPORTED_BADGES = new Set<ProductBadge>(["new", "bestseller", "limited", "sale", "region_locked", "topup"]);
+const INPUT_FORMATS = new Set(["text", "numeric", "alphanumeric", "email", "phone"]);
+
+function positiveInt(value: unknown): number | null {
+  const n = Number(value);
+  return value !== null && value !== undefined && Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+/** D25: primary image first, then the rest of the media in order (no duplicates), with alt text. */
+export function orderedMedia(
+  media: Array<{ url: string; alt?: string; is_primary?: boolean; sort_order?: number }> | undefined,
+  primaryUrl: string | undefined,
+): Array<{ url: string; alt: string }> {
+  const sorted = [...(media ?? [])]
+    .filter((item) => item?.url)
+    .sort((a, b) => Number(Boolean(b.is_primary)) - Number(Boolean(a.is_primary)) || (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  const result: Array<{ url: string; alt: string }> = [];
+  const seen = new Set<string>();
+  const push = (url: string, alt = "") => {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    result.push({ url, alt });
+  };
+  if (primaryUrl) push(primaryUrl, sorted.find((item) => item.url === primaryUrl)?.alt ?? sorted.find((item) => item.is_primary)?.alt ?? "");
+  for (const item of sorted) push(item.url, item.alt ?? "");
+  return result;
+}
 
 const DEFAULT_FIELD_HELP: Record<string, { en: string; ar: string }> = {
   playerId: {
@@ -153,12 +189,21 @@ export function mapApiProduct(row: ApiProduct): Product {
       required: field.required,
       helpText: field.help_text_en || DEFAULT_FIELD_HELP[field.key]?.en,
       helpTextAr: field.help_text_ar || DEFAULT_FIELD_HELP[field.key]?.ar,
+      inputFormat: (INPUT_FORMATS.has(String(field.input_format ?? "")) ? field.input_format : "text") as RequiredCustomerField["inputFormat"],
+      minLength: positiveInt(field.min_length),
+      maxLength: positiveInt(field.max_length),
+      options: (field.options ?? [])
+        .filter((option) => option && String(option.value ?? "").trim())
+        .map((option) => ({
+          value: String(option.value),
+          label: option.label_en || String(option.value),
+          labelAr: option.label_ar || option.label_en || String(option.value),
+        })),
     }));
 
-  const primaryMedia = [...(row.media ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
-  const primaryFromGallery = primaryMedia.find((m) => m.is_primary)?.url || primaryMedia[0]?.url;
-  const image = row.primary_image_url || row.image_url || primaryFromGallery || staticCatalogImage(row.id);
-  const gallery = primaryMedia.length ? primaryMedia.map((m) => m.url).filter(Boolean) : image ? [image] : [];
+  const gallery = orderedMedia(row.media, row.primary_image_url || row.image_url || undefined);
+  const fallbackImage = staticCatalogImage(row.id);
+  const images = gallery.length ? gallery : fallbackImage ? [{ url: fallbackImage, alt: "" }] : [];
   const isTopup = row.fulfillment_type === "DIRECT_TOPUP";
   const platform = row.platform;
   const categorySlug = row.category_slug || row.category?.slug || "gift-cards";
@@ -176,15 +221,16 @@ export function mapApiProduct(row: ApiProduct): Product {
     descriptionAr: stripInstantClaims(row.description_ar),
     brand: row.brand,
     category: categorySlug,
-    images: gallery.length ? gallery : image ? [image] : [],
+    images: images.map((item) => item.url),
+    imageAlts: images.map((item) => item.alt),
     artworkKey: row.artwork_key,
     priceJod: variants.length ? Math.min(...variants.map((variant) => variant.price_jod)) : row.price_jod ?? 0,
     compareAtPriceJod: firstCompareAt,
     rating: Number(row.rating) || 0,
     reviewCount: row.review_count || 0,
-    badges: [...new Set([...(row.badges || []), ...(row.bestseller ? ["bestseller"] : [])])].filter(
-      (badge) => badge !== "instant",
-    ) as ProductBadge[],
+    badges: [...new Set([...(row.badges || []), ...(row.bestseller ? ["bestseller"] : [])])].filter((badge): badge is ProductBadge =>
+      SUPPORTED_BADGES.has(badge as ProductBadge),
+    ),
     inStock: row.in_stock ?? variants.some(variantAvailable),
     featured: row.featured,
     bestseller: row.bestseller,
@@ -211,6 +257,10 @@ export function mapApiProduct(row: ApiProduct): Product {
         inStock: variantAvailable(variant),
         minQuantity: variant.min_quantity,
         maxQuantity: variant.max_quantity,
+        availableQuantity:
+          typeof variant.available_quantity === "number" && Number.isFinite(variant.available_quantity)
+            ? Math.max(0, Math.floor(variant.available_quantity))
+            : null,
       })),
       deliveryMethods: ["account"],
       deliveryEstimate: safeDeliveryEstimate(row.delivery_estimate_en, "en", isTopup),
@@ -242,6 +292,9 @@ export function mapApiCategory(row: ApiCategory): Category {
     descriptionAr: row.description_ar,
     href: row.href || `/category/${row.slug}`,
     artworkKey: row.artwork_key || "gift",
+    ...(row.artwork_url ? { artworkUrl: row.artwork_url } : {}),
+    showInMenu: Boolean(row.show_in_menu),
+    sortOrder: Number(row.sort_order) || 0,
     ...(row.parent ? { parent: row.parent } : {}),
   };
 }
@@ -280,6 +333,12 @@ export async function fetchApiProduct(slug: string): Promise<Product | undefined
 
 export async function fetchApiCategories(): Promise<Category[]> {
   const data = await apiFetch<Paginated<ApiCategory>>("/catalog/categories/");
+  return unwrapList(data).map(mapApiCategory);
+}
+
+/** D20: categories flagged show_in_menu, already sorted by the API (sort_order, name). */
+export async function fetchApiMenuCategories(): Promise<Category[]> {
+  const data = await apiFetch<Paginated<ApiCategory>>("/catalog/categories/?menu=1");
   return unwrapList(data).map(mapApiCategory);
 }
 

@@ -12,7 +12,8 @@ const GROUPS: Record<string, (product: Product) => boolean> = {
   nintendo: (product) => product.platform === "nintendo",
   "mobile-games": (product) => ["pubg", "freefire", "free-fire", "mlbb", "roblox"].includes(product.platform),
   "pc-games": (product) => ["steam", "valorant", "lol", "riot", "ea", "fortnite"].includes(product.platform),
-  "game-top-ups": (product) => product.fulfillmentType === "direct_topup" || product.category === "game-top-ups",
+  // ST-20: the Game Top-Ups listing shows direct top-ups only (code products stay in their own listings).
+  "game-top-ups": (product) => product.fulfillmentType === "direct_topup",
   "gift-cards": (product) =>
     product.category === "gift-cards" ||
     product.digitalOptions.kind === "gift_card" ||
@@ -67,6 +68,7 @@ export function productsForListing(
 ): Product[] {
   if (!slug) return products;
   if (slug === "new-products") return newestProducts(products, now);
+  if (slug === "game-top-ups") return products.filter((product) => product.fulfillmentType === "direct_topup");
   const descendants = descendantsOf(slug, categories);
   const group = GROUPS[slug];
   return products.filter(

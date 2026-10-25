@@ -6,6 +6,14 @@ import { cartTotals, toFils, type AppliedCoupon } from "@/lib/coupon";
 import { uid } from "@/lib/id";
 import { clampQuantity, mergeQuantity, quantityLimits } from "@/lib/quantity";
 import { STORAGE_KEYS } from "@/lib/storage";
+import {
+  needsRevalidation,
+  normalizeCouponCode,
+  parseStoredCoupon,
+  storedCoupon,
+  type CouponReason,
+  type StoredCoupon,
+} from "@/lib/coupon-storage";
 import { useHydrated, useLocalStorage } from "@/hooks/use-local-storage";
 import type { CartDigitalMeta, CartItem } from "@/types";
 import type { CouponCheckResult } from "@/server/actions/checkout";
@@ -22,7 +30,7 @@ export interface AddResult {
   max: number;
 }
 
-export type PromoResult = "ok" | "invalid" | "unavailable";
+export type PromoResult = "ok" | CouponReason;
 
 interface CartContextValue {
   items: CartItem[];
@@ -40,13 +48,25 @@ interface CartContextValue {
   subtotalFils: number;
   discountFils: number;
   totalFils: number;
+  /** Applied coupon code ("" when none applies to the current subtotal). */
   promoCode: string;
-  promoError: PromoResult | null;
+  /** Saved coupon still being re-validated (ST-03). */
+  promoPending: string;
+  promoError: CouponReason | null;
   promoChecking: boolean;
+  /** D6: the applied coupon makes the order free. */
+  freeOrder: boolean;
+  /** A saved/applied coupon was dropped after re-validation (shown once, then dismissed). */
+  couponNotice: CouponReason | null;
+  dismissCouponNotice: () => void;
   applyPromo: (code: string, email?: string) => Promise<PromoResult>;
+  /** Re-check the coupon for this checkout email (per-customer limits, OR-25). */
+  setCouponEmail: (email: string) => void;
   removePromo: () => void;
   lastAddedId: string | null;
 }
+
+type AppliedQuote = AppliedCoupon & { email: string; freeOrder: boolean };
 
 async function quoteCoupon(code: string, subtotalFils: number, email: string): Promise<CouponCheckResult> {
   const { validateStorefrontCoupon } = await import("@/server/actions/checkout");
@@ -68,15 +88,19 @@ function sameLine(item: CartItem, payload: AddPayload) {
 function limitsFor(productId: string, denominationId?: string) {
   const product = getProductById(productId);
   const denomination = product?.digitalOptions.denominations.find((entry) => entry.id === denominationId);
-  return quantityLimits(denomination?.minQuantity, denomination?.maxQuantity);
+  return quantityLimits(denomination?.minQuantity, denomination?.maxQuantity, denomination?.availableQuantity);
 }
+
+const NO_COUPON: StoredCoupon | null = null;
 
 export function CartProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useLocalStorage<CartItem[]>(STORAGE_KEYS.cart, EMPTY_CART);
   const hydrated = useHydrated();
-  const [coupon, setCoupon] = useState<AppliedCoupon | null>(null);
-  const [couponEmail, setCouponEmail] = useState("");
-  const [promoError, setPromoError] = useState<PromoResult | null>(null);
+  const [storedRaw, setStored] = useLocalStorage<StoredCoupon | null>(STORAGE_KEYS.coupon, NO_COUPON);
+  const stored = useMemo(() => parseStoredCoupon(storedRaw), [storedRaw]);
+  const [coupon, setCoupon] = useState<AppliedQuote | null>(null);
+  const [promoError, setPromoError] = useState<CouponReason | null>(null);
+  const [couponNotice, setCouponNotice] = useState<CouponReason | null>(null);
   const [promoChecking, setPromoChecking] = useState(false);
   const [lastAddedId, setLastAddedId] = useState<string | null>(null);
 
@@ -137,14 +161,16 @@ export function CartProvider({ children }: { children: ReactNode }) {
 
   const removePromo = useCallback(() => {
     setCoupon(null);
+    setStored(null);
     setPromoError(null);
-  }, []);
+  }, [setStored]);
 
   const clear = useCallback(() => {
     setItems([]);
     setCoupon(null);
+    setStored(null);
     setPromoError(null);
-  }, [setItems]);
+  }, [setItems, setStored]);
 
   const subtotalFils = useMemo(
     () =>
@@ -155,69 +181,72 @@ export function CartProvider({ children }: { children: ReactNode }) {
     [items],
   );
 
-  const applyQuote = useCallback((result: CouponCheckResult): PromoResult => {
-    if (result.valid) {
-      setCoupon({
-        code: result.code,
-        subtotalFils: result.subtotalFils,
-        discountFils: result.discountFils,
-        totalFils: result.totalFils,
-      });
-      setPromoError(null);
-      return "ok";
-    }
-    if (result.reason === "invalid") {
-      setCoupon(null);
-      setPromoError("invalid");
-      return "invalid";
-    }
-    setPromoError("unavailable");
-    return "unavailable";
-  }, []);
-
-  const checkCoupon = useCallback(
-    async (code: string, subtotal: number, email: string) => applyQuote(await quoteCoupon(code, subtotal, email)),
-    [applyQuote],
-  );
-
   const applyPromo = useCallback(
-    async (code: string, email = "") => {
-      const normalized = code.trim().toUpperCase();
+    async (code: string, email = ""): Promise<PromoResult> => {
+      const normalized = normalizeCouponCode(code);
       if (!normalized) {
-        setPromoError("invalid");
-        return "invalid" as const;
+        setPromoError("invalid_coupon");
+        return "invalid_coupon";
       }
       setPromoChecking(true);
-      setCouponEmail(email);
       try {
-        return await checkCoupon(normalized, subtotalFils, email);
+        const result = await quoteCoupon(normalized, subtotalFils, email);
+        if (result.valid) {
+          setCoupon({ ...result, email: email.trim().toLowerCase() });
+          setStored(storedCoupon(result.code, email));
+          setPromoError(null);
+          setCouponNotice(null);
+          return "ok";
+        }
+        setPromoError(result.reason);
+        return result.reason;
       } catch {
         setPromoError("unavailable");
-        return "unavailable" as const;
+        return "unavailable";
       } finally {
         setPromoChecking(false);
       }
     },
-    [checkCoupon, subtotalFils],
+    [setStored, subtotalFils],
   );
 
-  // Re-quote the coupon whenever the cart subtotal changes (the old quote no longer applies).
-  const requoting = useRef(false);
+  const setCouponEmail = useCallback(
+    (email: string) => {
+      const normalized = email.trim().toLowerCase();
+      if (!stored || stored.email === normalized) return;
+      setStored(storedCoupon(stored.code, normalized));
+    },
+    [stored, setStored],
+  );
+
+  // ST-03: the saved coupon is re-validated on load and whenever the subtotal or checkout email changes.
+  const checking = useRef("");
   useEffect(() => {
-    if (!coupon || coupon.subtotalFils === subtotalFils || requoting.current) return;
-    requoting.current = true;
-    const run =
-      subtotalFils > 0
-        ? quoteCoupon(coupon.code, subtotalFils, couponEmail).then((result) => {
-            applyQuote(result);
-          })
-        : Promise.resolve().then(() => setCoupon(null));
-    void run
+    if (!hydrated || !stored) return;
+    if (subtotalFils <= 0) return;
+    if (!needsRevalidation(stored, coupon, subtotalFils)) return;
+    const key = `${stored.code}|${stored.email}|${subtotalFils}`;
+    if (checking.current === key) return;
+    checking.current = key;
+    void quoteCoupon(stored.code, subtotalFils, stored.email)
+      .then((result) => {
+        if (checking.current !== key) return;
+        if (result.valid) {
+          setCoupon({ ...result, email: stored.email });
+          return;
+        }
+        if (result.reason === "unavailable") return;
+        setCoupon(null);
+        setStored(null);
+        setCouponNotice(result.reason);
+      })
       .catch(() => undefined)
       .finally(() => {
-        requoting.current = false;
+        if (checking.current === key) checking.current = "";
       });
-  }, [coupon, subtotalFils, couponEmail, applyQuote]);
+  }, [hydrated, stored, coupon, subtotalFils, setStored]);
+
+  const dismissCouponNotice = useCallback(() => setCouponNotice(null), []);
 
   const totals = cartTotals(subtotalFils, coupon);
   const itemCount = useMemo(() => items.reduce((sum, item) => sum + item.quantity, 0), [items]);
@@ -239,9 +268,14 @@ export function CartProvider({ children }: { children: ReactNode }) {
       discountFils: totals.discountFils,
       totalFils: totals.totalFils,
       promoCode: totals.code,
+      promoPending: !totals.code && stored ? stored.code : "",
       promoError,
       promoChecking,
+      freeOrder: Boolean(totals.code) && totals.subtotalFils > 0 && totals.totalFils === 0,
+      couponNotice,
+      dismissCouponNotice,
       applyPromo,
+      setCouponEmail,
       removePromo,
       lastAddedId,
     }),
@@ -258,9 +292,13 @@ export function CartProvider({ children }: { children: ReactNode }) {
       totals.discountFils,
       totals.totalFils,
       totals.code,
+      stored,
       promoError,
       promoChecking,
+      couponNotice,
+      dismissCouponNotice,
       applyPromo,
+      setCouponEmail,
       removePromo,
       lastAddedId,
     ],

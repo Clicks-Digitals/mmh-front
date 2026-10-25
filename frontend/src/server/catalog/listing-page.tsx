@@ -32,6 +32,8 @@ export async function ListingPage({
   const filters = { ...base, ...(slug ? { category: slug } : {}), ...(discount ? { discount: true } : {}) };
   const products = await queryPublishedProducts(filters, slug || undefined);
   const heading = typeof title === "string" ? title : locale === "ar" ? title.ar || title.en : title.en;
+  const category = slug ? categories.find((item) => item.slug === slug) : undefined;
+  const description = category ? (locale === "ar" ? category.descriptionAr || category.description : category.description) : "";
 
   const platformLinks = slug
     ? platformTiles(slug, allProducts, categories).filter((tile) => tile.href !== basePath)
@@ -55,6 +57,7 @@ export async function ListingPage({
       ]}
       subcategories={subcategories.slice(0, 12)}
       subcategoriesLabel={t("listing.subcategories")}
+      description={description}
       initial={filters}
       source={products}
       basePath={basePath}

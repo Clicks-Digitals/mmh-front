@@ -17,6 +17,20 @@ import {
 } from "@/lib/api/admin";
 import { useState } from "react";
 
+/** D18 / CA-01: whether a mapping makes the variant sellable, and why not. */
+export function MappingStockCell({ mapping }: { mapping: Pick<AdminSupplierMapping, "ignored" | "counts_as_stock" | "counts_as_stock_message"> }) {
+  const counts = mapping.counts_as_stock === true;
+  const label = counts ? "Yes" : mapping.ignored ? "No — ignored" : "No";
+  return (
+    <span className="flex max-w-xs flex-col items-start gap-0.5">
+      <Badge tone={counts ? "success" : mapping.ignored ? "neutral" : "warning"}>{label}</Badge>
+      {mapping.counts_as_stock_message ? (
+        <span className="text-[11px] leading-snug text-[var(--clicks-muted)]">{mapping.counts_as_stock_message}</span>
+      ) : null}
+    </span>
+  );
+}
+
 const emptyForm = { supplier_id: "", variant_id: "", external_product_id: "", external_name: "", ignored: false };
 
 export function MappingTab({
@@ -49,7 +63,7 @@ export function MappingTab({
   async function create() {
     if (!token) return;
     if (!createForm.supplier_id || !createForm.external_product_id.trim()) {
-      toast.push("Choose a supplier and enter the supplier's product id", "error");
+      toast.push("Choose a supplier and enter the supplier's product ID.", "error");
       return;
     }
     setPending(true);
@@ -60,9 +74,9 @@ export function MappingTab({
         variant_id: createForm.variant_id || null,
         external_name: createForm.external_name.trim(),
       });
-      setMappings([...mappings, created]);
+      setMappings([...mappings, { ...created, variant_sku: variantSku(created.variant) }]);
       setCreateForm(emptyForm);
-      toast.push("Mapping created", "success");
+      toast.push(created.counts_as_stock ? "Mapping created — it counts as stock." : `Mapping created. ${created.counts_as_stock_message ?? ""}`.trim(), created.counts_as_stock ? "success" : "info");
     } catch (err) {
       toast.push(adminErrorMessage(err, "Mapping failed"), "error");
     } finally {
@@ -115,8 +129,9 @@ export function MappingTab({
     <section className="admin-card p-4">
       <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Supplier mapping</h2>
       <p className="mb-4 mt-0.5 text-xs text-[var(--clicks-muted)]">
-        Links this product (or one variant) to a supplier&apos;s product id so it can be fulfilled by the supplier. A
-        mapped CODE variant counts as in stock. Live purchasing stays locked. Changes save immediately.
+        Links a variant to the supplier&apos;s product so the supplier can deliver it. A mapping only counts as stock (keeps the
+        variant on sale with no codes) when the supplier is active <em>and</em> live purchasing is switched on — in test mode it
+        does not. Changes here are saved immediately.
       </p>
       {mappings.length ? (
         <div className="mb-4 overflow-x-auto rounded-xl border border-[var(--clicks-border)]">
@@ -126,7 +141,7 @@ export function MappingTab({
                 <th className="px-3 py-2 text-start">Supplier</th>
                 <th className="px-3 py-2 text-start">Variant</th>
                 <th className="px-3 py-2 text-start">External ID</th>
-                <th className="px-3 py-2 text-start">Status</th>
+                <th className="px-3 py-2 text-start">Counts as stock?</th>
                 <th className="px-3 py-2" />
               </tr>
             </thead>
@@ -140,7 +155,7 @@ export function MappingTab({
                     {m.external_name ? <span className="block font-sans text-[11px] text-[var(--clicks-muted)]">{m.external_name}</span> : null}
                   </td>
                   <td className="px-3 py-2">
-                    <Badge tone={m.ignored ? "neutral" : "success"}>{m.ignored ? "Ignored" : "Active"}</Badge>
+                    <MappingStockCell mapping={m} />
                   </td>
                   <td className="px-3 py-2">
                     {canMap ? (
@@ -177,7 +192,7 @@ export function MappingTab({
       )}
       {canMap ? (
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <FormField label="Supplier" htmlFor="map-supplier">
+          <FormField label="Supplier" htmlFor="map-supplier" required>
             <select
               id="map-supplier"
               className={adminInputClass}
@@ -188,11 +203,12 @@ export function MappingTab({
               {suppliers.map((s) => (
                 <option key={String(s.id)} value={String(s.id)}>
                   {s.name}
+                  {!s.active ? " (inactive)" : s.live_purchasing === false ? " (test mode)" : ""}
                 </option>
               ))}
             </select>
           </FormField>
-          <FormField label="Variant" htmlFor="map-variant" hint="Empty = whole product.">
+          <FormField label="Variant" htmlFor="map-variant" hint="Pick the variant — product-level mappings never count as stock.">
             <select
               id="map-variant"
               className={adminInputClass}
@@ -207,7 +223,7 @@ export function MappingTab({
               ))}
             </select>
           </FormField>
-          <FormField label="External product ID" htmlFor="map-ext" hint="The supplier's id / SKU.">
+          <FormField label="Supplier product ID" htmlFor="map-ext" required hint="The supplier's id / SKU for this item.">
             <input
               id="map-ext"
               className={`${adminInputClass} font-mono`}
@@ -215,7 +231,7 @@ export function MappingTab({
               onChange={(e) => setCreateForm((s) => ({ ...s, external_product_id: e.target.value }))}
             />
           </FormField>
-          <FormField label="External name" htmlFor="map-name" hint="Optional, for reference.">
+          <FormField label="Supplier product name" htmlFor="map-name" optional hint="For your reference.">
             <input
               id="map-name"
               className={adminInputClass}
@@ -230,7 +246,7 @@ export function MappingTab({
           </div>
         </div>
       ) : (
-        <p className="text-sm text-[var(--clicks-muted)]">Editing mappings requires the suppliers.write permission.</p>
+        <p className="text-sm text-[var(--clicks-muted)]">You can view these mappings, but your role can&apos;t change them.</p>
       )}
 
       <AdminModal open={Boolean(editing)} onClose={() => setEditing(null)} title="Edit mapping">

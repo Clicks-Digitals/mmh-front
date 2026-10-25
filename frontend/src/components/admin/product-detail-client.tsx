@@ -1,6 +1,8 @@
 "use client";
 
 import { useAdminAccess } from "@/components/admin/admin-access";
+import { useAdminBreadcrumbLabel } from "@/components/admin/layout/breadcrumbs";
+import { useUnsavedChangesGuard } from "@/components/admin/layout/navigation-guard";
 import { FieldsTab } from "@/components/admin/product/fields-tab";
 import { GeneralTab } from "@/components/admin/product/general-tab";
 import { MappingTab } from "@/components/admin/product/mapping-tab";
@@ -10,22 +12,27 @@ import { Badge } from "@/components/admin/ui/badge";
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
 import { EmptyState } from "@/components/admin/ui/empty-state";
 import { ErrorState } from "@/components/admin/ui/error-state";
+import { FormErrorSummary } from "@/components/admin/ui/form-field";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
-import { adminErrorMessage, adminFieldErrors, errorCode } from "@/components/admin/lib/errors";
+import { adminErrorMessage, errorCode } from "@/components/admin/lib/errors";
 import {
+  GENERAL_FIELD_LABELS,
   fieldDraftToPayload,
-  fieldToDraft,
   generalFormToPayload,
+  generalServerErrors,
+  isDraftDirty,
+  nestedListErrors,
   newFieldDraft,
   newVariantDraft,
-  productToGeneralForm,
-  tabForErrorKey,
+  productToDraft,
+  publishWarnings,
   validateField,
   validateGeneral,
   validateVariant,
   variantDraftToPayload,
-  variantToDraft,
+  warningMessage,
+  type EditorDraft,
   type FieldDraft,
   type GeneralForm,
   type VariantDraft,
@@ -53,15 +60,16 @@ import {
   type AdminSupplierMapping,
   type Supplier,
 } from "@/lib/api/admin";
+import { ApiError } from "@/lib/api/client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 
 const TABS = [
   { id: "general", label: "General" },
   { id: "variants", label: "Variants" },
-  { id: "fields", label: "Required fields" },
-  { id: "media", label: "Media" },
+  { id: "fields", label: "Required details" },
+  { id: "media", label: "Photos" },
   { id: "supplier", label: "Supplier mapping" },
 ] as const;
 
@@ -72,6 +80,7 @@ type Lookups = {
   regions: AdminRegion[];
   suppliers: Supplier[];
 };
+type Confirm = "archive" | "unarchive" | "delete" | "duplicate" | "publish" | null;
 
 function move<T>(list: T[], match: (item: T) => boolean, dir: -1 | 1, visible: (item: T) => boolean): T[] {
   const visibleIdx = list.map((item, i) => (visible(item) ? i : -1)).filter((i) => i >= 0);
@@ -83,6 +92,10 @@ function move<T>(list: T[], match: (item: T) => boolean, dir: -1 | 1, visible: (
   return next;
 }
 
+function sortedMedia(product: AdminProduct): AdminMediaAsset[] {
+  return [...(product.media ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+}
+
 function ProductEditor({
   product,
   lookups,
@@ -90,7 +103,6 @@ function ProductEditor({
   tab,
   setTab,
   onSaved,
-  onReload,
 }: {
   product: AdminProduct;
   lookups: Lookups;
@@ -98,7 +110,6 @@ function ProductEditor({
   tab: TabId;
   setTab: (tab: TabId) => void;
   onSaved: (p: AdminProduct) => void;
-  onReload: () => void;
 }) {
   const toast = useAdminToast();
   const router = useRouter();
@@ -107,36 +118,28 @@ function ProductEditor({
   const canMap = can("suppliers.write");
   const canImport = can("codes.manage");
 
-  const [general, setGeneral] = useState<GeneralForm>(() => productToGeneralForm(product));
-  const [variants, setVariants] = useState<VariantDraft[]>(() =>
-    [...(product.variants ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)).map(variantToDraft),
-  );
-  const [fields, setFields] = useState<FieldDraft[]>(() =>
-    [...(product.fields ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)).map(fieldToDraft),
-  );
-  const [media, setMedia] = useState<AdminMediaAsset[]>(() =>
-    [...(product.media ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
-  );
+  const [initial, setInitial] = useState<EditorDraft>(() => productToDraft(product));
+  const [draft, setDraft] = useState<EditorDraft>(initial);
+  const [media, setMedia] = useState<AdminMediaAsset[]>(() => sortedMedia(product));
   const [mappings, setMappings] = useState<AdminSupplierMapping[]>(() => [...(product.supplier_mappings ?? [])]);
   const [generalErrors, setGeneralErrors] = useState<Record<string, string>>({});
   const [variantErrors, setVariantErrors] = useState<Record<string, Record<string, string>>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, Record<string, string>>>({});
   const [serverTabErrors, setServerTabErrors] = useState<Record<string, string>>({});
-  const [dirty, setDirty] = useState(false);
+  const [serverWarnings, setServerWarnings] = useState<string[]>(() => product.warnings ?? []);
   const [pending, setPending] = useState(false);
-  const [confirm, setConfirm] = useState<"archive" | "unarchive" | "delete" | null>(null);
+  const [confirm, setConfirm] = useState<Confirm>(null);
   const [variantToDelete, setVariantToDelete] = useState<VariantDraft | null>(null);
   const [variantConflict, setVariantConflict] = useState<{ variant: VariantDraft; message: string } | null>(null);
 
-  useEffect(() => {
-    if (!dirty) return;
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [dirty]);
+  const { general, variants, fields } = draft;
+  const dirty = useMemo(() => isDraftDirty(initial, draft), [initial, draft]);
+  useUnsavedChangesGuard("product-editor", dirty);
+  useAdminBreadcrumbLabel(product.name_en || product.slug);
+
+  const category = lookups.categories.find((c) => String(c.id) === general.category_id);
+  const platform = lookups.platforms.find((p) => String(p.id) === general.platform_id);
+  const pendingWarnings = publishWarnings(draft, { categoryStatus: category?.status, platformStatus: platform?.status });
 
   const tabErrorCount: Record<TabId, number> = {
     general: Object.keys(generalErrors).length + (serverTabErrors.general ? 1 : 0),
@@ -146,21 +149,44 @@ function ProductEditor({
     supplier: 0,
   };
 
-  function patchGeneral(patch: Partial<GeneralForm>) {
-    setGeneral((g) => ({ ...g, ...patch }));
-    setDirty(true);
-  }
-  function patchVariant(key: string, patch: Partial<VariantDraft>) {
-    setVariants((list) => list.map((v) => (v.key === key ? { ...v, ...patch } : v)));
-    setDirty(true);
-  }
-  function patchField(key: string, patch: Partial<FieldDraft>) {
-    setFields((list) => list.map((f) => (f.key_local === key ? { ...f, ...patch } : f)));
-    setDirty(true);
+  function clearErrors() {
+    setGeneralErrors({});
+    setVariantErrors({});
+    setFieldErrors({});
+    setServerTabErrors({});
   }
 
-  async function save() {
-    if (!token) return;
+  function resetTo(next: EditorDraft) {
+    setInitial(next);
+    setDraft(next);
+    clearErrors();
+  }
+
+  function patchGeneral(patch: Partial<GeneralForm>) {
+    setDraft((d) => ({ ...d, general: { ...d.general, ...patch } }));
+    setGeneralErrors((errs) => {
+      const keys = Object.keys(patch).filter((k) => k in errs);
+      if (!keys.length) return errs;
+      const next = { ...errs };
+      keys.forEach((k) => delete next[k]);
+      return next;
+    });
+  }
+  function patchVariant(key: string, patch: Partial<VariantDraft>) {
+    setDraft((d) => ({ ...d, variants: d.variants.map((v) => (v.key === key ? { ...v, ...patch } : v)) }));
+  }
+  function patchField(key: string, patch: Partial<FieldDraft>) {
+    setDraft((d) => ({ ...d, fields: d.fields.map((f) => (f.key_local === key ? { ...f, ...patch } : f)) }));
+  }
+
+  function discard() {
+    setDraft(initial);
+    clearErrors();
+    toast.push("Changes discarded", "info");
+  }
+
+  /** Validate locally; returns false (and shows the problems) when something must be fixed. */
+  function validateAll(): boolean {
     const gErr = validateGeneral(general);
     const vErr: Record<string, Record<string, string>> = {};
     variants.forEach((v) => {
@@ -181,41 +207,77 @@ function ProductEditor({
     if (Object.keys(vErr).length) bad.push("variants");
     if (Object.keys(fErr).length) bad.push("fields");
     if (bad.length) {
-      toast.push(`Fix the highlighted fields on: ${bad.map((t) => TABS.find((x) => x.id === t)?.label).join(", ")}`, "error");
+      toast.push(`Please fix the highlighted fields on: ${bad.map((t) => TABS.find((x) => x.id === t)?.label).join(", ")}.`, "error");
       if (!bad.includes(tab)) setTab(bad[0]);
+      return false;
+    }
+    return true;
+  }
+
+  function requestSave() {
+    if (!token || !validateAll()) return;
+    const publishing = general.status === "PUBLISHED" && (initial.general.status !== "PUBLISHED" || pendingWarnings.length > 0);
+    if (publishing && pendingWarnings.length) {
+      setConfirm("publish");
       return;
     }
+    void save();
+  }
+
+  async function save() {
+    if (!token) return;
     setPending(true);
+    setConfirm(null);
+    const visibleVariants = variants.filter((v) => !v.delete);
+    const visibleFields = fields.filter((f) => !f.delete);
     try {
-      const visibleVariants = variants.filter((v) => !v.delete);
-      const visibleFields = fields.filter((f) => !f.delete);
       const updated = await updateProduct(token, product.slug, {
-        ...generalFormToPayload(general),
+        ...generalFormToPayload(general, initial.general),
         variants: visibleVariants.map((v, i) => variantDraftToPayload(v, i)),
         fields: [
           ...visibleFields.map((f, i) => fieldDraftToPayload(f, i)),
           ...fields.filter((f) => f.delete && f.id).map((f, i) => fieldDraftToPayload(f, i)),
         ],
       });
-      toast.push("Product saved", "success");
-      setDirty(false);
-      if (updated.slug !== product.slug) router.replace(`/admin/products/${updated.slug}`);
+      const warnings = updated.warnings ?? [];
+      setServerWarnings(warnings);
+      toast.push(
+        warnings.length ? `Product saved. ${warningMessage(warnings[0])}` : "Product saved",
+        warnings.length ? "warning" : "success",
+      );
+      resetTo(productToDraft(updated));
+      setMedia(sortedMedia(updated));
+      setMappings([...(updated.supplier_mappings ?? mappings)]);
       onSaved(updated);
+      if (updated.slug !== product.slug) router.replace(`/admin/products/${updated.slug}`);
     } catch (err) {
-      const fieldErrs = adminFieldErrors(err);
-      const general: Record<string, string> = {};
+      const body = err instanceof ApiError ? err.body : null;
+      const gen = generalServerErrors(body);
+      const vList = nestedListErrors(body, "variants");
+      const fList = nestedListErrors(body, "fields");
+      const vErr: Record<string, Record<string, string>> = {};
+      Object.entries(vList.rows).forEach(([i, e]) => {
+        const v = visibleVariants[Number(i)];
+        if (v) vErr[v.key] = e;
+      });
+      const fErr: Record<string, Record<string, string>> = {};
+      Object.entries(fList.rows).forEach(([i, e]) => {
+        const f = visibleFields[Number(i)];
+        if (f) fErr[f.key_local] = e;
+      });
       const byTab: Record<string, string> = {};
-      for (const [key, msg] of Object.entries(fieldErrs)) {
-        const t = tabForErrorKey(key);
-        if (t === "general") general[key === "category" ? "category_id" : key === "platform" ? "platform_id" : key] = msg;
-        else byTab[t] = msg;
-      }
-      if (Object.keys(general).length) byTab.general = Object.values(general)[0];
-      setGeneralErrors(general);
+      if (vList.message) byTab.variants = vList.message;
+      if (fList.message) byTab.fields = fList.message;
+      setGeneralErrors(gen);
+      setVariantErrors(vErr);
+      setFieldErrors(fErr);
       setServerTabErrors(byTab);
-      const first = (Object.keys(byTab)[0] as TabId | undefined) ?? null;
-      if (first && first !== tab) setTab(first);
-      toast.push(adminErrorMessage(err, "Save failed"), "error");
+      const order: TabId[] = ["general", "variants", "fields"];
+      const firstBad = order.find((t) =>
+        t === "general" ? Object.keys(gen).length : t === "variants" ? Object.keys(vErr).length || byTab.variants : Object.keys(fErr).length || byTab.fields,
+      );
+      if (firstBad && firstBad !== tab) setTab(firstBad);
+      toast.push(firstBad ? "The product was not saved — please fix the highlighted fields." : adminErrorMessage(err, "Save failed"), "error");
     } finally {
       setPending(false);
     }
@@ -228,21 +290,35 @@ function ProductEditor({
       if (kind === "delete") {
         await deleteProduct(token, product.slug);
         toast.push("Product deleted permanently", "success");
+        resetTo(initial);
         router.push("/admin/products");
         return;
       }
       const next = kind === "archive" ? await archiveProduct(token, product.slug) : await unarchiveProduct(token, product.slug);
       toast.push(kind === "archive" ? "Product archived — hidden from the store" : "Product restored as a draft", "success");
+      resetTo(productToDraft(next));
       onSaved(next);
     } catch (err) {
-      if (kind === "delete" && errorCode(err) === "conflict") {
-        toast.push(`${adminErrorMessage(err)}`, "error");
-      } else {
-        toast.push(adminErrorMessage(err, "Action failed"), "error");
-      }
+      toast.push(adminErrorMessage(err, errorCode(err) === "conflict" ? "This product can't be deleted" : "Action failed"), "error");
     } finally {
       setPending(false);
       setConfirm(null);
+    }
+  }
+
+  async function duplicate() {
+    if (!token) return;
+    setPending(true);
+    try {
+      const copy = await duplicateProduct(token, product.slug, false);
+      toast.push("Draft copy created — you are now editing the copy", "success");
+      setConfirm(null);
+      resetTo(initial);
+      router.push(`/admin/products/${copy.slug}`);
+    } catch (err) {
+      toast.push(adminErrorMessage(err, "Duplicate failed"), "error");
+    } finally {
+      setPending(false);
     }
   }
 
@@ -252,12 +328,14 @@ function ProductEditor({
     setPending(true);
     try {
       await deleteVariant(token, target.id!);
-      setVariants((list) => list.filter((v) => v.key !== target.key));
+      const drop = (list: VariantDraft[]) => list.filter((v) => v.key !== target.key);
+      setInitial((d) => ({ ...d, variants: drop(d.variants) }));
+      setDraft((d) => ({ ...d, variants: drop(d.variants) }));
       toast.push("Variant deleted", "success");
       setVariantToDelete(null);
     } catch (err) {
       setVariantToDelete(null);
-      if (err && typeof err === "object" && "status" in err && (err as { status: number }).status === 409) {
+      if (err instanceof ApiError && err.status === 409) {
         setVariantConflict({ variant: target, message: adminErrorMessage(err) });
       } else {
         toast.push(adminErrorMessage(err, "Delete failed"), "error");
@@ -272,8 +350,10 @@ function ProductEditor({
     setPending(true);
     try {
       await updateVariant(token, v.id, { published: false });
-      setVariants((list) => list.map((x) => (x.key === v.key ? { ...x, published: false } : x)));
-      toast.push("Variant unpublished — hidden from the store", "success");
+      const hide = (list: VariantDraft[]) => list.map((x) => (x.key === v.key ? { ...x, published: false } : x));
+      setInitial((d) => ({ ...d, variants: hide(d.variants) }));
+      setDraft((d) => ({ ...d, variants: hide(d.variants) }));
+      toast.push("Variant hidden from the store", "success");
     } catch (err) {
       toast.push(adminErrorMessage(err, "Update failed"), "error");
     } finally {
@@ -284,37 +364,28 @@ function ProductEditor({
 
   const isArchived = product.status === "ARCHIVED";
   const showSave = canWrite && (tab === "general" || tab === "variants" || tab === "fields");
-  const variantRows = variants.filter((v) => !v.delete).map((v) => ({ id: v.id, sku: v.sku })) as AdminProduct["variants"];
+  const variantRows = variants
+    .filter((v) => !v.delete && v.id)
+    .map((v) => ({ id: v.id!, sku: v.sku, name_en: v.name_en, price_fils: 0 }));
+  const unsavedNote = dirty ? " Your unsaved changes will be discarded." : "";
 
   return (
     <div>
       <PageHeader
         title={product.name_en}
-        description={`${product.slug} · ${product.fulfillment_type === "DIRECT_TOPUP" ? "Direct top-up" : "Code"} product`}
+        description={`${product.fulfillment_type === "DIRECT_TOPUP" ? "Direct top-up" : "Code"} product · /product/${product.slug}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Badge status={product.status} />
+            <Badge status={product.status}>
+              {product.status === "PUBLISHED" ? "Published" : product.status === "ARCHIVED" ? "Archived" : "Draft"}
+            </Badge>
             {product.status === "PUBLISHED" ? (
               <a href={`/product/${product.slug}`} target="_blank" rel="noreferrer" className="admin-btn admin-btn-secondary">
                 View on store
               </a>
             ) : null}
             {canWrite ? (
-              <button
-                type="button"
-                className="admin-btn admin-btn-secondary"
-                disabled={pending}
-                onClick={async () => {
-                  if (!token) return;
-                  try {
-                    const copy = await duplicateProduct(token, product.slug, false);
-                    toast.push("Product duplicated as draft", "success");
-                    router.push(`/admin/products/${copy.slug}`);
-                  } catch (err) {
-                    toast.push(adminErrorMessage(err, "Duplicate failed"), "error");
-                  }
-                }}
-              >
+              <button type="button" className="admin-btn admin-btn-secondary" disabled={pending} onClick={() => setConfirm("duplicate")}>
                 Duplicate
               </button>
             ) : null}
@@ -334,17 +405,34 @@ function ProductEditor({
               </button>
             ) : null}
             <Link href="/admin/products" className="text-sm font-medium text-[var(--clicks-blue)]">
-              Back
+              Back to products
             </Link>
           </div>
         }
       />
 
-      <div className="admin-card mb-4 flex flex-wrap items-center gap-1 p-1.5">
+      {serverWarnings.length ? (
+        <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-[13px] text-amber-950">
+          {serverWarnings.map((w) => (
+            <p key={w}>
+              <span className="font-semibold">Heads up:</span> {warningMessage(w)}
+              {w === "no_published_variants" ? (
+                <button type="button" className="ms-2 font-medium underline" onClick={() => setTab("variants")}>
+                  Go to variants
+                </button>
+              ) : null}
+            </p>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="admin-card mb-4 flex flex-wrap items-center gap-1 p-1.5" role="tablist" aria-label="Product sections">
         {TABS.map((t) => (
           <button
             key={t.id}
             type="button"
+            role="tab"
+            aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
             className={`flex h-8 items-center gap-1.5 rounded-[var(--admin-radius-sm)] px-3 text-[12px] font-semibold transition ${
               tab === t.id
@@ -354,7 +442,10 @@ function ProductEditor({
           >
             {t.label}
             {tabErrorCount[t.id] ? (
-              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] text-white">
+              <span
+                className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] text-white"
+                aria-label="has errors"
+              >
                 !
               </span>
             ) : null}
@@ -364,18 +455,30 @@ function ProductEditor({
       </div>
 
       {serverTabErrors[tab] && tab !== "general" ? (
-        <p className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-800">{serverTabErrors[tab]}</p>
+        <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-800">
+          {serverTabErrors[tab]}
+        </p>
       ) : null}
 
       {tab === "general" ? (
-        <GeneralTab
-          form={general}
-          errors={generalErrors}
-          disabled={!canWrite}
-          categories={lookups.categories}
-          platforms={lookups.platforms}
-          onChange={patchGeneral}
-        />
+        <>
+          <FormErrorSummary
+            className="mb-3"
+            errors={generalErrors}
+            labels={GENERAL_FIELD_LABELS}
+            idFor={(key) => (key === "badges" ? "pg-badges" : `pg-${key}`)}
+          />
+          <GeneralTab
+            form={general}
+            errors={generalErrors}
+            disabled={!canWrite}
+            categories={lookups.categories}
+            platforms={lookups.platforms}
+            onChange={patchGeneral}
+            productId={product.id}
+            hasVariants={variants.some((v) => v.id)}
+          />
+        </>
       ) : null}
       {tab === "variants" ? (
         <VariantsTab
@@ -385,22 +488,19 @@ function ProductEditor({
           isCodeProduct={general.fulfillment_type === "CODE"}
           regions={lookups.regions}
           canImport={canImport}
+          accountCurrency={general.account_currency}
           onChange={patchVariant}
-          onAdd={() => {
-            setVariants((list) => [
-              ...list,
-              newVariantDraft({ productId: product.id, index: list.length, currency: general.account_currency }),
-            ]);
-            setDirty(true);
-          }}
+          onAdd={() =>
+            setDraft((d) => ({
+              ...d,
+              variants: [...d.variants, newVariantDraft({ productId: product.id, index: d.variants.length, currency: "" })],
+            }))
+          }
           onRemove={(v) => {
             if (v.id) setVariantToDelete(v);
-            else setVariants((list) => list.filter((x) => x.key !== v.key));
+            else setDraft((d) => ({ ...d, variants: d.variants.filter((x) => x.key !== v.key) }));
           }}
-          onMove={(key, dir) => {
-            setVariants((list) => move(list, (v) => v.key === key, dir, (v) => !v.delete));
-            setDirty(true);
-          }}
+          onMove={(key, dir) => setDraft((d) => ({ ...d, variants: move(d.variants, (v) => v.key === key, dir, (v) => !v.delete) }))}
         />
       ) : null}
       {tab === "fields" ? (
@@ -408,21 +508,16 @@ function ProductEditor({
           fields={fields}
           errors={fieldErrors}
           disabled={!canWrite}
+          isTopup={general.fulfillment_type === "DIRECT_TOPUP"}
           onChange={patchField}
-          onAdd={() => {
-            setFields((list) => [...list, newFieldDraft(list.length)]);
-            setDirty(true);
-          }}
-          onRemove={(key) => {
-            setFields((list) =>
-              list.flatMap((f) => (f.key_local !== key ? [f] : f.id ? [{ ...f, delete: true }] : [])),
-            );
-            setDirty(true);
-          }}
-          onMove={(key, dir) => {
-            setFields((list) => move(list, (f) => f.key_local === key, dir, (f) => !f.delete));
-            setDirty(true);
-          }}
+          onAdd={() => setDraft((d) => ({ ...d, fields: [...d.fields, newFieldDraft(d.fields.length)] }))}
+          onRemove={(key) =>
+            setDraft((d) => ({
+              ...d,
+              fields: d.fields.flatMap((f) => (f.key_local !== key ? [f] : f.id ? [{ ...f, delete: true }] : [])),
+            }))
+          }
+          onMove={(key, dir) => setDraft((d) => ({ ...d, fields: move(d.fields, (f) => f.key_local === key, dir, (f) => !f.delete) }))}
         />
       ) : null}
       {tab === "media" ? <MediaTab token={token} slug={product.slug} media={media} setMedia={setMedia} canWrite={canWrite} /> : null}
@@ -433,19 +528,21 @@ function ProductEditor({
           mappings={mappings}
           setMappings={setMappings}
           suppliers={lookups.suppliers}
-          variants={(variantRows ?? []) as NonNullable<AdminProduct["variants"]>}
+          variants={variantRows}
           canMap={canMap}
         />
       ) : null}
 
       {showSave ? (
-        <div className="sticky bottom-0 mt-4 flex items-center gap-3 border-t border-[var(--clicks-border)] bg-[var(--clicks-bg)]/95 py-3 backdrop-blur">
-          <button type="button" disabled={pending} onClick={() => void save()} className="admin-btn admin-btn-primary disabled:opacity-60">
-            {pending ? "Saving…" : "Save product"}
+        <div className="sticky bottom-0 z-10 mt-4 flex flex-wrap items-center gap-3 border-t border-[var(--clicks-border)] bg-[var(--clicks-bg)]/95 py-3 backdrop-blur">
+          <button type="button" disabled={pending || !dirty} onClick={requestSave} className="admin-btn admin-btn-primary disabled:opacity-60">
+            {pending ? "Saving…" : dirty ? "Save changes" : "Saved"}
           </button>
-          <p className="text-[11px] text-[var(--clicks-muted)]">Saves General, Variants and Required fields together.</p>
+          <p className="text-[11px] text-[var(--clicks-muted)]">
+            {dirty ? "Saves General, Variants and Required details together." : "No unsaved changes. Photos and supplier mappings save on their own."}
+          </p>
           {dirty ? (
-            <button type="button" className="admin-btn admin-btn-ghost ms-auto text-xs" onClick={onReload}>
+            <button type="button" className="admin-btn admin-btn-ghost ms-auto text-xs" disabled={pending} onClick={discard}>
               Discard changes
             </button>
           ) : null}
@@ -453,9 +550,33 @@ function ProductEditor({
       ) : null}
 
       <ConfirmDialog
+        open={confirm === "publish"}
+        title="Publish with these problems?"
+        description="The product will be visible on the store, but:"
+        confirmLabel="Save anyway"
+        pending={pending}
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => void save()}
+      >
+        <ul className="list-disc space-y-1 ps-5 text-[13px] text-[var(--clicks-text)]">
+          {pendingWarnings.map((w) => (
+            <li key={w}>{warningMessage(w)}</li>
+          ))}
+        </ul>
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={confirm === "duplicate"}
+        title="Duplicate this product?"
+        description={`Creates a hidden draft copy named “${product.name_en} (Copy)” with the same details, variants and required details. Codes, photos and supplier mappings are not copied, and the copy's variants start out of stock.${unsavedNote}`}
+        confirmLabel="Create copy"
+        pending={pending}
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => void duplicate()}
+      />
+      <ConfirmDialog
         open={confirm === "archive"}
         title="Archive this product?"
-        description="Archived products are hidden from the store but keep their orders and codes. You can unarchive later (it returns as a draft)."
+        description={`Archived products are hidden from the store but keep their orders and codes. You can unarchive later (it returns as a draft).${unsavedNote}`}
         confirmLabel="Archive"
         pending={pending}
         onCancel={() => setConfirm(null)}
@@ -464,7 +585,7 @@ function ProductEditor({
       <ConfirmDialog
         open={confirm === "unarchive"}
         title="Unarchive this product?"
-        description="The product returns as a Draft. Publish it from the General tab when ready."
+        description={`The product returns as a Draft. Publish it from the General tab when ready.${unsavedNote}`}
         confirmLabel="Unarchive"
         pending={pending}
         onCancel={() => setConfirm(null)}
@@ -473,7 +594,7 @@ function ProductEditor({
       <ConfirmDialog
         open={confirm === "delete"}
         title="Delete this product permanently?"
-        description="This removes the product, its variants and media for good. Products with order or code history cannot be deleted — archive them instead."
+        description="This removes the product, its variants and photos for good. Products with orders or codes can't be deleted — archive them instead."
         confirmLabel="Delete permanently"
         danger
         pending={pending}
@@ -483,7 +604,7 @@ function ProductEditor({
       <ConfirmDialog
         open={Boolean(variantToDelete)}
         title="Delete variant?"
-        description={variantToDelete ? `Delete ${variantToDelete.sku} now. This cannot be undone.` : undefined}
+        description={variantToDelete ? `Delete “${variantToDelete.name_en || variantToDelete.sku}” now. This can't be undone.` : undefined}
         confirmLabel="Delete variant"
         danger
         pending={pending}
@@ -495,10 +616,10 @@ function ProductEditor({
         title="This variant can't be deleted"
         description={
           variantConflict
-            ? `${variantConflict.message} It has orders or codes — unpublish it instead so it's hidden from the store.`
+            ? `${variantConflict.message} It has orders or codes — hide it from the store instead.`
             : undefined
         }
-        confirmLabel="Unpublish variant"
+        confirmLabel="Hide from store"
         pending={pending}
         onCancel={() => setVariantConflict(null)}
         onConfirm={() => variantConflict && void unpublishVariant(variantConflict.variant)}
@@ -509,16 +630,21 @@ function ProductEditor({
 
 export function ProductDetailClient({ id }: { id: string }) {
   const [tab, setTab] = useState<TabId>("general");
-  const { data, setData, loading, error, reload, token } = useAdminQuery(async (tok) => {
-    const [product, categories, platforms, regions, suppliers] = await Promise.all([
-      getProduct(tok, id),
-      fetchAllPages((p) => listCategories(tok, p)),
-      fetchAllPages((p) => listPlatforms(tok, p)),
-      fetchAllPages((p) => listRegions(tok, p)),
-      fetchAllPages((p) => listSuppliers(tok, p)).catch(() => [] as Supplier[]),
-    ]);
-    return { product, lookups: { categories, platforms, regions, suppliers } };
-  }, [id]);
+  const { can } = useAdminAccess();
+  const canSuppliers = can("suppliers.read") || can("catalog.read");
+  const { data, setData, loading, error, reload, token } = useAdminQuery(
+    async (tok) => {
+      const [product, categories, platforms, regions, suppliers] = await Promise.all([
+        getProduct(tok, id),
+        fetchAllPages((p) => listCategories(tok, p)),
+        fetchAllPages((p) => listPlatforms(tok, p)),
+        fetchAllPages((p) => listRegions(tok, p)),
+        canSuppliers ? fetchAllPages((p) => listSuppliers(tok, p)).catch(() => [] as Supplier[]) : Promise.resolve([] as Supplier[]),
+      ]);
+      return { product, lookups: { categories, platforms, regions, suppliers } };
+    },
+    [id, canSuppliers],
+  );
 
   if (loading && !data) return <div className="admin-card h-48 animate-pulse" />;
   if (error) return <ErrorState message={error} onRetry={reload} />;
@@ -527,14 +653,13 @@ export function ProductDetailClient({ id }: { id: string }) {
   const { product, lookups } = data;
   return (
     <ProductEditor
-      key={`${product.slug}:${product.updated_at ?? ""}:${product.status}`}
+      key={product.slug}
       product={product}
       lookups={lookups}
       token={token}
       tab={tab}
       setTab={setTab}
       onSaved={(p) => setData((prev) => (prev ? { ...prev, product: p } : prev))}
-      onReload={reload}
     />
   );
 }

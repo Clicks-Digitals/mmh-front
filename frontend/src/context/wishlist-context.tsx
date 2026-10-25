@@ -10,6 +10,8 @@ interface WishlistContextValue {
   hydrated: boolean;
   has: (productId: string) => boolean;
   toggle: (productId: string) => void;
+  /** Add only (never removes) — used by "Move to wishlist" (ST-14). */
+  add: (productId: string) => void;
   remove: (productId: string) => void;
 }
 
@@ -36,6 +38,17 @@ export function WishlistProvider({ children }: { children: ReactNode }) {
     [setItems],
   );
 
+  const add = useCallback(
+    (productId: string) => {
+      setItems((current) =>
+        current.some((item) => item.productId === productId)
+          ? current
+          : [...current, { productId, addedAt: new Date().toISOString() }],
+      );
+    },
+    [setItems],
+  );
+
   const remove = useCallback(
     (productId: string) => {
       setItems((current) => current.filter((item) => item.productId !== productId));
@@ -44,8 +57,8 @@ export function WishlistProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ items, hydrated, has, toggle, remove }),
-    [items, hydrated, has, toggle, remove],
+    () => ({ items, hydrated, has, toggle, add, remove }),
+    [items, hydrated, has, toggle, add, remove],
   );
 
   return <WishlistContext.Provider value={value}>{children}</WishlistContext.Provider>;

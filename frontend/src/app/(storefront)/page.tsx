@@ -10,6 +10,8 @@ import { SuggestedGamesGrid } from "@/components/home/suggested-games-grid";
 import { listBanners } from "@/lib/api/cms";
 import { resolveMediaUrl } from "@/lib/media";
 import { pageMeta } from "@/lib/seo";
+import { hasContactChannel } from "@/lib/site-contact";
+import { loadSiteContact } from "@/server/site-contact";
 
 export const metadata = pageMeta(
   "Digital gaming cards and top-ups in Jordan",
@@ -41,7 +43,7 @@ async function loadHomeBanners(): Promise<HomeBanner[]> {
 }
 
 export default async function HomePage() {
-  const banners = await loadHomeBanners();
+  const [banners, contact] = await Promise.all([loadHomeBanners(), loadSiteContact()]);
   return (
     <>
       {banners.length ? <HomeBanners banners={banners} /> : <Hero />}
@@ -51,7 +53,7 @@ export default async function HomePage() {
       <LatestProducts />
       <ServiceCategoryGrid />
       <SuggestedGamesGrid />
-      <HomeSupportCta />
+      <HomeSupportCta hasContact={hasContactChannel(contact)} />
     </>
   );
 }

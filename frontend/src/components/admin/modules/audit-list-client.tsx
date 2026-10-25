@@ -1,107 +1,187 @@
 "use client";
 
 import { ADMIN_LIST_PAGE_SIZE } from "@/components/admin/admin-list-page";
+import { listAuditRows, type AuditRow } from "@/components/admin/ops/api";
+import { OpsTable } from "@/components/admin/ops/ops-table";
 import { AdminModal } from "@/components/admin/ui/admin-modal";
-import { DataTable } from "@/components/admin/ui/data-table";
 import { EmptyState } from "@/components/admin/ui/empty-state";
 import { ErrorState } from "@/components/admin/ui/error-state";
 import { Filters } from "@/components/admin/ui/filters";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { Pagination } from "@/components/admin/ui/pagination";
-import { auditActionLabel, summarizeAuditMeta } from "@/components/admin/lib/audit";
+import {
+  ACTION_GROUPS,
+  ENTITY_TYPE_LABELS,
+  auditActionLabel,
+  auditEntityHref,
+  auditEntityText,
+  summarizeAuditMeta,
+} from "@/components/admin/lib/audit";
+import { localInputToIso } from "@/components/admin/lib/datetime";
+import { roleLabel } from "@/components/admin/lib/roles";
 import { formatAdminDateTime } from "@/lib/admin/format";
-import { useAdminResource } from "@/hooks/use-admin-resource";
-import { listAuditLogs, type AuditLog } from "@/lib/api/admin";
-import { useState } from "react";
+import { useAdminQuery } from "@/hooks/use-admin-query";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 
-const ENTITY_TYPES = [
-  "Order",
-  "Product",
-  "ProductVariant",
-  "Category",
-  "Platform",
-  "Region",
-  "DigitalCode",
-  "Coupon",
-  "User",
-  "Role",
-  "CustomerProfile",
-  "Banner",
-  "FAQ",
-  "ContentPage",
-  "SiteSettings",
-  "Supplier",
-  "SupplierProductMapping",
-];
+/** Meta keys that hold role values → show labels instead of "ORDER_MANAGER" (RO-17). */
+function readableMeta(meta: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(meta ?? {})) {
+    if (key.endsWith("_label")) continue;
+    if (key === "role" && typeof value === "string") out[key] = (meta?.role_label as string) || roleLabel(value);
+    else if (key === "role" && value && typeof value === "object" && "from" in value && "to" in value) {
+      const change = value as { from?: string; to?: string; from_label?: string; to_label?: string };
+      out[key] = { from: change.from_label || roleLabel(change.from), to: change.to_label || roleLabel(change.to) };
+    } else out[key] = value;
+  }
+  return out;
+}
 
-export function AuditListClient() {
-  const [entityType, setEntityType] = useState("");
-  const [detail, setDetail] = useState<AuditLog | null>(null);
-  const { page, setPage, search, setSearch, items, count, loading, error, reload } = useAdminResource<AuditLog>(
-    async (token, p, s) => {
-      const data = await listAuditLogs(token, {
-        page: p,
+function actorText(r: AuditRow): string {
+  if (r.actor_name) return r.actor_name;
+  if (r.actor_email) return r.actor_email;
+  if (r.action === "codes.customer_reveal") return "Customer";
+  if (r.action === "auth.login_failed") return typeof r.meta?.email === "string" ? `Someone using ${r.meta.email}` : "Unknown";
+  return "System";
+}
+
+/** "2026-10-25" (date input) → start/end of that local day as ISO. */
+function dayBoundary(day: string, end: boolean): string | undefined {
+  if (!day) return undefined;
+  return localInputToIso(`${day}T${end ? "23:59" : "00:00"}`) ?? undefined;
+}
+
+export function AuditListClient({
+  initialSearch = "",
+  initialEntityType = "",
+  initialActionPrefix = "",
+}: {
+  initialSearch?: string;
+  initialEntityType?: string;
+  initialActionPrefix?: string;
+}) {
+  const [searchInput, setSearchInput] = useState(initialSearch);
+  const [search, setSearch] = useState(initialSearch);
+  const [entityType, setEntityType] = useState(initialEntityType);
+  const [actionPrefix, setActionPrefix] = useState(initialActionPrefix);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [page, setPage] = useState(1);
+  const [detail, setDetail] = useState<AuditRow | null>(null);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      setSearch(searchInput.trim());
+      setPage(1);
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [searchInput]);
+
+  const { data, loading, error, reload } = useAdminQuery(
+    (tok) =>
+      listAuditRows(tok, {
+        page,
         page_size: ADMIN_LIST_PAGE_SIZE,
-        search: s || undefined,
+        search: search || undefined,
         entity_type: entityType || undefined,
-      });
-      return { items: data.results, count: data.count };
-    },
-    [entityType],
+        action_prefix: actionPrefix || undefined,
+        date_from: dayBoundary(dateFrom, false),
+        date_to: dayBoundary(dateTo, true),
+      }),
+    [page, search, entityType, actionPrefix, dateFrom, dateTo],
   );
+
+  function reset<T>(setter: (v: T) => void) {
+    return (v: T) => {
+      setter(v);
+      setPage(1);
+    };
+  }
 
   return (
     <div>
-      <PageHeader title="Audit log" description="Who changed what in the panel (and sensitive store events like code reveals)." />
+      <PageHeader
+        title="Audit log"
+        description="Who did what and when: order changes, refunds, code reveals, sign-ins and settings. Search by order number, e-mail, code or name."
+      />
       <Filters
-        search={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Action, entity id or admin e-mail…"
+        search={searchInput}
+        onSearchChange={setSearchInput}
+        searchPlaceholder="Order number, e-mail, coupon, staff name…"
         filters={[
           {
+            key: "group",
+            label: "What happened",
+            value: actionPrefix,
+            onChange: reset(setActionPrefix),
+            options: [{ value: "", label: "Everything" }, ...ACTION_GROUPS],
+          },
+          {
             key: "entity",
-            label: "Entity type",
+            label: "Affected item",
             value: entityType,
-            onChange: (v) => {
-              setEntityType(v);
-              setPage(1);
-            },
-            options: [{ value: "", label: "All entities" }, ...ENTITY_TYPES.map((t) => ({ value: t, label: t }))],
+            onChange: reset(setEntityType),
+            options: [
+              { value: "", label: "Any item" },
+              ...Object.entries(ENTITY_TYPE_LABELS).map(([value, label]) => ({ value, label })),
+            ],
           },
         ]}
         onClear={() => {
-          setSearch("");
+          setSearchInput("");
           setEntityType("");
+          setActionPrefix("");
+          setDateFrom("");
+          setDateTo("");
+          setPage(1);
         }}
       />
-      <DataTable
-        rows={items}
-        loading={loading}
+      <div className="-mt-2 mb-3 flex flex-wrap items-end gap-3 text-[12px]">
+        <label className="flex flex-col gap-1 text-[var(--clicks-muted)]">
+          From
+          <input type="date" className="admin-input h-9 w-auto" value={dateFrom} onChange={(e) => reset(setDateFrom)(e.target.value)} />
+        </label>
+        <label className="flex flex-col gap-1 text-[var(--clicks-muted)]">
+          Until
+          <input type="date" className="admin-input h-9 w-auto" value={dateTo} onChange={(e) => reset(setDateTo)(e.target.value)} />
+        </label>
+      </div>
+      <OpsTable<AuditRow>
+        rows={data?.results ?? []}
+        loading={loading && !data}
         rowKey={(r) => String(r.id)}
-        empty={<EmptyState title="No audit events" />}
+        empty={<EmptyState title="Nothing found" description="Try another search or a wider date range." />}
         error={error ? <ErrorState message={error} onRetry={reload} /> : null}
         columns={[
           {
             key: "action",
-            header: "Action",
-            render: (r) => (
-              <div>
-                <p className="font-medium text-[var(--clicks-navy)]">{auditActionLabel(r.action)}</p>
-                <p className="font-mono text-[10px] text-[var(--clicks-muted)]">{r.action}</p>
-              </div>
-            ),
+            header: "What happened",
+            primary: true,
+            render: (r) => <span className="font-medium text-[var(--clicks-navy)]">{auditActionLabel(r.action)}</span>,
           },
           {
             key: "entity",
-            header: "Entity",
-            render: (r) => (r.entity_type ? <span className="text-xs">{`${r.entity_type} #${r.entity_id ?? ""}`}</span> : "—"),
+            header: "Item",
+            render: (r) => {
+              if (!r.entity_type && !r.order_number) return "—";
+              const href = auditEntityHref(r);
+              const text = auditEntityText(r);
+              return href ? (
+                <Link href={href} className="text-xs text-[var(--clicks-blue)]">
+                  {text}
+                </Link>
+              ) : (
+                <span className="text-xs">{text}</span>
+              );
+            },
           },
-          { key: "actor", header: "By", render: (r) => <span className="text-xs">{r.actor_email || "System / customer"}</span> },
+          { key: "actor", header: "By", render: (r) => <span className="break-all text-xs">{actorText(r)}</span> },
           {
             key: "meta",
             header: "Details",
             render: (r) => {
-              const summary = summarizeAuditMeta(r.meta);
+              const summary = summarizeAuditMeta(readableMeta(r.meta));
               return summary ? (
                 <button
                   type="button"
@@ -116,21 +196,30 @@ export function AuditListClient() {
               );
             },
           },
-          { key: "when", header: "When", render: (r) => <span className="text-xs">{formatAdminDateTime(r.created_at)}</span> },
+          {
+            key: "when",
+            header: "When",
+            className: "whitespace-nowrap",
+            render: (r) => <span className="text-xs">{formatAdminDateTime(r.created_at)}</span>,
+          },
         ]}
       />
-      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={count} onPageChange={setPage} />
+      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={data?.count ?? 0} onPageChange={setPage} />
 
       <AdminModal
         open={Boolean(detail)}
         onClose={() => setDetail(null)}
         title={detail ? auditActionLabel(detail.action) : ""}
-        description={detail ? `${detail.actor_email || "System / customer"} · ${formatAdminDateTime(detail.created_at)}` : undefined}
+        description={detail ? `${actorText(detail)} · ${formatAdminDateTime(detail.created_at)}` : undefined}
         wide
       >
         {detail ? (
           <dl className="space-y-2 text-sm">
-            {Object.entries(detail.meta ?? {}).map(([key, value]) => (
+            <div className="grid gap-1 sm:grid-cols-[160px_1fr]">
+              <dt className="text-xs font-semibold text-[var(--clicks-muted)]">item</dt>
+              <dd className="text-xs">{auditEntityText(detail)}</dd>
+            </div>
+            {Object.entries(readableMeta(detail.meta)).map(([key, value]) => (
               <div key={key} className="grid gap-1 sm:grid-cols-[160px_1fr]">
                 <dt className="text-xs font-semibold text-[var(--clicks-muted)]">{key.replaceAll("_", " ")}</dt>
                 <dd className="break-all font-mono text-xs">
@@ -138,6 +227,7 @@ export function AuditListClient() {
                 </dd>
               </div>
             ))}
+            <p className="pt-2 font-mono text-[10px] text-[var(--clicks-muted)]">{detail.action}</p>
           </dl>
         ) : null}
       </AdminModal>

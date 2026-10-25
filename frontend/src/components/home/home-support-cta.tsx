@@ -3,8 +3,10 @@
 import { Button } from "@/components/ui/button";
 import { useLanguage } from "@/context/language-context";
 
-export function HomeSupportCta() {
+export function HomeSupportCta({ hasContact = true }: { hasContact?: boolean }) {
   const { t } = useLanguage();
+  // ST-13: no channel configured → no "Contact us" call to action that leads nowhere.
+  if (!hasContact) return null;
 
   return (
     <section className="container-mmh py-5 sm:py-7">

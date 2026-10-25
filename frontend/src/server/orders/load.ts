@@ -1,4 +1,5 @@
 import { auth } from "@/auth";
+import { redirect } from "next/navigation";
 import { ApiError, apiErrorCode } from "@/lib/api/client";
 import { getOrder, myOrders, revealOrderCodes } from "@/lib/api/orders";
 import { mapApiOrder, mapRevealedCodes, type ApiOrder, type OrderView, type RevealedCodes } from "@/lib/orders";
@@ -71,13 +72,31 @@ export async function revealCodes(orderNumber: string, urlToken?: string): Promi
 
 type Paginated<T> = { results: T[] } | T[];
 
-export async function loadCustomerOrderViews(token?: string): Promise<OrderView[]> {
+/** A 401 on the customer's own API calls (token_revoked after a password change, disabled account…). */
+export function isSessionEnded(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
+export function sessionEndedRedirect(callbackUrl: string): never {
+  redirect(`/login?reason=session&callbackUrl=${encodeURIComponent(callbackUrl)}`);
+}
+
+/**
+ * The signed-in customer's orders. `paidOnly` (Codes page, D1) hides unpaid/cancelled orders.
+ * A revoked session sends the visitor to sign in again.
+ */
+export async function loadCustomerOrderViews(
+  token?: string,
+  { paidOnly = false, callbackUrl = "/account" }: { paidOnly?: boolean; callbackUrl?: string } = {},
+): Promise<OrderView[]> {
   if (!token) return [];
+  let data: Paginated<ApiOrder>;
   try {
-    const data = (await myOrders(token)) as Paginated<ApiOrder>;
-    const rows = Array.isArray(data) ? data : data.results;
-    return rows.map(mapApiOrder);
-  } catch {
+    data = (await myOrders(token, { paidOnly })) as Paginated<ApiOrder>;
+  } catch (error) {
+    if (isSessionEnded(error)) sessionEndedRedirect(callbackUrl);
     return [];
   }
+  const rows = Array.isArray(data) ? data : data.results;
+  return rows.map(mapApiOrder);
 }

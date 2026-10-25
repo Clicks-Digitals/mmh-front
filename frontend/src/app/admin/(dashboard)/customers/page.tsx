@@ -1,7 +1,8 @@
 import { CustomersListClient } from "@/components/admin/modules/customers-list-client";
 import { requireAdmin } from "@/server/auth/require-admin";
 
-export default async function Page() {
+export default async function Page({ searchParams }: { searchParams: Promise<{ search?: string }> }) {
   await requireAdmin("customers.read");
-  return <CustomersListClient  />;
+  const { search } = await searchParams;
+  return <CustomersListClient initialSearch={search ?? ""} />;
 }

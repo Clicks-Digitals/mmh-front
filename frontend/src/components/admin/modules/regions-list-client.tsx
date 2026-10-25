@@ -1,8 +1,7 @@
 "use client";
 
-import { SLUG_RE, SimpleCrudPage, str } from "@/components/admin/modules/simple-crud";
+import { SimpleCrudPage, crudListParams, optionalSlugError, str } from "@/components/admin/modules/simple-crud";
 import { Badge } from "@/components/admin/ui/badge";
-import { ADMIN_LIST_PAGE_SIZE } from "@/components/admin/admin-list-page";
 import { asList, createRegion, deleteRegion, listRegions, updateRegion, type AdminRegion } from "@/lib/api/admin";
 
 export function RegionsListClient() {
@@ -10,22 +9,22 @@ export function RegionsListClient() {
     <SimpleCrudPage<AdminRegion>
       title="Regions"
       noun="Region"
-      description="Where a variant's code can be redeemed (e.g. US, KSA, Global). Assign regions to variants on the product page."
+      description="Where a variant's code can be redeemed (e.g. US, KSA, Global). Choose a region for each variant on the product page."
       writePermission="catalog.write"
       searchPlaceholder="Search regions…"
-      list={async (tok, p, s) =>
-        asList(await listRegions(tok, { page: p, page_size: ADMIN_LIST_PAGE_SIZE, search: s || undefined }))
-      }
+      slugFrom="name_en"
+      defaultOrdering="name_en"
+      list={async (tok, s) => asList(await listRegions(tok, crudListParams(s, "name_en")))}
       create={(tok, body) => createRegion(tok, body as Partial<AdminRegion>)}
       update={(tok, row, body) => updateRegion(tok, row.id, body as Partial<AdminRegion>)}
       remove={(tok, row) => deleteRegion(tok, row.id)}
-      deleteDescription={(r) =>
-        `Permanently delete “${r.name_en}”. Variants using this region lose their region label.`
-      }
+      deleteDescription={(r) => `Permanently delete “${r.name_en}”. Variants using this region lose their region label.`}
       columns={[
         {
           key: "name",
           header: "Name",
+          sortKey: "name_en",
+          mobilePrimary: true,
           render: (r) => (
             <div>
               <p className="font-medium">{r.name_en}</p>
@@ -33,12 +32,12 @@ export function RegionsListClient() {
             </div>
           ),
         },
-        { key: "slug", header: "Slug", render: (r) => <span className="font-mono text-xs">{r.slug}</span> },
-        { key: "currency", header: "Currency", render: (r) => r.currency },
+        { key: "slug", header: "Web address", render: (r) => <span className="font-mono text-xs">{r.slug}</span> },
+        { key: "currency", header: "Currency", sortKey: "currency", render: (r) => r.currency },
         {
           key: "locked",
           header: "Region lock",
-          render: (r) => (r.locked ? <Badge tone="warning">Locked</Badge> : <Badge tone="success">Works anywhere</Badge>),
+          render: (r) => (r.locked ? <Badge tone="warning">Locked to region</Badge> : <Badge tone="success">Works anywhere</Badge>),
         },
         { key: "variants", header: "Variants", className: "tabular-nums", render: (r) => r.variants_count ?? "—" },
       ]}
@@ -50,12 +49,10 @@ export function RegionsListClient() {
         currency: r.currency,
         locked: Boolean(r.locked),
       })}
-      validate={(v) => {
-        const e: Record<string, string> = {};
-        if (!SLUG_RE.test(str(v, "slug"))) e.slug = "Lowercase letters, numbers and dashes";
-        if (!/^[A-Za-z]{3}$/.test(str(v, "currency"))) e.currency = "3-letter code, e.g. USD";
-        return e;
-      }}
+      validate={(v, editing) => ({
+        slug: editing && !str(v, "slug") ? "Enter a web address, e.g. us." : optionalSlugError(v),
+        currency: /^[A-Za-z]{3}$/.test(str(v, "currency")) ? undefined : "Use a 3-letter currency code, e.g. USD.",
+      })}
       toPayload={(v) => ({
         name_en: str(v, "name_en"),
         name_ar: str(v, "name_ar"),
@@ -64,22 +61,23 @@ export function RegionsListClient() {
         locked: Boolean(v.locked),
       })}
       fields={[
-        { name: "name_en", label: "Name (EN)", required: true },
-        { name: "name_ar", label: "Name (AR)", rtl: true },
-        { name: "slug", label: "Slug", required: true, mono: true },
+        { name: "name_en", label: "Name (English)", required: true },
+        { name: "name_ar", label: "Name (Arabic)", optional: true, rtl: true },
+        { name: "slug", label: "Web address (slug)", mono: true, hint: "Filled in from the English name." },
         {
           name: "currency",
           label: "Currency",
           required: true,
           mono: true,
           maxLength: 8,
-          hint: "Account/card currency shown on the product page for this region (e.g. USD, SAR).",
+          placeholder: "USD",
+          hint: "Card/account currency shown on the product page for this region (e.g. USD, SAR).",
         },
         {
           name: "locked",
-          label: "Region locked",
+          label: "Codes only work in this region",
           type: "checkbox",
-          hint: "Codes only work in this region — the store shows a “region locked” badge and asks the customer to confirm.",
+          hint: "The store shows a “region locked” badge and asks the customer to confirm their account region.",
         },
       ]}
     />

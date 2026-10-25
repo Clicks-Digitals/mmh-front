@@ -483,3 +483,8 @@ nextjs-portal {
     --header-height: 108px;
   }
 }
+
+/* Storefront RTL (ST-23): directional icons (chevrons, arrows) point the reading direction. */
+[dir="rtl"] .rtl-flip {
+  transform: scaleX(-1);
+}

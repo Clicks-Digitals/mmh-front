@@ -1088,6 +1088,17 @@ export function uniquePlatforms(): string[] {
   return Array.from(new Set(catalog().map((product) => product.platform)));
 }
 
+/** ST-17: platform filter options with display names (EN/AR) instead of raw slugs. */
+export function uniquePlatformOptions(): { slug: string; name: string; nameAr: string }[] {
+  const map = new Map<string, { slug: string; name: string; nameAr: string }>();
+  for (const product of catalog()) {
+    if (!product.platform || map.has(product.platform)) continue;
+    const name = product.digitalOptions.platformLabel || product.brand || product.platform;
+    map.set(product.platform, { slug: product.platform, name, nameAr: product.digitalOptions.platformLabelAr || name });
+  }
+  return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export function uniqueRegions(): { id: string; name: string; nameAr: string }[] {
   const map = new Map<string, { id: string; name: string; nameAr: string }>();
   for (const product of catalog()) {

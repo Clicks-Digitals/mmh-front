@@ -3,12 +3,33 @@
 import { FOOTER_COLUMNS } from "@/data/navigation";
 import { useLanguage } from "@/context/language-context";
 import { Logo } from "@/components/ui/logo";
+import { dedupeFooterColumns } from "@/lib/nav-menu";
 import { socialLinks, type SiteContact } from "@/lib/site-contact";
 import Link from "next/link";
 
-export function Footer({ contact, storeName = "MMH" }: { contact: SiteContact; storeName?: string }) {
-  const { t } = useLanguage();
+export type FooterPageLink = { slug: string; href: string; title: string; titleAr: string };
+
+export function Footer({
+  contact,
+  storeName = "MMH",
+  pages = [],
+}: {
+  contact: SiteContact;
+  storeName?: string;
+  /** D19: CMS pages flagged "show in footer", in sort order. */
+  pages?: FooterPageLink[];
+}) {
+  const { t, locale } = useLanguage();
   const year = new Date().getFullYear();
+  // ST-24: every link appears once; CMS pages join the Company column.
+  const columns = dedupeFooterColumns(
+    FOOTER_COLUMNS.map((column) => ({
+      titleKey: column.titleKey,
+      links: column.links.map((link) => ({ href: link.href, label: t(link.labelKey) })),
+    })),
+    pages.map((page) => ({ href: page.href, label: locale === "ar" ? page.titleAr : page.title })),
+    "footer.company",
+  );
 
   return (
     <footer className="mt-auto border-t border-line bg-elevated">
@@ -29,14 +50,14 @@ export function Footer({ contact, storeName = "MMH" }: { contact: SiteContact; s
           ) : null}
         </div>
         <div className="grid grid-cols-2 gap-8 sm:grid-cols-4">
-          {FOOTER_COLUMNS.map((column) => (
+          {columns.map((column) => (
             <div key={column.titleKey}>
               <p className="mb-3 text-sm font-semibold">{t(column.titleKey)}</p>
               <ul className="space-y-2">
                 {column.links.map((link) => (
                   <li key={`${column.titleKey}-${link.href}`}>
                     <Link href={link.href} className="text-sm text-muted hover:text-fg">
-                      {t(link.labelKey)}
+                      {link.label}
                     </Link>
                   </li>
                 ))}

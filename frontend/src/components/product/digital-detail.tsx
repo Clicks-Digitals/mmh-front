@@ -8,7 +8,7 @@ import { ProductRail } from "@/components/product/product-card";
 import { Badge } from "@/components/ui/badge";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Button } from "@/components/ui/button";
-import { Field } from "@/components/ui/field";
+import { CustomerFieldInput } from "@/components/product/customer-field-input";
 import { Price } from "@/components/ui/price";
 import { QuantitySelector } from "@/components/ui/quantity-selector";
 import { Rating } from "@/components/ui/rating";
@@ -24,14 +24,14 @@ import { useLocalStorage } from "@/hooks/use-local-storage";
 import { getSnapshotCategories } from "@/lib/catalog-snapshot";
 import { discountPercent, formatJod } from "@/lib/format";
 import { defaultRegionId, denominationsForRegion, matchDenominationId } from "@/lib/digital-options";
-import { clampQuantity, quantityLimits } from "@/lib/quantity";
+import { clampQuantity, lowStockCount, quantityLimits } from "@/lib/quantity";
 import { STORAGE_KEYS } from "@/lib/storage";
-import { customerFieldError, fieldErrorKey } from "@/lib/validation";
+import { customerFieldError, firstInvalidField, normalizeFieldValue } from "@/lib/validation";
 import type { CartDigitalMeta, Product } from "@/types";
 import { ArrowUp, Heart } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { choiceClass, FOCUS_RING, ICON_HIT } from "@/components/ui/control";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { choiceClass, ICON_HIT } from "@/components/ui/control";
 import { cn } from "@/lib/cn";
 
 const EMPTY_RECENT_IDS: string[] = [];
@@ -59,7 +59,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
   );
   const [fields, setFields] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
-  const [guideId, setGuideId] = useState<string | null>(null);
+  const fieldRefs = useRef<Record<string, HTMLInputElement | HTMLSelectElement | null>>({});
   const [qtyWanted, setQty] = useState(1);
   const [qtyNotice, setQtyNotice] = useState("");
   const [attempted, setAttempted] = useState(false);
@@ -87,7 +87,8 @@ export function DigitalProductDetail({ product }: { product: Product }) {
   const hasConfigurableOptions = multiRegion || hasAmountChoices || options.requiredCustomerFields.length > 0;
   const denomination = options.denominations.find((item) => item.id === denominationId);
   const region = options.regions.find((item) => item.id === regionId);
-  const limits = quantityLimits(denomination?.minQuantity, denomination?.maxQuantity);
+  const limits = quantityLimits(denomination?.minQuantity, denomination?.maxQuantity, denomination?.availableQuantity);
+  const left = lowStockCount(denomination?.availableQuantity);
   const qty = clampQuantity(qtyWanted, limits);
   const sale = discountPercent(denomination?.priceJod ?? product.priceJod, denomination?.compareAtPriceJod);
   const fieldErrors = Object.fromEntries(
@@ -106,7 +107,10 @@ export function DigitalProductDetail({ product }: { product: Product }) {
   const denomLabel = denomination ? (locale === "ar" ? denomination.labelAr : denomination.label) : null;
   const regionName = region ? (locale === "ar" ? region.nameAr : region.name) : "";
   const regionCurrency = region?.currency || denomination?.currency || options.accountCurrency || "";
-  const regionLine = regionName
+  // ST-19: top-ups go to the game account — no "region · currency card" wording.
+  const regionLine = isTopup
+    ? ""
+    : regionName
     ? regionCurrency
       ? t("product.regionCurrency", { region: regionName, currency: regionCurrency })
       : regionName
@@ -143,7 +147,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
       platform: platformName,
       customerFields: Object.fromEntries(
         options.requiredCustomerFields
-          .map((field) => [field.id, (fields[field.id] ?? "").trim()] as const)
+          .map((field) => [field.id, normalizeFieldValue(fields[field.id])] as const)
           .filter(([, value]) => value),
       ),
     };
@@ -152,7 +156,22 @@ export function DigitalProductDetail({ product }: { product: Product }) {
   const guard = () => {
     setAttempted(true);
     if (!ready) {
-      if (!fieldsOk) setPanelTab("options");
+      if (!fieldsOk) {
+        // ST-09: show the options tab, bring the first invalid field into view and say what is missing.
+        setPanelTab("options");
+        const invalid = firstInvalidField(options.requiredCustomerFields, fields);
+        if (invalid) {
+          const label = locale === "ar" ? invalid.labelAr || invalid.label : invalid.label;
+          push({ title: t("product.fixField", { field: label }), tone: "error" });
+          window.setTimeout(() => {
+            const element = fieldRefs.current[invalid.id];
+            element?.scrollIntoView({ behavior: "smooth", block: "center" });
+            element?.focus({ preventScroll: true });
+          }, 60);
+        }
+      } else if (nextStep) {
+        push({ title: nextStep, tone: "error" });
+      }
       return null;
     }
     return buildDigital();
@@ -212,6 +231,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
         </button>
       </div>
       {qtyNotice ? <p className="text-xs text-amber">{qtyNotice}</p> : null}
+      {left && stockOk ? <p className="text-xs font-medium text-amber">{t("stock.onlyNLeft", { count: left })}</p> : null}
 
       <div className="flex items-center justify-between gap-3 rounded-xl bg-brand-deep px-4 py-3.5 text-white">
         <span className="min-w-0">
@@ -272,6 +292,11 @@ export function DigitalProductDetail({ product }: { product: Product }) {
             <Badge badge={isTopup ? "topup" : "digital"} label={isTopup ? t("common.topup") : t("product.fulfillmentCode")} />
             {regionLocked ? <Badge badge="region_locked" label={t("common.regionLocked")} /> : null}
             {sale ? <Badge badge="sale" label={`-${sale}%`} /> : null}
+            {product.badges
+              .filter((badge) => badge === "new" || badge === "bestseller" || badge === "limited")
+              .map((badge) => (
+                <Badge key={badge} badge={badge} label={t(`common.${badge}`)} />
+              ))}
           </div>
 
           <p className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-muted">
@@ -295,7 +320,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
             {regionLine ? <span className="text-sm font-medium text-fg">{regionLine}</span> : null}
             <span className="text-sm text-muted">
               {t("product.categoryLabel")}:{" "}
-              <Link href={categoryHref} className="font-semibold text-brand-deep hover:text-fg">
+              <Link href={categoryHref} className="font-semibold text-gold hover:text-fg">
                 {categoryLabel}
               </Link>
             </span>
@@ -394,48 +419,19 @@ export function DigitalProductDetail({ product }: { product: Product }) {
                     </p>
                   ) : null}
 
-                  {options.requiredCustomerFields.map((field) => {
-                    const error = fieldErrors[field.id];
-                    const showError = Boolean(error) && (attempted || touched[field.id]);
-                    const help = locale === "ar" ? field.helpTextAr : field.helpText;
-                    return (
-                      <div key={field.id}>
-                        <Field
-                          label={`${locale === "ar" ? field.labelAr || field.label : field.label}${field.required ? " *" : ""}`}
-                          placeholder={locale === "ar" ? field.placeholderAr : field.placeholder}
-                          type={field.type === "email" ? "email" : field.type === "tel" ? "tel" : "text"}
-                          inputMode={field.type === "tel" ? "tel" : undefined}
-                          value={fields[field.id] ?? ""}
-                          required={field.required}
-                          maxLength={200}
-                          error={showError ? t(fieldErrorKey(error)) : undefined}
-                          onBlur={() => setTouched((current) => ({ ...current, [field.id]: true }))}
-                          onChange={(event) => setFields((current) => ({ ...current, [field.id]: event.target.value }))}
-                        />
-                        {help ? (
-                          <>
-                            <button
-                              type="button"
-                              className={cn("mt-1 rounded-md text-xs text-gold hover:underline", FOCUS_RING)}
-                              aria-expanded={guideId === field.id}
-                              aria-controls={`guide-${field.id}`}
-                              onClick={() => setGuideId(guideId === field.id ? null : field.id)}
-                            >
-                              {t("product.findId")}
-                            </button>
-                            {guideId === field.id ? (
-                              <p
-                                id={`guide-${field.id}`}
-                                className="mt-2 rounded-[12px] border border-line bg-elevated p-3 text-xs leading-5 text-muted"
-                              >
-                                {help}
-                              </p>
-                            ) : null}
-                          </>
-                        ) : null}
-                      </div>
-                    );
-                  })}
+                  {options.requiredCustomerFields.map((field) => (
+                    <CustomerFieldInput
+                      key={field.id}
+                      field={field}
+                      value={fields[field.id] ?? ""}
+                      showError={Boolean(fieldErrors[field.id]) && (attempted || Boolean(touched[field.id]))}
+                      inputRef={(element) => {
+                        fieldRefs.current[field.id] = element;
+                      }}
+                      onBlur={() => setTouched((current) => ({ ...current, [field.id]: true }))}
+                      onChange={(value) => setFields((current) => ({ ...current, [field.id]: value }))}
+                    />
+                  ))}
 
                   {buyFooter}
                 </div>
@@ -519,7 +515,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
       <div className="mt-10 flex justify-center">
         <button
           type="button"
-          className="inline-flex items-center gap-2 text-sm font-semibold text-brand-deep hover:text-fg"
+          className="inline-flex items-center gap-2 text-sm font-semibold text-gold hover:text-fg"
           onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
         >
           <ArrowUp className="h-4 w-4" />
@@ -534,7 +530,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{productName}</p>
-            <Price amount={price} locale={locale} className="mt-0.5 [&>span:first-child]:text-sm [&>span:first-child]:text-brand-deep" />
+            <Price amount={price} locale={locale} className="mt-0.5 [&>span:first-child]:text-sm [&>span:first-child]:text-gold" />
           </div>
           <div className="hidden md:block">
             <QuantitySelector

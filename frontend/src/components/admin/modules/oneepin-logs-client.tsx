@@ -8,8 +8,8 @@ import { asList, listOneEpinLogs, type SupplierLog } from "@/lib/api/admin";
 export function OneEpinLogsClient() {
   return (
     <AdminListPage<SupplierLog>
-      title="1Epin logs"
-      description="Supplier request and sync logs."
+      title="OneEpin logs"
+      description="Every call the panel made to OneEpin (connection checks, balance, catalog sync) and whether it worked. “Not completed” calls in test mode are expected."
       rowKey={(r) => String(r.id)}
       searchPlaceholder="Search logs…"
       loader={async (token, page, search) => {
@@ -22,7 +22,7 @@ export function OneEpinLogsClient() {
           key: "status",
           header: "Status",
           render: (r) => (
-            <Badge status={r.ok === false ? "FAILED" : r.ok ? "COMPLETED" : r.status || "UNKNOWN"} />
+            r.ok === false ? <Badge tone="warning">Not completed</Badge> : r.ok ? <Badge tone="success">OK</Badge> : <Badge status={r.status || "UNKNOWN"} />
           ),
         },
         { key: "message", header: "Message", render: (r) => r.message || "—" },

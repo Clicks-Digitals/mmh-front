@@ -2,7 +2,7 @@ import { CATEGORIES } from "@/data/categories";
 import { PRODUCTS } from "@/data/products";
 import { allowStaticCatalogFallback } from "@/lib/catalog-fallback";
 import { ApiError } from "@/lib/api/client";
-import { fetchApiCategories, fetchApiProduct, fetchApiProducts } from "@/server/catalog/from-api";
+import { fetchApiCategories, fetchApiMenuCategories, fetchApiProduct, fetchApiProducts } from "@/server/catalog/from-api";
 import type { Category, Product } from "@/types";
 
 /** Load published products from Django API; the static catalog is only a development fallback. */
@@ -41,4 +41,13 @@ export async function resolveStorefrontProduct(slug: string): Promise<Product | 
 
 export function isStaticCatalogFallbackEnabled(): boolean {
   return allowStaticCatalogFallback();
+}
+
+/** D20: menu categories; [] (→ built-in navigation) when none are flagged or the API is down. */
+export async function resolveMenuCategories(): Promise<Category[]> {
+  try {
+    return await fetchApiMenuCategories();
+  } catch {
+    return [];
+  }
 }

@@ -1,4 +1,5 @@
-import { apiFetch } from "@/lib/api/client";
+import { ApiError, apiErrorCode, apiFetch } from "@/lib/api/client";
+import { emitAdminApiError } from "@/components/admin/ops/api-events";
 
 /* ─── Shared shapes ─── */
 
@@ -120,6 +121,8 @@ export type AdminProduct = {
   supplier_mappings?: AdminSupplierMapping[];
   supplier_names?: string[];
   region_labels?: string[];
+  /** CA-20: e.g. ["no_published_variants"] on detail/write responses */
+  warnings?: string[];
   created_at?: string;
   updated_at?: string;
 };
@@ -148,7 +151,14 @@ export type AdminSupplierMapping = {
   external_name?: string;
   ignored?: boolean;
   created_at?: string;
+  /** D18: only true when the supplier is active and live purchasing is enabled */
+  counts_as_stock?: boolean;
+  counts_as_stock_reason?: string | null;
+  counts_as_stock_message?: string;
 };
+
+/** D17: options of a SELECT customer field */
+export type AdminFieldOption = { value: string; label_en: string; label_ar?: string };
 
 export type AdminProductField = {
   id?: number | string;
@@ -162,6 +172,11 @@ export type AdminProductField = {
   placeholder_ar?: string;
   help_text_en?: string;
   help_text_ar?: string;
+  /** D17: "text" | "numeric" | "alphanumeric" | "email" | "phone" */
+  input_format?: string;
+  min_length?: number | null;
+  max_length?: number | null;
+  options?: AdminFieldOption[];
   delete?: boolean;
 };
 
@@ -219,6 +234,9 @@ export type AdminVariant = {
   available_codes?: number;
   effective_stock_status?: string;
   available?: boolean;
+  available_quantity?: number | null;
+  product_name?: string;
+  fulfillment_type?: string;
 };
 
 export type AdminCategory = {
@@ -236,6 +254,9 @@ export type AdminCategory = {
   parent?: number | string | null;
   parent_slug?: string | null;
   products_count?: number;
+  /** D20: shown in the store's top menu */
+  show_in_menu?: boolean;
+  children?: Array<{ id: number | string; slug: string; name_en: string }>;
 };
 
 export type AdminPlatform = {
@@ -366,6 +387,10 @@ export type DigitalCodeRow = {
   revealed_at?: string | null;
   delivered_at?: string | null;
   created_at?: string;
+  status_label?: string;
+  revealed_by_email?: string | null;
+  customer_revealed_at?: string | null;
+  revealed_by_customer?: boolean;
 };
 
 export type CodeImportPreviewRow = {
@@ -394,7 +419,11 @@ export type CodeImportBatch = {
   duplicate_rows: number;
   failed_rows: number;
   preview_rows?: CodeImportPreviewRow[];
-  error_report?: Array<{ row: number; sku?: string; error: string }>;
+  error_report?: Array<{ row: number; sku?: string; error: string; type?: "duplicate" | "invalid" | string }>;
+  auto_delivered_orders?: number;
+  /** confirm response only (D3) */
+  waiting_orders?: { delivered: number; partially_delivered: number; order_numbers: string[] };
+  waiting_orders_message?: string;
   created_at: string;
   completed_at?: string | null;
 };
@@ -410,6 +439,12 @@ export type InventoryOverview = {
     codes_unavailable?: number;
     codes_total?: number;
     low_stock_threshold: number;
+    /** D24: published CODE variants by sellable status */
+    tracked_variants?: number;
+    effective_in_stock?: number;
+    effective_out_of_stock?: number;
+    low_stock?: number;
+    low_stock_rule?: string;
   };
   low_stock_variants: AdminVariant[];
 };
@@ -427,6 +462,7 @@ export type Supplier = {
   last_checked_at?: string | null;
   created_at?: string;
   live_locked?: boolean;
+  live_purchasing?: boolean;
   mappings?: SupplierMappingRow[];
   recent_orders?: Array<{
     id: number | string;
@@ -446,6 +482,9 @@ export type SupplierMappingRow = {
   external_name?: string;
   ignored?: boolean;
   created_at?: string;
+  counts_as_stock?: boolean;
+  counts_as_stock_reason?: string | null;
+  counts_as_stock_message?: string;
 };
 
 export type SupplierLog = {
@@ -470,9 +509,11 @@ export type OneEpinStatus = {
   last_balance_currency?: string;
   last_checked_at?: string | null;
   live_locked?: boolean;
+  credentials_configured?: boolean;
+  live_purchasing?: boolean;
 };
 
-export type OneEpinPingResult = OneEpinStatus & { ok?: boolean; message?: string; detail?: string };
+export type OneEpinPingResult = OneEpinStatus & { ok?: boolean; message?: string; detail?: string; code?: string };
 
 export type OneEpinBalance = {
   ok: boolean;
@@ -544,6 +585,8 @@ export type Banner = {
   sort_order?: number;
   start_at?: string | null;
   end_at?: string | null;
+  /** CA-24: computed by the API */
+  status?: "unpublished" | "scheduled" | "expired" | "live" | string;
   created_at?: string;
   updated_at?: string;
 };
@@ -566,6 +609,9 @@ export type ContentPage = {
   body_en?: string;
   body_ar?: string;
   published: boolean;
+  /** D19 */
+  show_in_footer?: boolean;
+  sort_order?: number;
   updated_at?: string;
 };
 
@@ -640,7 +686,15 @@ function toQuery(params?: ListParams): string {
 export async function adminFetch<T>(path: string, init?: RequestInit & { token?: string }) {
   const trimmed = path.startsWith("/") ? path : `/${path}`;
   const full = trimmed.startsWith("/admin") ? trimmed : `/admin${trimmed}`;
-  return apiFetch<T>(full, init);
+  try {
+    return await apiFetch<T>(full, init);
+  } catch (error) {
+    // RO-09 / RO-15: let the panel react to revoked sessions and changed permissions.
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      emitAdminApiError({ status: error.status, code: apiErrorCode(error), path: full });
+    }
+    throw error;
+  }
 }
 
 /* ─── Dashboard ─── */
@@ -1059,7 +1113,7 @@ export function getSupplier(token: string, id: string) {
   return adminFetch<Supplier>(`/admin/suppliers/${encodeURIComponent(id)}/`, { token });
 }
 
-export function createSupplier(token: string, body: { slug: string; name: string; active: boolean }) {
+export function createSupplier(token: string, body: { slug?: string; name: string; active: boolean }) {
   return adminFetch<Supplier>("/admin/suppliers/", { token, method: "POST", body: JSON.stringify(body) });
 }
 
@@ -1162,6 +1216,14 @@ export function updateBanner(token: string, id: number | string, body: Partial<B
 
 export function deleteBanner(token: string, id: number | string) {
   return adminFetch<void>(`/admin/banners/${encodeURIComponent(String(id))}/`, {
+    token,
+    method: "DELETE",
+  });
+}
+
+/** CA-24: clear the desktop or mobile image of a banner. */
+export function deleteBannerImage(token: string, id: number | string, target: "desktop" | "mobile") {
+  return adminFetch<Banner>(`/admin/banners/${encodeURIComponent(String(id))}/image/?target=${target}`, {
     token,
     method: "DELETE",
   });

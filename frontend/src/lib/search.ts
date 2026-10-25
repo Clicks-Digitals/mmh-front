@@ -48,17 +48,69 @@ export function productSearchText(product: Product): string {
 }
 
 /**
- * A product matches when every query token appears in its searchable text
- * (as a word prefix, or anywhere for tokens of 3+ characters).
+ * ST-10: common spellings / transliterations that should find the same products
+ * (folded form → extra search words).
+ */
+const ALIASES: Record<string, string[]> = {
+  بلستيشن: ["playstation"],
+  بلايستيشن: ["playstation"],
+  بلاستيشن: ["playstation"],
+  ps: ["playstation"],
+  ps4: ["playstation"],
+  ps5: ["playstation"],
+  psn: ["playstation"],
+  سوني: ["playstation"],
+  ستيم: ["steam"],
+  اكسبوكس: ["xbox"],
+  اكس: ["xbox"],
+  ببجي: ["pubg"],
+  شدات: ["pubg", "uc"],
+  فري: ["free"],
+  فاير: ["fire"],
+  روبلوكس: ["roblox"],
+  فورتنايت: ["fortnite"],
+  ايتونز: ["apple"],
+  ابل: ["apple"],
+  جوجل: ["google"],
+  قوقل: ["google"],
+  نينتندو: ["nintendo"],
+  فالورانت: ["valorant"],
+};
+
+/** Query words, with the space-free form of the whole query and known aliases as alternatives. */
+export function queryAlternatives(query: string): string[][] {
+  const tokens = tokenize(query);
+  if (!tokens.length) return [];
+  const groups = tokens.map((token) => [token, ...(ALIASES[token] ?? [])]);
+  const compact = tokens.join("");
+  // "بلاي ستيشن" typed with a space should also match the one-word spelling (and vice versa).
+  if (tokens.length > 1) groups.push([compact, ...(ALIASES[compact] ?? [])]);
+  return groups;
+}
+
+function tokenMatches(token: string, text: string, compact: string, words: string[]): boolean {
+  if (token.length >= 3) return text.includes(token) || compact.includes(token);
+  return words.some((word) => word.startsWith(token));
+}
+
+/**
+ * A product matches when every query token (or one of its aliases) appears in its searchable text
+ * (as a word prefix, or anywhere for tokens of 3+ characters; spaces inside names are ignored).
+ * A multi-word query also matches when the words written together appear (and vice versa).
  */
 export function matchesQuery(product: Product, query: string): boolean {
   const tokens = tokenize(query);
   if (!tokens.length) return true;
   const text = productSearchText(product);
+  const compact = text.replace(/\s+/g, "");
   const words = text.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-  return tokens.every((token) =>
-    token.length >= 3 ? text.includes(token) : words.some((word) => word.startsWith(token)),
-  );
+  const groups = tokens.map((token) => [token, ...(ALIASES[token] ?? [])]);
+  if (groups.every((group) => group.some((token) => tokenMatches(token, text, compact, words)))) return true;
+  if (tokens.length > 1) {
+    const joined = tokens.join("");
+    return [joined, ...(ALIASES[joined] ?? [])].some((token) => tokenMatches(token, text, compact, words));
+  }
+  return false;
 }
 
 /** Rank: name matches first, then brand/platform, then everything else. */
@@ -83,5 +135,6 @@ export function categoryMatchesQuery(category: { name: string; nameAr: string; s
   const tokens = tokenize(query);
   if (!tokens.length) return false;
   const text = foldText(`${category.name} ${category.nameAr} ${category.slug.replace(/-/g, " ")}`);
-  return tokens.every((token) => text.includes(token));
+  const compact = text.replace(/\s+/g, "");
+  return tokens.every((token) => [token, ...(ALIASES[token] ?? [])].some((word) => text.includes(word) || compact.includes(word)));
 }

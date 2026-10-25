@@ -2,6 +2,8 @@
 
 import { useAdminAccess } from "@/components/admin/admin-access";
 import { adminErrorMessage } from "@/components/admin/lib/errors";
+import { resolveAdminMediaUrl } from "@/components/admin/lib/media-url";
+import { formatJod } from "@/components/admin/lib/money";
 import { Badge } from "@/components/admin/ui/badge";
 import { DataTable, type DataTableColumn } from "@/components/admin/ui/data-table";
 import { EmptyState } from "@/components/admin/ui/empty-state";
@@ -11,38 +13,31 @@ import { PageHeader } from "@/components/admin/ui/page-header";
 import { Pagination } from "@/components/admin/ui/pagination";
 import { useAdminQuery } from "@/hooks/use-admin-query";
 import { useAdminToken } from "@/hooks/use-admin-token";
-import {
-  asList,
-  listCategories,
-  listPlatforms,
-  listProducts,
-  type AdminProduct,
-} from "@/lib/api/admin";
-import { resolveMediaUrl } from "@/lib/media";
-import { formatFils } from "@/server/money";
+import { useAdminUrlState } from "@/hooks/use-admin-url-state";
+import { asList, listCategories, listPlatforms, listProducts, type AdminProduct } from "@/lib/api/admin";
+import { formatAdminDate } from "@/lib/admin/format";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 const PAGE_SIZE = 24;
+const DEFAULT_ORDERING = "-updated_at";
+const DEFAULTS = { search: "", category: "", platform: "", status: "", stock: "", ordering: "", page: "1" };
 
+/** Price range of the published variants (the API computes it from published variants only). */
 function priceRange(row: AdminProduct) {
   if (row.price_min_fils != null && row.price_max_fils != null) {
-    if (row.price_min_fils === row.price_max_fils) return `${formatFils(row.price_min_fils)} JOD`;
-    return `${formatFils(row.price_min_fils)} – ${formatFils(row.price_max_fils)} JOD`;
+    if (row.price_min_fils === row.price_max_fils) return formatJod(row.price_min_fils);
+    return `${formatJod(row.price_min_fils)} – ${formatJod(row.price_max_fils)}`;
   }
-  return row.price_jod != null ? `${row.price_jod} JOD` : "—";
+  return <span className="text-[var(--clicks-muted)]">No published price</span>;
 }
+
+const STATUS_LABEL: Record<string, string> = { PUBLISHED: "Published", DRAFT: "Draft", ARCHIVED: "Archived" };
 
 export function ProductsListClient() {
   const token = useAdminToken();
   const canWrite = useAdminAccess().can("catalog.write");
-  const [page, setPage] = useState(1);
-  const [search, setSearch] = useState("");
-  const [debounced, setDebounced] = useState("");
-  const [category, setCategory] = useState("");
-  const [platform, setPlatform] = useState("");
-  const [status, setStatus] = useState("");
-  const [stock, setStock] = useState("");
+  const { state, debounced, set, reset, page, hasFilters } = useAdminUrlState(DEFAULTS);
   const [items, setItems] = useState<AdminProduct[]>([]);
   const [count, setCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -50,23 +45,19 @@ export function ProductsListClient() {
   const [tick, setTick] = useState(0);
 
   const { data: meta } = useAdminQuery(async (tok) => {
-    const [cats, plats] = await Promise.all([
-      listCategories(tok, { page_size: 200 }),
-      listPlatforms(tok, { page_size: 200 }),
-    ]);
+    const [cats, plats] = await Promise.all([listCategories(tok, { page_size: 100 }), listPlatforms(tok, { page_size: 100 })]);
     return { categories: asList(cats).items, platforms: asList(plats).items };
   });
 
-  useEffect(() => {
-    const t = window.setTimeout(() => setDebounced(search), 300);
-    return () => window.clearTimeout(t);
-  }, [search]);
-
+  const query = JSON.stringify(debounced);
   useEffect(() => {
     let cancelled = false;
+    const q = JSON.parse(query) as typeof DEFAULTS;
     (async () => {
+      await Promise.resolve();
+      if (cancelled) return;
       if (!token) {
-        setError("Missing admin session token. Sign in again.");
+        setError("Your session has expired. Sign in again.");
         setLoading(false);
         return;
       }
@@ -74,14 +65,14 @@ export function ProductsListClient() {
       setError(null);
       try {
         const data = await listProducts(token, {
-          page,
+          page: Number(q.page) || 1,
           page_size: PAGE_SIZE,
-          search: debounced || undefined,
-          category: category || undefined,
-          platform: platform || undefined,
-          status: status || undefined,
-          stock: stock || undefined,
-          ordering: "-updated_at",
+          search: q.search || undefined,
+          category: q.category || undefined,
+          platform: q.platform || undefined,
+          status: q.status || undefined,
+          stock: q.stock || undefined,
+          ordering: q.ordering || DEFAULT_ORDERING,
         });
         if (cancelled) return;
         setItems(data.results);
@@ -98,51 +89,45 @@ export function ProductsListClient() {
     return () => {
       cancelled = true;
     };
-  }, [token, page, debounced, category, platform, status, stock, tick]);
+  }, [token, query, tick]);
 
   const columns: DataTableColumn<AdminProduct>[] = useMemo(
     () => [
       {
-        key: "image",
-        header: "",
+        key: "name",
+        header: "Product",
+        sortKey: "name_en",
+        mobilePrimary: true,
         render: (row) => {
-          const src = resolveMediaUrl(row.primary_image_url || row.image_url);
-          return src ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={src} alt="" className="h-10 w-10 rounded-md object-cover" />
-          ) : (
-            <div className="h-10 w-10 rounded-md bg-[var(--clicks-bg)]" />
+          const src = resolveAdminMediaUrl(row.primary_image_url || row.image_url);
+          return (
+            <div className="flex min-w-0 items-center gap-3">
+              {src ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={src} alt="" className="h-10 w-10 shrink-0 rounded-md bg-[var(--clicks-bg)] object-cover" loading="lazy" />
+              ) : (
+                <div className="h-10 w-10 shrink-0 rounded-md bg-[var(--clicks-bg)]" aria-hidden />
+              )}
+              <div className="min-w-0">
+                <Link
+                  href={`/admin/products/${row.slug}`}
+                  className="block truncate font-medium text-[var(--clicks-navy)] hover:text-[var(--clicks-blue)]"
+                >
+                  {row.name_en}
+                </Link>
+                <p className="truncate text-[11px] text-[var(--clicks-muted)]">
+                  {row.fulfillment_type === "DIRECT_TOPUP" ? "Direct top-up" : "Codes"} · {row.category_name || "No category"}
+                </p>
+              </div>
+            </div>
           );
         },
       },
-      {
-        key: "name",
-        header: "Product",
-        render: (row) => (
-          <div>
-            <Link
-              href={`/admin/products/${row.slug}`}
-              className="font-medium text-[var(--clicks-navy)] hover:text-[var(--clicks-blue)]"
-            >
-              {row.name_en}
-            </Link>
-            <p className="font-mono text-[11px] text-[var(--clicks-muted)]">{row.id}</p>
-          </div>
-        ),
-      },
-      {
-        key: "category",
-        header: "Category",
-        render: (row) => row.category_name || row.category_slug || "—",
-      },
-      {
-        key: "platform",
-        header: "Platform",
-        render: (row) => row.platform_name || row.platform_slug || "—",
-      },
+      { key: "platform", header: "Platform", render: (row) => row.platform_name || row.platform_slug || "—" },
       {
         key: "regions",
         header: "Region",
+        mobileHidden: true,
         render: (row) => (row.region_labels?.length ? row.region_labels.join(", ") : "—"),
       },
       {
@@ -151,33 +136,32 @@ export function ProductsListClient() {
         className: "tabular-nums",
         render: (row) => row.variants_count ?? row.variants?.length ?? 0,
       },
-      {
-        key: "price",
-        header: "Price",
-        className: "tabular-nums",
-        render: (row) => priceRange(row),
-      },
+      { key: "price", header: "Price on store", className: "tabular-nums whitespace-nowrap", render: (row) => priceRange(row) },
       {
         key: "codes",
-        header: "Available",
+        header: "Codes in stock",
         className: "tabular-nums",
-        render: (row) => row.codes_available ?? 0,
+        render: (row) => (row.fulfillment_type === "DIRECT_TOPUP" ? <span className="text-[var(--clicks-muted)]">n/a</span> : row.codes_available ?? 0),
       },
       {
         key: "supplier",
         header: "Supplier",
+        mobileHidden: true,
         render: (row) => (row.supplier_names?.length ? row.supplier_names.join(", ") : "—"),
       },
       {
         key: "status",
         header: "Status",
-        render: (row) => <Badge status={row.status} />,
+        sortKey: "status",
+        render: (row) => <Badge status={row.status}>{STATUS_LABEL[row.status] ?? row.status}</Badge>,
       },
       {
         key: "updated",
         header: "Updated",
-        render: (row) =>
-          row.updated_at ? new Date(row.updated_at).toLocaleDateString() : "—",
+        sortKey: "updated_at",
+        sortFirst: "desc",
+        className: "whitespace-nowrap",
+        render: (row) => formatAdminDate(row.updated_at),
       },
       {
         key: "actions",
@@ -196,7 +180,7 @@ export function ProductsListClient() {
     <div>
       <PageHeader
         title="Products"
-        description="Manage digital catalog products, variants, media, and inventory."
+        description="Everything you sell. Open a product to change its prices (variants), photos, required details and codes."
         actions={
           canWrite ? (
             <Link href="/admin/products/new" className="admin-btn admin-btn-primary">
@@ -206,21 +190,16 @@ export function ProductsListClient() {
         }
       />
       <Filters
-        search={search}
-        onSearchChange={(v) => {
-          setSearch(v);
-          setPage(1);
-        }}
-        searchPlaceholder="Search name, slug, SKU…"
+        search={state.search}
+        onSearchChange={(v) => set({ search: v })}
+        searchPlaceholder="Search name, web address or SKU…"
+        onClear={reset}
         filters={[
           {
             key: "category",
             label: "Category",
-            value: category,
-            onChange: (v) => {
-              setCategory(v);
-              setPage(1);
-            },
+            value: state.category,
+            onChange: (v) => set({ category: v }),
             options: [
               { value: "", label: "All categories" },
               ...(meta?.categories ?? []).map((c) => ({ value: String(c.id), label: c.name_en })),
@@ -229,11 +208,8 @@ export function ProductsListClient() {
           {
             key: "platform",
             label: "Platform",
-            value: platform,
-            onChange: (v) => {
-              setPlatform(v);
-              setPage(1);
-            },
+            value: state.platform,
+            onChange: (v) => set({ platform: v }),
             options: [
               { value: "", label: "All platforms" },
               ...(meta?.platforms ?? []).map((p) => ({ value: String(p.id), label: p.name_en })),
@@ -242,11 +218,8 @@ export function ProductsListClient() {
           {
             key: "status",
             label: "Status",
-            value: status,
-            onChange: (v) => {
-              setStatus(v);
-              setPage(1);
-            },
+            value: state.status,
+            onChange: (v) => set({ status: v }),
             options: [
               { value: "", label: "All statuses" },
               { value: "PUBLISHED", label: "Published" },
@@ -256,17 +229,14 @@ export function ProductsListClient() {
           },
           {
             key: "stock",
-            label: "Stock",
-            value: stock,
-            onChange: (v) => {
-              setStock(v);
-              setPage(1);
-            },
+            label: "Code stock",
+            value: state.stock,
+            onChange: (v) => set({ stock: v }),
             options: [
-              { value: "", label: "All stock" },
-              { value: "in_stock", label: "In stock" },
-              { value: "low_stock", label: "Low stock" },
-              { value: "out_of_stock", label: "Out of stock" },
+              { value: "", label: "Any code stock" },
+              { value: "in_stock", label: "Has codes" },
+              { value: "low_stock", label: "Low on codes" },
+              { value: "out_of_stock", label: "No codes" },
             ],
           },
         ]}
@@ -276,20 +246,29 @@ export function ProductsListClient() {
         rows={items}
         loading={loading}
         rowKey={(row) => String(row.id)}
+        ordering={state.ordering}
+        defaultOrdering={DEFAULT_ORDERING}
+        onOrderingChange={(next) => set({ ordering: next === DEFAULT_ORDERING ? "" : next })}
         empty={
           <EmptyState
-            title="No products"
-            description="Create a product or adjust filters."
+            title={hasFilters ? "No products match these filters" : "No products yet"}
+            description={hasFilters ? "Try clearing the filters." : "Create your first product to start selling."}
             action={
-              <Link href="/admin/products/new" className="text-sm font-semibold text-[var(--clicks-blue)]">
-                New product
-              </Link>
+              hasFilters ? (
+                <button type="button" className="text-sm font-semibold text-[var(--clicks-blue)]" onClick={reset}>
+                  Clear filters
+                </button>
+              ) : canWrite ? (
+                <Link href="/admin/products/new" className="text-sm font-semibold text-[var(--clicks-blue)]">
+                  New product
+                </Link>
+              ) : undefined
             }
           />
         }
         error={error ? <ErrorState message={error} onRetry={() => setTick((n) => n + 1)} /> : null}
       />
-      <Pagination page={page} pageSize={PAGE_SIZE} total={count} onPageChange={setPage} />
+      <Pagination page={page} pageSize={PAGE_SIZE} total={count} onPageChange={(p) => set({ page: String(p) })} />
     </div>
   );
 }

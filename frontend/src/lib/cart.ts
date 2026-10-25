@@ -1,5 +1,6 @@
 import { getProductById } from "@/data/products";
 import { quantityLimits, type QuantityLimits } from "@/lib/quantity";
+import { maskValue } from "@/lib/orders";
 import { customerFieldsValid } from "@/lib/validation";
 import type { CartItem, DigitalDenomination, Product } from "@/types";
 
@@ -15,7 +16,7 @@ export function lineDenomination(item: CartItem, product: Product): DigitalDenom
 
 export function lineLimits(item: CartItem, product: Product): QuantityLimits {
   const denomination = lineDenomination(item, product);
-  return quantityLimits(denomination?.minQuantity, denomination?.maxQuantity);
+  return quantityLimits(denomination?.minQuantity, denomination?.maxQuantity, denomination?.availableQuantity);
 }
 
 export function linePrice(item: CartItem, product: Product): number {
@@ -24,13 +25,21 @@ export function linePrice(item: CartItem, product: Product): number {
   return Math.round(unit * 1000 * item.quantity) / 1000;
 }
 
-export type LineProblem = "missing_product" | "missing_option" | "out_of_stock" | "fields" | "quantity" | null;
+export type LineProblem =
+  | "missing_product"
+  | "missing_option"
+  | "out_of_stock"
+  | "fields"
+  | "quantity"
+  | "stock_limited"
+  | null;
 
 export function lineProblem(item: CartItem, product: Product | undefined): LineProblem {
   if (!product) return "missing_product";
   const denomination = lineDenomination(item, product);
   if (!denomination) return "missing_option";
-  if (denomination.inStock === false || !product.inStock) return "out_of_stock";
+  if (denomination.inStock === false || !product.inStock || denomination.availableQuantity === 0) return "out_of_stock";
+  if (typeof denomination.availableQuantity === "number" && item.quantity > denomination.availableQuantity) return "stock_limited";
   const limits = lineLimits(item, product);
   if (item.quantity < limits.min || item.quantity > limits.max) return "quantity";
   if (!customerFieldsValid(product.digitalOptions.requiredCustomerFields, item.digital?.customerFields)) return "fields";
@@ -48,6 +57,8 @@ export function lineProblemKey(problem: LineProblem): string {
       return "cart.fixLine";
     case "quantity":
       return "product.qtyMax";
+    case "stock_limited":
+      return "stock.onlyNLeftReduce";
     default:
       return "";
   }
@@ -60,11 +71,24 @@ export function cartHasRegionLocked(items: CartItem[]): boolean {
   });
 }
 
+/** Same rule as order pages (ST-28): short values as typed, longer ones keep the last 3 characters. */
 export function maskAccountValue(value?: string): string {
-  if (!value) return "";
-  const trimmed = value.trim();
-  if (trimmed.length <= 4) return "••••";
-  return `${trimmed.slice(0, 2)}••••${trimmed.slice(-2)}`;
+  return maskValue(value ?? "");
+}
+
+/** Field values shown with their localized labels (select options show the option label). */
+export function lineFieldsText(item: CartItem, product: Product, locale: "en" | "ar"): string {
+  return product.digitalOptions.requiredCustomerFields
+    .map((field) => {
+      const value = item.digital?.customerFields?.[field.id];
+      if (!value) return "";
+      const label = locale === "ar" ? field.labelAr || field.label : field.label;
+      const option = field.options?.find((entry) => entry.value === value);
+      const shown = option ? (locale === "ar" ? option.labelAr || option.label : option.label) : maskValue(value);
+      return `${label}: ${shown}`;
+    })
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** Checkout payload line for the backend (variant_id preferred). */

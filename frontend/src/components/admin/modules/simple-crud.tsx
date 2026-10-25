@@ -2,6 +2,8 @@
 
 import { useAdminAccess } from "@/components/admin/admin-access";
 import { ADMIN_LIST_PAGE_SIZE } from "@/components/admin/admin-list-page";
+import { validationSource } from "@/components/admin/lib/product-form";
+import { slugify } from "@/components/admin/lib/slugify";
 import { AdminModal } from "@/components/admin/ui/admin-modal";
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
 import { DataTable, type DataTableColumn } from "@/components/admin/ui/data-table";
@@ -13,7 +15,8 @@ import { PageHeader } from "@/components/admin/ui/page-header";
 import { Pagination } from "@/components/admin/ui/pagination";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage, adminFieldErrors } from "@/components/admin/lib/errors";
-import { useAdminResource } from "@/hooks/use-admin-resource";
+import { useAdminUrlResource } from "@/hooks/use-admin-url-resource";
+import { ApiError } from "@/lib/api/client";
 import type { PermissionKey } from "@/server/auth/permissions";
 import { useState } from "react";
 
@@ -23,7 +26,9 @@ export type CrudField = {
   type?: "text" | "number" | "textarea" | "checkbox" | "select" | "datetime-local" | "url";
   options?: Array<{ value: string; label: string }>;
   required?: boolean;
-  hint?: string;
+  /** show "(optional)" */
+  optional?: boolean;
+  hint?: React.ReactNode | ((values: CrudValues) => React.ReactNode);
   rtl?: boolean;
   mono?: boolean;
   full?: boolean;
@@ -33,9 +38,16 @@ export type CrudField = {
 
 export type CrudValues = Record<string, string | boolean>;
 
+export type CrudListState = { search: string; ordering: string; page: string };
+
+function nounText(noun: string) {
+  return /^[A-Z0-9]{2,}$/.test(noun) ? noun : noun.toLowerCase();
+}
+
 /**
- * Small list + modal editor used by Platforms, Regions, FAQs and Pages.
- * Create/edit/delete buttons are hidden without `writePermission`.
+ * Small list + modal editor used by Platforms, Regions, FAQs, Pages and Suppliers.
+ * Search/sort/page are kept in the URL. Create/edit/delete need `writePermission`.
+ * With `slugFrom`, the `slug` field follows that field while creating until edited by hand.
  */
 export function SimpleCrudPage<T extends { id: number | string }>({
   title,
@@ -43,6 +55,7 @@ export function SimpleCrudPage<T extends { id: number | string }>({
   noun,
   writePermission,
   searchPlaceholder,
+  searchHint,
   columns,
   fields,
   emptyValues,
@@ -56,65 +69,103 @@ export function SimpleCrudPage<T extends { id: number | string }>({
   deleteDescription,
   extraRowActions,
   wide,
+  slugFrom,
+  defaultOrdering,
+  emptyDescription,
 }: {
   title: string;
   description: string;
   noun: string;
   writePermission: PermissionKey;
   searchPlaceholder?: string;
+  searchHint?: string;
   columns: DataTableColumn<T>[];
   fields: CrudField[];
   emptyValues: CrudValues;
   toValues: (row: T) => CrudValues;
-  toPayload: (values: CrudValues) => Record<string, unknown>;
-  validate?: (values: CrudValues) => Partial<Record<string, string>>;
-  list: (token: string, page: number, search: string) => Promise<{ items: T[]; count: number }>;
+  toPayload: (values: CrudValues, editing: T | null) => Record<string, unknown>;
+  validate?: (values: CrudValues, editing: T | null) => Partial<Record<string, string>>;
+  list: (token: string, state: CrudListState) => Promise<{ items: T[]; count: number }>;
   create: (token: string, body: Record<string, unknown>) => Promise<unknown>;
   update: (token: string, row: T, body: Record<string, unknown>) => Promise<unknown>;
   remove?: (token: string, row: T) => Promise<unknown>;
   deleteDescription?: (row: T) => string;
   extraRowActions?: (row: T, helpers: { token?: string; reload: () => void }) => React.ReactNode;
   wide?: boolean;
+  slugFrom?: string;
+  /** ordering the API uses by default (marks the matching sortable column) */
+  defaultOrdering?: string;
+  emptyDescription?: string;
 }) {
   const toast = useAdminToast();
   const { can } = useAdminAccess();
   const canWrite = can(writePermission);
-  const { token, page, setPage, search, setSearch, items, count, loading, error, reload } = useAdminResource<T>(list);
+  const { state, set, reset, page, hasFilters, token, items, count, loading, error, reload } = useAdminUrlResource<T, CrudListState>(
+    { search: "", ordering: "", page: "1" },
+    (tok, s) => list(tok, s),
+  );
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<T | null>(null);
   const [values, setValues] = useState<CrudValues>(emptyValues);
+  const [slugTouched, setSlugTouched] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState("");
   const [pending, setPending] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<T | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+  const noun_ = nounText(noun);
 
   function open(row: T | null) {
     setEditing(row);
     setValues(row ? toValues(row) : emptyValues);
+    setSlugTouched(Boolean(row));
     setErrors({});
+    setFormError("");
     setModalOpen(true);
+  }
+
+  function change(name: string, value: string | boolean) {
+    setValues((v) => {
+      const next = { ...v, [name]: value };
+      if (slugFrom && name === slugFrom && !slugTouched && typeof value === "string") next.slug = slugify(value);
+      return next;
+    });
+    if (name === "slug") setSlugTouched(true);
+    setErrors((e) => {
+      if (!(name in e)) return e;
+      const next = { ...e };
+      delete next[name];
+      return next;
+    });
   }
 
   async function save() {
     if (!token) return;
     const local: Record<string, string> = {};
     for (const f of fields) {
-      if (f.required && f.type !== "checkbox" && !String(values[f.name] ?? "").trim()) local[f.name] = "Required";
+      if (f.required && f.type !== "checkbox" && !String(values[f.name] ?? "").trim()) local[f.name] = `Enter ${f.label.replace(/\s*\(.*\)$/, "").toLowerCase()}.`;
     }
-    for (const [k, msg] of Object.entries(validate?.(values) ?? {})) if (msg) local[k] = msg;
+    for (const [k, msg] of Object.entries(validate?.(values, editing) ?? {})) if (msg) local[k] = msg;
     setErrors(local);
+    setFormError("");
     if (Object.keys(local).length) return;
     setPending(true);
     try {
-      const body = toPayload(values);
+      const body = toPayload(values, editing);
       if (editing) await update(token, editing, body);
       else await create(token, body);
-      toast.push(editing ? `${noun} updated` : `${noun} created`, "success");
+      toast.push(editing ? `${noun} saved` : `${noun} created`, "success");
       setModalOpen(false);
       reload();
     } catch (err) {
-      setErrors(adminFieldErrors(err));
-      toast.push(adminErrorMessage(err, "Save failed"), "error");
+      const fieldErrs = adminFieldErrors(err);
+      const known = Object.fromEntries(Object.entries(fieldErrs).filter(([k]) => fields.some((f) => f.name === k)));
+      setErrors(known);
+      const unknown = Object.keys(validationSource(err instanceof ApiError ? err.body : null)).filter(
+        (k) => !fields.some((f) => f.name === k),
+      );
+      setFormError(Object.keys(known).length && !unknown.length ? "Please fix the highlighted fields." : adminErrorMessage(err, "Save failed"));
     } finally {
       setPending(false);
     }
@@ -123,13 +174,15 @@ export function SimpleCrudPage<T extends { id: number | string }>({
   async function confirmDelete() {
     if (!token || !deleteTarget || !remove) return;
     setPending(true);
+    setDeleteError("");
     try {
       await remove(token, deleteTarget);
       toast.push(`${noun} deleted`, "success");
       setDeleteTarget(null);
       reload();
     } catch (err) {
-      toast.push(adminErrorMessage(err, "Delete failed"), "error");
+      // Keep the dialog open and explain why (e.g. 409 "Move or delete its sub-categories first: …").
+      setDeleteError(adminErrorMessage(err, "Delete failed"));
     } finally {
       setPending(false);
     }
@@ -137,7 +190,7 @@ export function SimpleCrudPage<T extends { id: number | string }>({
 
   const allColumns: DataTableColumn<T>[] = [
     ...columns,
-    ...(canWrite
+    ...(canWrite || extraRowActions
       ? [
           {
             key: "actions",
@@ -145,14 +198,19 @@ export function SimpleCrudPage<T extends { id: number | string }>({
             render: (r: T) => (
               <div className="flex justify-end gap-3">
                 {extraRowActions?.(r, { token, reload })}
-                <button type="button" className="text-xs font-medium text-[var(--clicks-blue)]" onClick={() => open(r)}>
-                  Edit
-                </button>
-                {remove ? (
+                {canWrite ? (
+                  <button type="button" className="text-xs font-medium text-[var(--clicks-blue)]" onClick={() => open(r)}>
+                    Edit
+                  </button>
+                ) : null}
+                {canWrite && remove ? (
                   <button
                     type="button"
                     className="text-xs font-medium text-[var(--clicks-error)]"
-                    onClick={() => setDeleteTarget(r)}
+                    onClick={() => {
+                      setDeleteError("");
+                      setDeleteTarget(r);
+                    }}
                   >
                     Delete
                   </button>
@@ -172,44 +230,63 @@ export function SimpleCrudPage<T extends { id: number | string }>({
         actions={
           canWrite ? (
             <button type="button" onClick={() => open(null)} className="admin-btn admin-btn-primary">
-              New {noun.toLowerCase()}
+              New {noun_}
             </button>
           ) : null
         }
       />
-      <Filters search={search} onSearchChange={setSearch} searchPlaceholder={searchPlaceholder ?? "Search…"} />
+      <Filters
+        search={state.search}
+        onSearchChange={(v) => set({ search: v })}
+        searchPlaceholder={searchPlaceholder ?? "Search…"}
+        searchHint={searchHint}
+        onClear={reset}
+      />
       <DataTable
         columns={allColumns}
         rows={items}
         loading={loading}
         rowKey={(r) => String(r.id)}
-        empty={<EmptyState title={`No ${title.toLowerCase()}`} />}
+        ordering={state.ordering}
+        defaultOrdering={defaultOrdering}
+        onOrderingChange={(next) => set({ ordering: next === defaultOrdering ? "" : next })}
+        empty={
+          <EmptyState
+            title={hasFilters ? `No ${title.toLowerCase()} match your search` : `No ${title.toLowerCase()} yet`}
+            description={hasFilters ? "Try another search." : emptyDescription}
+          />
+        }
         error={error ? <ErrorState message={error} onRetry={reload} /> : null}
       />
-      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={count} onPageChange={setPage} />
+      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={count} onPageChange={(p) => set({ page: String(p) })} />
 
-      <AdminModal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        title={editing ? `Edit ${noun.toLowerCase()}` : `New ${noun.toLowerCase()}`}
-        wide={wide}
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
+      <AdminModal open={modalOpen} onClose={() => setModalOpen(false)} title={editing ? `Edit ${noun_}` : `New ${noun_}`} wide={wide}>
+        {formError ? (
+          <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-800">
+            {formError}
+          </p>
+        ) : null}
+        <form
+          className="grid gap-3 sm:grid-cols-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+          noValidate
+        >
           {fields.map((f) => {
             const id = `crud-${f.name}`;
             const value = values[f.name];
+            const hint = typeof f.hint === "function" ? f.hint(values) : f.hint;
             if (f.type === "checkbox") {
               return (
                 <div key={f.name} className="space-y-1 sm:col-span-2">
                   <label className="flex items-center gap-2 text-sm font-medium">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(value)}
-                      onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.checked }))}
-                    />
+                    <input type="checkbox" checked={Boolean(value)} onChange={(e) => change(f.name, e.target.checked)} />
                     {f.label}
                   </label>
-                  {f.hint ? <p className="ps-6 text-[11px] text-[var(--clicks-muted)]">{f.hint}</p> : null}
+                  {hint ? <p className="ps-6 text-[11px] text-[var(--clicks-muted)]">{hint}</p> : null}
+                  {errors[f.name] ? <p className="ps-6 text-[11px] text-[var(--clicks-error)]">{errors[f.name]}</p> : null}
                 </div>
               );
             }
@@ -219,23 +296,26 @@ export function SimpleCrudPage<T extends { id: number | string }>({
               value: String(value ?? ""),
               placeholder: f.placeholder,
               maxLength: f.maxLength,
+              "aria-invalid": errors[f.name] ? true : undefined,
               onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
-                setValues((v) => ({ ...v, [f.name]: e.target.value })),
+                change(f.name, f.name === "slug" ? e.target.value.toLowerCase() : e.target.value),
             };
+            const invalid = errors[f.name] ? "border-[var(--clicks-error)]" : "";
             return (
               <FormField
                 key={f.name}
                 label={f.label}
                 htmlFor={id}
                 required={f.required}
-                hint={f.hint}
+                optional={f.optional}
+                hint={hint}
                 error={errors[f.name]}
                 className={f.full || f.type === "textarea" ? "sm:col-span-2" : undefined}
               >
                 {f.type === "textarea" ? (
-                  <textarea {...common} className={`${adminTextareaClass} min-h-[140px]`} />
+                  <textarea {...common} className={`${adminTextareaClass} min-h-[140px] ${invalid}`} />
                 ) : f.type === "select" ? (
-                  <select {...common} className={adminInputClass}>
+                  <select {...common} className={`${adminInputClass} ${invalid}`}>
                     {(f.options ?? []).map((o) => (
                       <option key={o.value} value={o.value}>
                         {o.label}
@@ -243,36 +323,42 @@ export function SimpleCrudPage<T extends { id: number | string }>({
                     ))}
                   </select>
                 ) : (
-                  <input
-                    {...common}
-                    type={f.type ?? "text"}
-                    className={`${adminInputClass} ${f.mono ? "font-mono" : ""}`}
-                  />
+                  <input {...common} type={f.type ?? "text"} className={`${adminInputClass} ${f.mono ? "font-mono" : ""} ${invalid}`} />
                 )}
               </FormField>
             );
           })}
-        </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" className="admin-btn admin-btn-secondary" onClick={() => setModalOpen(false)}>
-            Cancel
-          </button>
-          <button type="button" disabled={pending} onClick={() => void save()} className="admin-btn admin-btn-primary disabled:opacity-60">
-            {pending ? "Saving…" : "Save"}
-          </button>
-        </div>
+          <div className="mt-2 flex justify-end gap-2 sm:col-span-2">
+            <button type="button" className="admin-btn admin-btn-secondary" onClick={() => setModalOpen(false)}>
+              Cancel
+            </button>
+            <button type="submit" disabled={pending} className="admin-btn admin-btn-primary disabled:opacity-60">
+              {pending ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </form>
       </AdminModal>
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
-        title={`Delete ${noun.toLowerCase()}?`}
-        description={deleteTarget ? (deleteDescription?.(deleteTarget) ?? "This cannot be undone.") : undefined}
+        title={`Delete ${noun_}?`}
+        description={deleteTarget ? (deleteDescription?.(deleteTarget) ?? "This can't be undone.") : undefined}
         danger
         pending={pending}
         confirmLabel="Delete"
-        onCancel={() => setDeleteTarget(null)}
+        confirmDisabled={Boolean(deleteError)}
+        onCancel={() => {
+          setDeleteTarget(null);
+          setDeleteError("");
+        }}
         onConfirm={() => void confirmDelete()}
-      />
+      >
+        {deleteError ? (
+          <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-800">
+            {deleteError}
+          </p>
+        ) : null}
+      </ConfirmDialog>
     </div>
   );
 }
@@ -281,4 +367,21 @@ export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export function str(values: CrudValues, key: string): string {
   return String(values[key] ?? "").trim();
+}
+
+/** Standard list loader params for SimpleCrudPage lists. */
+export function crudListParams(state: CrudListState, fallbackOrdering?: string) {
+  return {
+    page: Number(state.page) || 1,
+    page_size: ADMIN_LIST_PAGE_SIZE,
+    search: state.search || undefined,
+    ordering: state.ordering || fallbackOrdering || undefined,
+  };
+}
+
+/** Validation for optional slugs: empty is fine (created from the name), otherwise the slug pattern. */
+export function optionalSlugError(values: CrudValues): string | undefined {
+  const slug = str(values, "slug");
+  if (!slug) return undefined;
+  return SLUG_RE.test(slug) ? undefined : "Use only lowercase letters, numbers and dashes (no spaces), e.g. play-station.";
 }

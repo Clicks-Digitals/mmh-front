@@ -7,5 +7,5 @@ export const metadata = noIndexMeta("Orders");
 
 export default async function OrdersPage() {
   const user = await requireCustomer("/account/orders");
-  return <CustomerOrders orders={await loadCustomerOrders(user.accessToken)} />;
+  return <CustomerOrders orders={await loadCustomerOrders(user.accessToken, { callbackUrl: "/account/orders" })} />;
 }

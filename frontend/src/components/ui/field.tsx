@@ -2,13 +2,14 @@
 
 import { CONTROL } from "@/components/ui/control";
 import { cn } from "@/lib/cn";
-import { useId, type InputHTMLAttributes, type ReactNode } from "react";
+import { useId, type InputHTMLAttributes, type ReactNode, type Ref } from "react";
 
 interface FieldProps extends InputHTMLAttributes<HTMLInputElement> {
   label: string;
   error?: string;
   hint?: string;
   suffix?: ReactNode;
+  ref?: Ref<HTMLInputElement>;
 }
 
 export function Field({ label, error, hint, suffix, className, id, ...props }: FieldProps) {

@@ -55,7 +55,7 @@ export function OrderLookupForm({ initialNumber = "" }: { initialNumber?: string
         </Button>
         <p className="text-xs leading-5 text-muted">{t("lookup.codesHint")}</p>
       </form>
-      {order ? <OrderDetail key={order.number} initial={order} canReveal={false} /> : null}
+      {order ? <OrderDetail key={order.number} initial={order} canReveal={false} revealHint="lookup" /> : null}
     </div>
   );
 }

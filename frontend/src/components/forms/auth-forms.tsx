@@ -3,6 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { useLanguage } from "@/context/language-context";
+import { passwordProblems } from "@/lib/password";
 import { isValidEmail, isValidPhone } from "@/lib/validation";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
@@ -17,11 +18,46 @@ export function safeCallbackUrl(value: string | null | undefined, fallback = "/a
   return raw;
 }
 
+/** Store sign-in failure → translation key (codes from src/auth.ts). */
+export function signInErrorKey(code: string | undefined | null): string {
+  switch (code) {
+    case "account_disabled":
+      return "auth.accountDisabled";
+    case "throttled":
+      return "auth.throttled";
+    case "staff_account":
+      return "auth.staffAccount";
+    case "unavailable":
+      return "auth.unavailable";
+    default:
+      return "auth.invalid";
+  }
+}
+
+/** RO-14: staff accounts are pointed to the admin panel. */
+export function SignInError({ code }: { code: string }) {
+  const { t } = useLanguage();
+  return (
+    <p className="text-sm text-danger" role="alert">
+      {t(signInErrorKey(code))}
+      {code === "staff_account" ? (
+        <>
+          {" "}
+          <a href="/admin/login" className="font-semibold underline">
+            {t("auth.staffAccountLink")}
+          </a>
+        </>
+      ) : null}
+    </p>
+  );
+}
+
 export function LoginForm() {
   const { t } = useLanguage();
   const router = useRouter();
   const params = useSearchParams();
   const callbackUrl = safeCallbackUrl(params.get("callbackUrl"));
+  const sessionEnded = params.get("reason") === "session";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -33,15 +69,15 @@ export function LoginForm() {
       onSubmit={async (event) => {
         event.preventDefault();
         if (!isValidEmail(email) || !password) {
-          setError(t("auth.short"));
+          setError("auth.short");
           return;
         }
         setError("");
         setLoading(true);
-        const result = await signIn("credentials", { email, password, redirect: false });
+        const result = await signIn("credentials", { email, password, portal: "store", redirect: false });
         setLoading(false);
         if (result?.error) {
-          setError(t("auth.invalid"));
+          setError(result.code || "invalid_credentials");
           return;
         }
         router.push(callbackUrl);
@@ -49,6 +85,11 @@ export function LoginForm() {
       }}
     >
       <h1 className="text-2xl font-semibold">{t("auth.loginTitle")}</h1>
+      {sessionEnded ? (
+        <p className="rounded-xl border border-amber/30 bg-amber/10 p-3 text-sm text-amber" role="status">
+          {t("auth.sessionEnded")}
+        </p>
+      ) : null}
       <Field label={t("checkout.email")} type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} />
       <Field
         label={t("auth.password")}
@@ -62,10 +103,12 @@ export function LoginForm() {
           {t("auth.forgot")}
         </Link>
       </div>
-      {error ? (
+      {error === "auth.short" ? (
         <p className="text-sm text-danger" role="alert">
-          {error}
+          {t("auth.short")}
         </p>
+      ) : error ? (
+        <SignInError code={error} />
       ) : null}
       <Button type="submit" className="w-full" disabled={loading}>
         {loading ? t("common.loading") : t("auth.submitLogin")}
@@ -106,7 +149,8 @@ export function RegisterForm() {
         if (name.trim().length < 2) next.name = t("validation.required");
         if (!isValidEmail(email)) next.email = t("validation.email");
         if (phone.trim() && !isValidPhone(phone)) next.phone = t("validation.phone");
-        if (password.length < 12) next.password = t("auth.passwordRules");
+        const weak = passwordProblems(password);
+        if (weak.length) next.password = weak.map((rule) => t(rule)).join(" ");
         if (password !== confirm) next.confirm = t("auth.mismatch");
         setErrors(next);
         setFormError("");
@@ -134,7 +178,7 @@ export function RegisterForm() {
           );
           return;
         }
-        const result = await signIn("credentials", { email, password, redirect: false });
+        const result = await signIn("credentials", { email, password, portal: "store", redirect: false });
         setLoading(false);
         if (result?.error) {
           router.push("/login");
@@ -274,8 +318,9 @@ export function ResetPasswordForm() {
       className="mx-auto w-full max-w-md space-y-4"
       onSubmit={async (event) => {
         event.preventDefault();
-        if (password.length < 12) {
-          setErrors([t("auth.passwordRules")]);
+        const weak = passwordProblems(password);
+        if (weak.length) {
+          setErrors(weak.map((rule) => t(rule)));
           return;
         }
         if (password !== confirm) {

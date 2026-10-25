@@ -10,7 +10,7 @@ export default async function AdminDashboardLayout({ children }: { children: Rea
 
   return (
     <AdminSession>
-      <AdminShell userId={user.id} name={name} role={user.role} permissions={user.permissions}>
+      <AdminShell userId={user.id} name={name} email={user.email} role={user.role} permissions={user.permissions}>
         {children}
       </AdminShell>
     </AdminSession>

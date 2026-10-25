@@ -36,6 +36,18 @@ export function createPayPalOrder(orderNumber: string, checkoutToken: string) {
   });
 }
 
+/** D1 "Complete payment": PayPal order for an existing unpaid order (access token or owner JWT). */
+export function createPayPalOrderForExisting(
+  orderNumber: string,
+  { accessToken, token }: { accessToken?: string; token?: string },
+) {
+  return apiFetch<PayPalOrderResult>("/payments/paypal/create-order/", {
+    method: "POST",
+    body: JSON.stringify({ order_number: orderNumber, ...(accessToken ? { access_token: accessToken } : {}) }),
+    token,
+  });
+}
+
 export function capturePayPalOrder(paypalOrderId: string) {
   return apiFetch<PayPalCaptureResult>("/payments/paypal/capture-order/", {
     method: "POST",

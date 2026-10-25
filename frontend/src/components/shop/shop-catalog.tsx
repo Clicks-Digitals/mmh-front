@@ -8,7 +8,9 @@ import { SelectField } from "@/components/ui/select-field";
 import { FOCUS_RING, ICON_HIT } from "@/components/ui/control";
 import { countActiveFilters, emptyFilters, filtersToQuery } from "@/lib/catalog";
 import { getCategory } from "@/data/categories";
-import { uniqueRegions } from "@/data/products";
+import { uniquePlatformOptions, uniqueRegions } from "@/data/products";
+import { normalizePriceRange } from "@/lib/catalog";
+import { getSnapshotCategories } from "@/lib/catalog-snapshot";
 import { useLanguage } from "@/context/language-context";
 import { cn } from "@/lib/cn";
 import type { FilterState, Product, SortOption } from "@/types";
@@ -33,14 +35,20 @@ export function ShopCatalog({
   const router = useRouter();
   const [filters, setFilters] = useState<FilterState>(initial);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const lockedCategory = initial.category || undefined;
+  const [priceAdjusted, setPriceAdjusted] = useState(false);
   const categoryMode = mode === "category";
+  // ST-12: only category pages lock the category; on /shop and /search it stays selectable.
+  const lockedCategory = categoryMode ? initial.category || undefined : undefined;
 
   const results = source;
   const activeCount = countActiveFilters({ ...filters, category: lockedCategory ? "" : filters.category });
 
   const update = (next: FilterState) => {
-    const synced = lockedCategory ? { ...next, category: lockedCategory } : next;
+    const range = normalizePriceRange(next.min, next.max);
+    setPriceAdjusted(range.adjusted);
+    const synced = lockedCategory
+      ? { ...next, min: range.min, max: range.max, category: lockedCategory }
+      : { ...next, min: range.min, max: range.max };
     setFilters(synced);
     const query = filtersToQuery(synced);
     router.replace(query ? `${basePath}?${query}` : basePath, { scroll: false });
@@ -50,7 +58,7 @@ export function ShopCatalog({
   if (!categoryMode) {
     if (filters.q) chips.push({ key: "q", label: filters.q, clear: () => update({ ...filters, q: "" }) });
     if (filters.category && !lockedCategory) {
-      const category = getCategory(filters.category);
+      const category = getSnapshotCategories().find((item) => item.slug === filters.category) ?? getCategory(filters.category);
       chips.push({
         key: "category",
         label: locale === "ar" ? category?.nameAr ?? filters.category : category?.name ?? filters.category,
@@ -66,7 +74,14 @@ export function ShopCatalog({
       });
     }
     if (filters.kind) chips.push({ key: "kind", label: t(`filter.kind.${filters.kind}`), clear: () => update({ ...filters, kind: "" }) });
-    if (filters.platform) chips.push({ key: "platform", label: filters.platform, clear: () => update({ ...filters, platform: "" }) });
+    if (filters.platform) {
+      const platform = uniquePlatformOptions().find((item) => item.slug === filters.platform);
+      chips.push({
+        key: "platform",
+        label: platform ? (locale === "ar" ? platform.nameAr : platform.name) : filters.platform,
+        clear: () => update({ ...filters, platform: "" }),
+      });
+    }
     if (filters.region) {
       const region = uniqueRegions().find((item) => item.id === filters.region);
       chips.push({
@@ -179,7 +194,12 @@ export function ShopCatalog({
     <div className="grid gap-8 lg:grid-cols-[260px_1fr]">
       <div className="hidden min-h-0 lg:block">
         <div className="filter-scroll sticky top-[5.5rem] max-h-[calc(100dvh-6.75rem)] overflow-y-auto overscroll-contain pe-2">
-          <FilterSidebar value={filters} onChange={update} lockedCategory={lockedCategory} />
+          <FilterSidebar
+            value={filters}
+            onChange={update}
+            lockedCategory={lockedCategory}
+            priceNote={priceAdjusted ? t("filter.priceAdjusted") : ""}
+          />
         </div>
       </div>
       <div>

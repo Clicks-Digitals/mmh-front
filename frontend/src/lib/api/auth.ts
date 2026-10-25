@@ -41,8 +41,33 @@ export function confirmPasswordReset(input: { uid: string; token: string; passwo
   });
 }
 
+export type MeResponse = {
+  id: number | string;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  kind?: string;
+  role?: string | null;
+  permissions?: string[];
+  phone?: string;
+};
+
 export function me(token: string) {
-  return apiFetch("/auth/me/", { token });
+  return apiFetch<MeResponse>("/auth/me/", { token });
+}
+
+/** D15: customers edit their name and phone. */
+export function updateMe(token: string, input: { first_name?: string; last_name?: string; phone?: string }) {
+  return apiFetch<MeResponse>("/auth/me/", { method: "PATCH", body: JSON.stringify(input), token });
+}
+
+/** D15: returns fresh tokens — every other session is revoked. */
+export function changePassword(token: string, input: { current_password: string; new_password: string }) {
+  return apiFetch<{ detail: string; access: string; refresh: string; user?: MeResponse }>("/auth/change-password/", {
+    method: "POST",
+    body: JSON.stringify(input),
+    token,
+  });
 }
 
 export function refreshAccessToken(refresh: string) {

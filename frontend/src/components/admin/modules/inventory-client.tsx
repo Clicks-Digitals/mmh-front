@@ -10,7 +10,7 @@ import { PageHeader } from "@/components/admin/ui/page-header";
 import { StatCard } from "@/components/admin/ui/stat-card";
 import { useAdminQuery } from "@/hooks/use-admin-query";
 import { getInventoryOverview, type AdminVariant } from "@/lib/api/admin";
-import { formatFils } from "@/server/money";
+import { formatJod } from "@/components/admin/lib/money";
 import { Boxes, KeyRound, Package, ShieldAlert } from "lucide-react";
 import Link from "next/link";
 import { useMemo } from "react";
@@ -23,29 +23,40 @@ export function InventoryClient() {
   const columns: DataTableColumn<AdminVariant>[] = useMemo(
     () => [
       {
-        key: "sku",
-        header: "SKU",
-        render: (v) => <span className="font-mono text-[12px]">{v.sku}</span>,
-      },
-      {
         key: "name",
         header: "Variant",
-        render: (v) => <span className="font-medium text-[var(--clicks-navy)]">{v.name_en || "—"}</span>,
+        mobilePrimary: true,
+        render: (v) => (
+          <div>
+            <p className="font-medium text-[var(--clicks-navy)]">{v.product_name ? `${v.product_name} — ` : ""}{v.name_en || "—"}</p>
+            <p className="font-mono text-[11px] text-[var(--clicks-muted)]">{v.sku}</p>
+          </div>
+        ),
       },
       {
         key: "price",
         header: "Price",
-        render: (v) => <span className="tabular-nums">{formatFils(v.price_fils)} JOD</span>,
+        render: (v) => <span className="tabular-nums">{formatJod(v.price_fils)}</span>,
       },
       {
         key: "available",
-        header: "Available",
-        render: (v) => <span className="font-semibold tabular-nums">{v.codes_available ?? 0}</span>,
+        header: "Codes available",
+        render: (v) => (
+          <span className="tabular-nums">
+            <span className="font-semibold">{v.available_codes ?? v.codes_available ?? 0}</span>
+            {(v.codes_available ?? 0) !== (v.available_codes ?? v.codes_available ?? 0) ? (
+              <span className="block text-[10px] text-[var(--clicks-muted)]">{v.codes_available} in stock, some held for checkouts</span>
+            ) : null}
+          </span>
+        ),
       },
       {
         key: "stock",
-        header: "Stock",
-        render: (v) => <Badge status={v.stock_status || "OUT_OF_STOCK"} />,
+        header: "On the store",
+        render: (v) => {
+          const st = v.effective_stock_status || v.stock_status || "OUT_OF_STOCK";
+          return <Badge status={st}>{st === "IN_STOCK" ? "Selling" : st === "OUT_OF_STOCK" ? "Out of stock" : "Unknown"}</Badge>;
+        },
       },
       {
         key: "actions",
@@ -57,7 +68,7 @@ export function InventoryClient() {
               href={`/admin/codes/import?variant=${v.id}`}
               className="text-[12px] font-medium text-[var(--clicks-blue)]"
             >
-              Import
+              Import codes
             </Link>
           ) : null,
       },
@@ -69,7 +80,7 @@ export function InventoryClient() {
     <div>
       <PageHeader
         title="Inventory"
-        description="Variant stock levels and digital code availability."
+        description="How many codes you have, and which variants are running low. Only published code variants are tracked; top-ups have no code stock."
         actions={
           canManage ? (
             <Link href="/admin/codes/import" className="admin-btn admin-btn-primary">
@@ -89,14 +100,19 @@ export function InventoryClient() {
       {!loading && !error && data ? (
         <>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-            <StatCard label="Available" value={data.stats.codes_available} icon={KeyRound} />
-            <StatCard label="Reserved" value={data.stats.codes_reserved ?? 0} icon={Package} />
-            <StatCard label="Delivered" value={data.stats.codes_delivered ?? 0} />
-            <StatCard label="Unavailable" value={data.stats.codes_unavailable ?? 0} icon={ShieldAlert} />
+            <StatCard label="Codes available" value={data.stats.codes_available} hint="Ready to sell" icon={KeyRound} />
+            <StatCard label="Codes reserved" value={data.stats.codes_reserved ?? 0} hint="Held for orders being delivered" icon={Package} />
+            <StatCard label="Codes delivered" value={data.stats.codes_delivered ?? 0} hint="Sent to customers" />
+            <StatCard
+              label="Variants selling"
+              value={`${data.stats.effective_in_stock ?? "—"} / ${data.stats.tracked_variants ?? "—"}`}
+              hint={`${data.stats.effective_out_of_stock ?? 0} published code variant(s) out of stock`}
+              icon={ShieldAlert}
+            />
             <StatCard
               label="Low stock"
-              value={data.low_stock_variants?.length ?? 0}
-              hint={`Threshold ${data.stats.low_stock_threshold}`}
+              value={data.stats.low_stock ?? data.low_stock_variants?.length ?? 0}
+              hint={`Available ≤ ${data.stats.low_stock_threshold} (Settings)`}
               icon={Boxes}
             />
           </div>
@@ -104,7 +120,7 @@ export function InventoryClient() {
           <AdminCard className="mt-4" padding="md">
             <AdminSectionHeader
               title="Low stock variants"
-              description="Variants at or below the configured availability threshold."
+              description={`Published code variants with ${data.stats.low_stock_threshold} or fewer available codes (available ≤ threshold). Change the threshold in Settings.`}
             />
             {data.low_stock_variants?.length ? (
               <DataTable
@@ -115,7 +131,7 @@ export function InventoryClient() {
                 className="border-0 shadow-none"
               />
             ) : (
-              <EmptyState title="No low-stock variants" description="All tracked variants are above threshold." />
+              <EmptyState title="Nothing is running low" description={`Every published code variant has more than ${data.stats.low_stock_threshold} codes available.`} />
             )}
           </AdminCard>
         </>

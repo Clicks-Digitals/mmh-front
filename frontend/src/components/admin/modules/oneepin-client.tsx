@@ -22,7 +22,20 @@ import { ApiError } from "@/lib/api/client";
 import Link from "next/link";
 import { useState } from "react";
 
-type PingOutcome = { ok: boolean; message: string; at: string };
+type Tone = "success" | "info" | "warning" | "error";
+type PingOutcome = { tone: Tone; message: string; at: string };
+
+const OUTCOME_STYLE: Record<Tone, string> = {
+  success: "bg-emerald-50 text-emerald-900",
+  info: "bg-[var(--clicks-blue-soft)] text-[var(--clicks-navy)]",
+  warning: "bg-amber-50 text-amber-950",
+  error: "bg-red-50 text-red-900",
+};
+const OUTCOME_ICON: Record<Tone, string> = { success: "✓", info: "ℹ", warning: "!", error: "✕" };
+
+function isTestMode(mode?: string) {
+  return String(mode ?? "mock").toLowerCase() !== "live";
+}
 
 function bodyOf(err: unknown): Record<string, unknown> | null {
   return err instanceof ApiError && err.body && typeof err.body === "object"
@@ -32,6 +45,11 @@ function bodyOf(err: unknown): Record<string, unknown> | null {
 
 function ConfigBadge({ ok, label }: { ok?: boolean; label: string }) {
   return <Badge tone={ok ? "success" : "warning"}>{`${label}: ${ok ? "set" : "missing"}`}</Badge>;
+}
+
+function codeOf(err: unknown): string {
+  const body = bodyOf(err);
+  return body && typeof body.code === "string" ? body.code : "";
 }
 
 export function OneEpinClient() {
@@ -79,20 +97,33 @@ export function OneEpinClient() {
     setBusy("ping");
     try {
       const result = await pingOneEpin(token);
-      const { ok, message, detail, ...rest } = result;
+      const { ok, message, detail, code, ...rest } = result;
       void detail;
+      void code;
       mergeStatus(rest);
-      setLastPing({ ok: Boolean(ok), message: message || (ok ? "Connection OK" : "Connection failed"), at: new Date().toISOString() });
-      toast.push(ok ? message || "Connection OK" : message || "Connection check failed", ok ? "success" : "warning");
+      const test = isTestMode(rest.mode ?? status?.mode);
+      // CA-25: a check in test mode is simulated — say so instead of showing a green tick.
+      const tone: Tone = !ok ? "warning" : test ? "info" : "success";
+      const text = !ok
+        ? message || "The connection check failed."
+        : test
+          ? `Test mode: the check was simulated, no real connection to OneEpin was made.${message ? ` (${message})` : ""}`
+          : message || "Connected to OneEpin.";
+      setLastPing({ tone, message: text, at: new Date().toISOString() });
+      toast.push(text, tone);
     } catch (err) {
       const body = bodyOf(err);
       if (body) {
         const rest = Object.fromEntries(Object.entries(body).filter(([k]) => !["ok", "message", "detail", "code"].includes(k)));
         mergeStatus(rest as Partial<OneEpinStatus>);
       }
-      const message = adminErrorMessage(err, "Connection check failed");
-      setLastPing({ ok: false, message, at: new Date().toISOString() });
-      toast.push(message, "error");
+      const notConfigured = codeOf(err) === "not_configured";
+      const message = notConfigured
+        ? "Not configured: the OneEpin e-mail and password are not set on the server, so nothing was tested. Ask your developer to add them."
+        : adminErrorMessage(err, "Connection check failed");
+      const tone: Tone = notConfigured ? "warning" : "error";
+      setLastPing({ tone, message, at: new Date().toISOString() });
+      toast.push(message, tone);
     } finally {
       setBusy(null);
     }
@@ -108,7 +139,11 @@ export function OneEpinClient() {
     } catch (err) {
       const body = bodyOf(err);
       if (body && "cached" in body) mergeBalance(body as unknown as OneEpinBalance);
-      toast.push(adminErrorMessage(err, "Balance refresh failed"), "error");
+      if (codeOf(err) === "test_mode") {
+        toast.push("Test mode: OneEpin has no real balance to show. It appears once live purchasing is set up.", "info");
+      } else {
+        toast.push(adminErrorMessage(err, "Balance refresh failed"), "error");
+      }
     } finally {
       setBusy(null);
     }
@@ -122,9 +157,11 @@ export function OneEpinClient() {
       toast.push(result.message || "Catalog sync finished", "success");
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        toast.push("Nothing to sync in test/mock mode.", "info");
+        const body = bodyOf(err);
+        const msg = body && typeof body.message === "string" && body.message ? body.message : "";
+        toast.push(`Sync did not run — nothing to sync in test mode.${msg ? ` (${msg})` : ""} It is recorded in the logs as not completed.`, "info");
       } else {
-        toast.push(adminErrorMessage(err, "Sync failed"), "error");
+        toast.push(adminErrorMessage(err, "Sync failed — see OneEpin logs for details."), "error");
       }
     } finally {
       setBusy(null);
@@ -139,7 +176,7 @@ export function OneEpinClient() {
     <div>
       <PageHeader
         title="OneEpin"
-        description="Supplier connection, balance, and catalog sync. Live purchasing remains locked."
+        description="Connection to the OneEpin supplier: check the connection, see the balance and sync their catalog."
         actions={
           <Link href="/admin/integrations/1epin/logs" className="admin-btn admin-btn-secondary">
             View logs
@@ -151,7 +188,8 @@ export function OneEpinClient() {
         <div className="mb-4 flex flex-wrap items-start gap-3 rounded-[var(--admin-radius)] border border-amber-200 bg-amber-50/80 px-4 py-3">
           <Badge status="LIVE_LOCKED">Live locked</Badge>
           <p className="min-w-0 flex-1 text-[13px] text-amber-950">
-            Only mock/test environments are available. Live purchases cannot be enabled from the panel.
+            Test mode: no real purchases are made and supplier mappings don&apos;t count as stock. Live purchasing can only be
+            switched on by your developer on the server.
           </p>
         </div>
       ) : null}
@@ -176,12 +214,8 @@ export function OneEpinClient() {
               Last checked: {formatAdminDateTime(status.last_checked_at)}
             </p>
             {lastPing ? (
-              <p
-                className={`mt-2 rounded-lg px-3 py-2 text-[13px] ${
-                  lastPing.ok ? "bg-emerald-50 text-emerald-900" : "bg-red-50 text-red-900"
-                }`}
-              >
-                {lastPing.ok ? "✓" : "✕"} {lastPing.message}{" "}
+              <p role="status" className={`mt-2 rounded-lg px-3 py-2 text-[13px] ${OUTCOME_STYLE[lastPing.tone]}`}>
+                {OUTCOME_ICON[lastPing.tone]} {lastPing.message}{" "}
                 <span className="text-[11px] opacity-70">({formatAdminDateTime(lastPing.at)})</span>
               </p>
             ) : null}
@@ -195,7 +229,7 @@ export function OneEpinClient() {
                 </button>
               </div>
             ) : (
-              <p className="mt-4 text-[12px] text-[var(--clicks-muted)]">Testing and syncing require suppliers.write.</p>
+              <p className="mt-4 text-[12px] text-[var(--clicks-muted)]">Your role can view this page but not test or sync the connection.</p>
             )}
           </AdminCard>
 

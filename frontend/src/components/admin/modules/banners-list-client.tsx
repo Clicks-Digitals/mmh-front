@@ -16,17 +16,18 @@ import { useAdminToast } from "@/components/admin/ui/toast";
 import { isoToLocalInput, localInputToIso, localTimeZoneLabel } from "@/components/admin/lib/datetime";
 import { adminErrorMessage, adminFieldErrors } from "@/components/admin/lib/errors";
 import { formatAdminDateTime } from "@/lib/admin/format";
-import { useAdminResource } from "@/hooks/use-admin-resource";
+import { useAdminUrlResource } from "@/hooks/use-admin-url-resource";
 import {
   asList,
   createBanner,
   deleteBanner,
+  deleteBannerImage,
   listBanners,
   updateBanner,
   uploadBannerImage,
   type Banner,
 } from "@/lib/api/admin";
-import { resolveMediaUrl } from "@/lib/media";
+import { resolveAdminMediaUrl } from "@/components/admin/lib/media-url";
 import { useState } from "react";
 
 const PLACEMENTS = [
@@ -58,6 +59,20 @@ const emptyForm = {
 
 type Form = typeof emptyForm;
 
+/** CA-24: status computed by the API (falls back to the published flag for older responses). */
+export const BANNER_STATUS: Record<string, { label: string; tone: "success" | "info" | "neutral" | "warning"; hint: string }> = {
+  live: { label: "Live", tone: "success", hint: "Showing on the store now" },
+  scheduled: { label: "Scheduled", tone: "info", hint: "Published — starts showing at its start time" },
+  expired: { label: "Expired", tone: "warning", hint: "Published, but its end time has passed — no longer shown" },
+  unpublished: { label: "Unpublished", tone: "neutral", hint: "Hidden — tick Published to show it" },
+};
+
+export function bannerStatusKey(b: Pick<Banner, "status" | "published">): string {
+  const key = String(b.status ?? "").toLowerCase();
+  if (key in BANNER_STATUS) return key;
+  return b.published ? "live" : "unpublished";
+}
+
 function windowLabel(b: Banner) {
   if (!b.start_at && !b.end_at) return "Always";
   return `${b.start_at ? formatAdminDateTime(b.start_at) : "now"} → ${b.end_at ? formatAdminDateTime(b.end_at) : "no end"}`;
@@ -70,6 +85,7 @@ function ImageSlot({
   disabled,
   busy,
   onFile,
+  onRemove,
 }: {
   label: string;
   hint: string;
@@ -77,6 +93,7 @@ function ImageSlot({
   disabled?: boolean;
   busy?: boolean;
   onFile: (file: File) => void;
+  onRemove?: () => void;
 }) {
   return (
     <div className="rounded-lg border border-[var(--clicks-border)] p-3">
@@ -85,7 +102,7 @@ function ImageSlot({
       <div className="mt-2 flex aspect-[16/7] items-center justify-center overflow-hidden rounded-md bg-[var(--clicks-bg)]">
         {url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={resolveMediaUrl(url)} alt="" className="h-full w-full object-cover" />
+          <img src={resolveAdminMediaUrl(url)} alt="" className="h-full w-full object-cover" />
         ) : (
           <span className="text-[11px] text-[var(--clicks-muted)]">No image</span>
         )}
@@ -106,6 +123,16 @@ function ImageSlot({
           }}
         />
       </label>
+      {url && onRemove ? (
+        <button
+          type="button"
+          disabled={disabled}
+          className="admin-btn admin-btn-ghost ms-2 mt-2 h-8 text-xs text-[var(--clicks-error)] disabled:opacity-50"
+          onClick={onRemove}
+        >
+          Remove image
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -114,19 +141,20 @@ export function BannersListClient() {
   const toast = useAdminToast();
   const { can } = useAdminAccess();
   const canWrite = can("content.write");
-  const [placementFilter, setPlacementFilter] = useState("");
-  const { token, page, setPage, search, setSearch, items, count, loading, error, reload } = useAdminResource<Banner>(
-    async (tok, p, s) =>
-      asList(
-        await listBanners(tok, {
-          page: p,
-          page_size: ADMIN_LIST_PAGE_SIZE,
-          search: s || undefined,
-          placement: placementFilter || undefined,
-        }),
-      ),
-    [placementFilter],
+  const { state, set: setList, reset, page, token, items, count, loading, error, reload } = useAdminUrlResource<
+    Banner,
+    { search: string; placement: string }
+  >({ search: "", placement: "" }, async (tok, s) =>
+    asList(
+      await listBanners(tok, {
+        page: Number(s.page) || 1,
+        page_size: ADMIN_LIST_PAGE_SIZE,
+        search: s.search || undefined,
+        placement: s.placement || undefined,
+      }),
+    ),
   );
+  const [removeTarget, setRemoveTarget] = useState<"desktop" | "mobile" | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Banner | null>(null);
@@ -215,6 +243,22 @@ export function BannersListClient() {
     }
   }
 
+  async function removeImage(target: "desktop" | "mobile") {
+    if (!token || !editing) return;
+    setUploading(target);
+    try {
+      const updated = await deleteBannerImage(token, editing.id, target);
+      setEditing(updated);
+      toast.push(`${target === "desktop" ? "Desktop" : "Mobile"} image removed`, "success");
+      setRemoveTarget(null);
+      reload();
+    } catch (err) {
+      toast.push(adminErrorMessage(err, "Could not remove the image"), "error");
+    } finally {
+      setUploading(null);
+    }
+  }
+
   async function togglePublish(row: Banner) {
     if (!token) return;
     try {
@@ -248,7 +292,7 @@ export function BannersListClient() {
     <div>
       <PageHeader
         title="Banners"
-        description="Promotional banners on the store. Only published banners inside their start/end window are shown."
+        description="Promotional banners on the store. A banner shows only when it is published and the current time is inside its “Show from / until” window. Status: Live = showing now, Scheduled = starts later, Expired = end time passed."
         actions={
           canWrite ? (
             <button type="button" onClick={() => open(null)} className="admin-btn admin-btn-primary">
@@ -258,25 +302,19 @@ export function BannersListClient() {
         }
       />
       <Filters
-        search={search}
-        onSearchChange={setSearch}
+        search={state.search}
+        onSearchChange={(v) => setList({ search: v })}
         searchPlaceholder="Search banners…"
         filters={[
           {
             key: "placement",
             label: "Placement",
-            value: placementFilter,
-            onChange: (v) => {
-              setPlacementFilter(v);
-              setPage(1);
-            },
+            value: state.placement,
+            onChange: (v) => setList({ placement: v }),
             options: [{ value: "", label: "All placements" }, ...PLACEMENTS],
           },
         ]}
-        onClear={() => {
-          setSearch("");
-          setPlacementFilter("");
-        }}
+        onClear={reset}
       />
       <DataTable
         columns={[
@@ -287,7 +325,7 @@ export function BannersListClient() {
               r.desktop_image_url || r.desktop_image ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={resolveMediaUrl(r.desktop_image_url || r.desktop_image)}
+                  src={resolveAdminMediaUrl(r.desktop_image_url || r.desktop_image)}
                   alt=""
                   className="h-10 w-20 rounded object-cover"
                 />
@@ -298,6 +336,7 @@ export function BannersListClient() {
           {
             key: "title",
             header: "Title",
+            mobilePrimary: true,
             render: (r) => (
               <div>
                 <p className="font-medium">{r.title_en}</p>
@@ -311,7 +350,18 @@ export function BannersListClient() {
             render: (r) => PLACEMENTS.find((p) => p.value === r.placement)?.label ?? r.placement,
           },
           { key: "window", header: "Shown", render: (r) => <span className="text-xs">{windowLabel(r)}</span> },
-          { key: "status", header: "Status", render: (r) => <Badge status={r.published ? "PUBLISHED" : "DRAFT"} /> },
+          {
+            key: "status",
+            header: "Status",
+            render: (r) => {
+              const st = BANNER_STATUS[bannerStatusKey(r)];
+              return (
+                <span title={st.hint}>
+                  <Badge tone={st.tone}>{st.label}</Badge>
+                </span>
+              );
+            },
+          },
           { key: "sort", header: "Sort", className: "tabular-nums", render: (r) => r.sort_order ?? 0 },
           ...(canWrite
             ? [
@@ -349,7 +399,7 @@ export function BannersListClient() {
         empty={<EmptyState title="No banners" />}
         error={error ? <ErrorState message={error} onRetry={reload} /> : null}
       />
-      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={count} onPageChange={setPage} />
+      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={count} onPageChange={(p) => setList({ page: String(p) })} />
 
       <AdminModal open={modalOpen} onClose={() => setModalOpen(false)} title={editing ? "Edit banner" : "New banner"} wide>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -421,6 +471,7 @@ export function BannersListClient() {
                 busy={uploading === "desktop"}
                 disabled={Boolean(uploading)}
                 onFile={(f) => void upload("desktop", f)}
+                onRemove={() => setRemoveTarget("desktop")}
               />
               <ImageSlot
                 label="Mobile image"
@@ -429,6 +480,7 @@ export function BannersListClient() {
                 busy={uploading === "mobile"}
                 disabled={Boolean(uploading)}
                 onFile={(f) => void upload("mobile", f)}
+                onRemove={() => setRemoveTarget("mobile")}
               />
             </div>
           ) : (
@@ -446,6 +498,20 @@ export function BannersListClient() {
         </div>
       </AdminModal>
 
+      <ConfirmDialog
+        open={Boolean(removeTarget)}
+        title="Remove this image?"
+        description={
+          removeTarget === "mobile"
+            ? "Phones will show the desktop image instead."
+            : "The banner will show without a desktop image (phones keep their own image if one is set)."
+        }
+        danger
+        pending={Boolean(uploading)}
+        confirmLabel="Remove image"
+        onCancel={() => setRemoveTarget(null)}
+        onConfirm={() => removeTarget && void removeImage(removeTarget)}
+      />
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="Delete banner?"

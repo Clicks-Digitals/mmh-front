@@ -177,13 +177,16 @@ describe("product form", () => {
     expect(errors.slug).toBeTruthy();
   });
 
-  it("new variants start empty and fail validation until filled", () => {
+  it("new variants start empty and fail validation until name and price are filled", () => {
     const draft = newVariantDraft({ productId: "p1", index: 0, currency: "usd" });
     expect(draft.package_currency).toBe("USD");
     expect(draft.denomination).toBe("");
+    expect(draft.published).toBe(true);
     const errors = validateVariant(draft);
     expect(errors.price).toBeTruthy();
-    expect(errors.denomination).toBeTruthy();
+    expect(errors.name_en).toBeTruthy();
+    // CA-21: face value / package fields are optional (derived by the server).
+    expect(errors.denomination).toBeUndefined();
     const filled = { ...draft, name_en: "10 USD", denomination: "10", package_value: "10", price: "7.5", compare_at: "8" };
     expect(validateVariant(filled)).toEqual({});
     expect(variantDraftToPayload(filled, 0)).toMatchObject({ price_fils: 7500, compare_at_price_fils: 8000 });

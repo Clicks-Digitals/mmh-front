@@ -1,8 +1,7 @@
 "use client";
 
-import { SimpleCrudPage, str } from "@/components/admin/modules/simple-crud";
+import { SimpleCrudPage, crudListParams, str } from "@/components/admin/modules/simple-crud";
 import { Badge } from "@/components/admin/ui/badge";
-import { ADMIN_LIST_PAGE_SIZE } from "@/components/admin/admin-list-page";
 import { asList, createFaq, deleteFaq, listFaqs, updateFaq, type FAQ } from "@/lib/api/admin";
 
 export function FaqsListClient() {
@@ -10,34 +9,41 @@ export function FaqsListClient() {
     <SimpleCrudPage<FAQ>
       title="FAQs"
       noun="FAQ"
-      description="Questions shown on the store's FAQ / help page, in sort order."
+      description="Questions and answers on the store's FAQ / help page, shown in sort order (lowest first). Write both English and Arabic."
       writePermission="content.write"
       searchPlaceholder="Search questions…"
+      defaultOrdering="sort_order"
       wide
-      list={async (tok, p, s) =>
-        asList(await listFaqs(tok, { page: p, page_size: ADMIN_LIST_PAGE_SIZE, search: s || undefined }))
-      }
+      list={async (tok, s) => asList(await listFaqs(tok, crudListParams(s, "sort_order")))}
       create={(tok, body) => createFaq(tok, body as Partial<FAQ>)}
       update={(tok, row, body) => updateFaq(tok, row.id, body as Partial<FAQ>)}
       remove={(tok, row) => deleteFaq(tok, row.id)}
       deleteDescription={(r) => `Permanently delete “${r.question_en}”.`}
+      emptyDescription="Add the questions customers ask most (delivery time, refunds, regions…)."
       columns={[
         {
           key: "q",
           header: "Question",
+          mobilePrimary: true,
           render: (r) => (
             <div className="max-w-xl">
               <p className="font-medium">{r.question_en}</p>
-              {r.question_ar ? <p className="text-xs text-[var(--clicks-muted)]" dir="rtl">{r.question_ar}</p> : null}
+              {r.question_ar ? (
+                <p className="text-xs text-[var(--clicks-muted)]" dir="rtl">
+                  {r.question_ar}
+                </p>
+              ) : (
+                <p className="text-[11px] text-amber-700">No Arabic version yet</p>
+              )}
             </div>
           ),
         },
         {
           key: "status",
           header: "Status",
-          render: (r) => <Badge status={r.published ? "PUBLISHED" : "DRAFT"} />,
+          render: (r) => <Badge status={r.published ? "PUBLISHED" : "DRAFT"}>{r.published ? "Shown" : "Hidden"}</Badge>,
         },
-        { key: "sort", header: "Sort", className: "tabular-nums", render: (r) => r.sort_order ?? 0 },
+        { key: "sort", header: "Sort", sortKey: "sort_order", className: "tabular-nums", render: (r) => r.sort_order ?? 0 },
       ]}
       emptyValues={{ question_en: "", question_ar: "", answer_en: "", answer_ar: "", sort_order: "0", published: true }}
       toValues={(r) => ({
@@ -57,12 +63,20 @@ export function FaqsListClient() {
         published: Boolean(v.published),
       })}
       fields={[
-        { name: "question_en", label: "Question (EN)", required: true, full: true, maxLength: 255 },
-        { name: "question_ar", label: "Question (AR)", rtl: true, full: true, maxLength: 255, hint: "Shown on the Arabic store. Falls back to English if empty." },
-        { name: "answer_en", label: "Answer (EN)", type: "textarea", required: true },
-        { name: "answer_ar", label: "Answer (AR)", type: "textarea", rtl: true },
-        { name: "sort_order", label: "Sort order", type: "number", hint: "Lower shows first." },
-        { name: "published", label: "Published", type: "checkbox", hint: "Unpublished FAQs are hidden from the store." },
+        { name: "question_en", label: "Question (English)", required: true, full: true, maxLength: 255 },
+        {
+          name: "question_ar",
+          label: "Question (Arabic)",
+          optional: true,
+          rtl: true,
+          full: true,
+          maxLength: 255,
+          hint: "Shown on the Arabic store. Falls back to English if empty.",
+        },
+        { name: "answer_en", label: "Answer (English)", type: "textarea", required: true },
+        { name: "answer_ar", label: "Answer (Arabic)", type: "textarea", optional: true, rtl: true },
+        { name: "sort_order", label: "Sort order", type: "number", hint: "Lower numbers show first." },
+        { name: "published", label: "Show on the store", type: "checkbox", hint: "Unticked FAQs are hidden from customers." },
       ]}
     />
   );

@@ -1,19 +1,21 @@
 "use client";
 
-import { CategoryArtwork, ProductCover } from "@/components/product/product-artwork";
+import { ProductCover } from "@/components/product/product-artwork";
+import { CategoryTileImage } from "@/components/home/category-tile-image";
+import { useHydrated, useLocalStorage } from "@/hooks/use-local-storage";
+import type { Category } from "@/types";
 import { Price } from "@/components/ui/price";
 import { FOCUS_RING, ICON_HIT } from "@/components/ui/control";
 import { CATEGORIES, HOME_CATEGORIES } from "@/data/categories";
 import { TRENDING_SEARCHES } from "@/data/navigation";
 import { catalog, searchProducts } from "@/data/products";
-import { hrefHasProducts } from "@/lib/listing";
+import { hrefHasProducts, productsForListing } from "@/lib/listing";
 import { categoryMatchesQuery } from "@/lib/search";
 import { useLanguage } from "@/context/language-context";
 import { useUi } from "@/context/ui-context";
 import { useDebouncedValue } from "@/hooks/use-client";
 import { useEscape, useScrollLock } from "@/hooks/use-overlay";
 import { STORAGE_KEYS } from "@/lib/storage";
-import { useLocalStorage } from "@/hooks/use-local-storage";
 import { cn } from "@/lib/cn";
 import { getSnapshotCategories } from "@/lib/catalog-snapshot";
 import { ArrowRight, Clock, Search, TrendingUp, X } from "lucide-react";
@@ -40,6 +42,14 @@ export function SearchOverlay() {
   const [active, setActive] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounced = useDebouncedValue(query, 220);
+  const hydrated = useHydrated();
+  // ST-30: the shortcut hint matches the keyboard (⌘K on Apple devices, Ctrl K elsewhere).
+  const shortcutLabel = hydrated && /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K";
+  /** A real picture for a category tile: its own artwork, else the first product's image. */
+  const categoryImage = (category: Category) =>
+    category.artworkUrl ||
+    productsForListing(category.slug, catalog(), getSnapshotCategories()).find((product) => product.images[0])?.images[0] ||
+    undefined;
 
   const closeSearch = () => {
     setSearchOpen(false);
@@ -137,7 +147,9 @@ export function SearchOverlay() {
               {t("search.clear")}
             </button>
           ) : (
-            <kbd className="hidden rounded-md border border-line bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted sm:inline">⌘K</kbd>
+            <kbd className="hidden rounded-md border border-line bg-card px-1.5 py-0.5 text-[10px] font-medium text-muted sm:inline" dir="ltr">
+              {shortcutLabel}
+            </kbd>
           )}
           <button type="button" className={ICON_HIT} onClick={closeSearch} aria-label={t("common.close")}>
             <X className="h-5 w-5" />
@@ -197,7 +209,12 @@ export function SearchOverlay() {
                       )}
                       onClick={closeSearch}
                     >
-                      <CategoryArtwork artworkKey={category.artworkKey} className="aspect-[16/10]" />
+                      <CategoryTileImage
+                        src={categoryImage(category)}
+                        alt=""
+                        artworkKey={category.artworkKey}
+                        className="aspect-[16/10] w-full"
+                      />
                       <p className="px-3 py-2.5 text-sm font-medium group-hover:text-gold">
                         {locale === "ar" ? category.nameAr : category.name}
                       </p>
@@ -257,7 +274,7 @@ export function SearchOverlay() {
                         }}
                       >
                         <div className="h-14 w-14 overflow-hidden rounded-[10px] border border-line">
-                          <ProductCover product={product} compact />
+                          <ProductCover product={product} compact className="h-full w-full [&_img]:p-1" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-medium">{locale === "ar" ? product.nameAr : product.name}</p>
@@ -285,7 +302,7 @@ export function SearchOverlay() {
                   }}
                 >
                   {t("search.viewAll")}
-                  <ArrowRight className="h-4 w-4 rtl:rotate-180" />
+                  <ArrowRight className="h-4 w-4 rtl-flip" />
                 </Link>
               </section>
             </div>

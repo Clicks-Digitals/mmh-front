@@ -16,6 +16,9 @@ export type ProductKind =
 
 export type ProductFieldType = "text" | "email" | "tel" | "select";
 
+/** D17: how a required customer field value must look (backend `input_format`). */
+export type FieldInputFormat = "text" | "numeric" | "alphanumeric" | "email" | "phone";
+
 export type ProductBadge =
   | "new"
   | "bestseller"
@@ -46,6 +49,9 @@ export interface RequiredCustomerField {
   helpText?: string;
   helpTextAr?: string;
   options?: Array<{ label: string; labelAr: string; value: string }>;
+  inputFormat?: FieldInputFormat;
+  minLength?: number | null;
+  maxLength?: number | null;
 }
 
 export interface DigitalRegion {
@@ -71,6 +77,8 @@ export interface DigitalDenomination {
   variantId?: number;
   minQuantity?: number;
   maxQuantity?: number;
+  /** D2: units the store may sell now (CODE variants, reservation-aware, ≤ 99). null/undefined = not limited. */
+  availableQuantity?: number | null;
 }
 
 export interface DigitalProductOptions {
@@ -114,6 +122,8 @@ export interface Product {
   category: string;
   subcategory?: string;
   images: string[];
+  /** Alt text per entry of `images` (D25). */
+  imageAlts?: string[];
   artworkKey: string;
   priceJod: number;
   compareAtPriceJod?: number;
@@ -139,6 +149,10 @@ export interface Category {
   parent?: string;
   href: string;
   artworkKey: string;
+  artworkUrl?: string;
+  /** D20: shown in the header / mega menu / mobile menu / home tiles. */
+  showInMenu?: boolean;
+  sortOrder?: number;
 }
 
 export interface Brand {

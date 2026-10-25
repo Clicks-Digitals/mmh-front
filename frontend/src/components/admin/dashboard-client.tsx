@@ -6,14 +6,25 @@ import { AdminCard, AdminSectionHeader } from "@/components/admin/ui/card";
 import { ErrorState } from "@/components/admin/ui/error-state";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { StatCard } from "@/components/admin/ui/stat-card";
-import { auditActionLabel } from "@/components/admin/lib/audit";
-import { fulfillmentStatusLabel, paymentStatusLabel } from "@/components/admin/lib/orders";
+import { getDashboard, type DashboardData } from "@/components/admin/ops/api";
+import { auditActionLabel, auditEntityHref, auditEntityText } from "@/components/admin/lib/audit";
+import { formatJod } from "@/components/admin/lib/money";
+import { fulfillmentStatusLabel, orderHref, paymentStatusLabel } from "@/components/admin/lib/orders";
 import { formatAdminDateTime } from "@/lib/admin/format";
-import { getDashboardStats, type DashboardStats } from "@/lib/api/admin";
 import { useAdminQuery } from "@/hooks/use-admin-query";
 import type { PermissionKey } from "@/server/auth/permissions";
-import { formatFils } from "@/server/money";
-import { AlertTriangle, Boxes, Clock, Package, PackageX, ShoppingCart, Truck, Users, type LucideIcon } from "lucide-react";
+import {
+  AlertTriangle,
+  Boxes,
+  CalendarDays,
+  Clock,
+  Package,
+  PackageX,
+  ShoppingCart,
+  Truck,
+  Wallet,
+  type LucideIcon,
+} from "lucide-react";
 import Link from "next/link";
 
 const QUICK_LINKS: Array<{ href: string; title: string; body: string; permission: PermissionKey }> = [
@@ -86,46 +97,52 @@ function plural(n: number, word: string) {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-function attention(stats: DashboardStats, canInventory: boolean) {
+/** OR-12: every card links to the orders list filtered exactly like the backend count. */
+function ordersLink(stats: DashboardData, key: keyof NonNullable<DashboardData["links"]>, fallback: string) {
+  const qs = stats.links?.[key] ?? fallback;
+  return `/admin/orders${qs ? `?${qs}` : ""}`;
+}
+
+function attention(stats: DashboardData, canInventory: boolean) {
   const cards: Array<Parameters<typeof AttentionCard>[0] & { key: string }> = [];
   if (stats.awaiting_delivery) {
     cards.push({
       key: "awaiting",
-      href: "/admin/orders?payment_status=PAID",
+      href: ordersLink(stats, "awaiting_delivery", "needs_action=1"),
       icon: Truck,
       tone: "blue",
-      title: `${plural(stats.awaiting_delivery, "paid order")} awaiting delivery`,
-      body: "Paid but not fully delivered — open and complete them",
+      title: `${plural(stats.awaiting_delivery, "paid order")} waiting for delivery`,
+      body: "Paid but not finished — open them and deliver the rest",
     });
   }
   if (stats.manual_review) {
     cards.push({
       key: "manual",
-      href: "/admin/orders?fulfillment_status=MANUAL_REVIEW",
+      href: ordersLink(stats, "manual_review", "fulfillment_status=MANUAL_REVIEW"),
       icon: AlertTriangle,
       tone: "amber",
-      title: `${plural(stats.manual_review, "order")} in manual review`,
+      title: `${plural(stats.manual_review, "order")} need${stats.manual_review === 1 ? "s" : ""} review`,
       body: "Usually missing stock or a supplier issue",
     });
   }
   if (stats.failed_fulfillment) {
     cards.push({
       key: "failed",
-      href: "/admin/orders?fulfillment_status=FAILED",
+      href: ordersLink(stats, "failed_fulfillment", "fulfillment_status=FAILED"),
       icon: AlertTriangle,
       tone: "red",
-      title: `${plural(stats.failed_fulfillment, "order")} with failed fulfillment`,
+      title: `${plural(stats.failed_fulfillment, "order")} with failed delivery`,
       body: "Retry delivery or refund the customer",
     });
   }
   if (stats.pending_payment_24h) {
     cards.push({
       key: "pending",
-      href: "/admin/orders?payment_status=PENDING",
+      href: ordersLink(stats, "pending_payment_24h", "awaiting_payment_24h=1"),
       icon: Clock,
       tone: "amber",
-      title: `${plural(stats.pending_payment_24h, "order")} pending payment (last 24 h)`,
-      body: "Checkout started but not paid yet",
+      title: `${plural(stats.pending_payment_24h, "order")} awaiting payment (last 24 h)`,
+      body: "Checkout started but not paid yet — nothing to do unless the customer asks",
     });
   }
   if (stats.low_stock_variants) {
@@ -134,8 +151,8 @@ function attention(stats: DashboardStats, canInventory: boolean) {
       href: canInventory ? "/admin/inventory" : "/admin/orders",
       icon: Boxes,
       tone: "amber",
-      title: `${plural(stats.low_stock_variants, "code variant")} low on stock`,
-      body: `Fewer than ${stats.low_stock_threshold ?? "the threshold"} available codes — import more`,
+      title: `${plural(stats.low_stock_variants, "product option")} low on codes`,
+      body: `${stats.low_stock_threshold ?? "Only a few"} or fewer codes left — import more`,
     });
   }
   if (stats.out_of_stock_variants) {
@@ -144,8 +161,8 @@ function attention(stats: DashboardStats, canInventory: boolean) {
       href: canInventory ? "/admin/inventory" : "/admin/orders",
       icon: PackageX,
       tone: "red",
-      title: `${plural(stats.out_of_stock_variants, "variant")} manually set out of stock`,
-      body: "Hidden from purchase on the store",
+      title: `${plural(stats.out_of_stock_variants, "product option")} set to out of stock`,
+      body: "Customers cannot buy these",
     });
   }
   return cards;
@@ -153,7 +170,7 @@ function attention(stats: DashboardStats, canInventory: boolean) {
 
 function OrdersDashboard() {
   const { can } = useAdminAccess();
-  const { data: stats, loading, error, reload } = useAdminQuery((token) => getDashboardStats(token));
+  const { data: stats, loading, error, reload } = useAdminQuery((token) => getDashboard(token));
 
   if (error) return <ErrorState message={error} onRetry={reload} />;
   if (loading || !stats) {
@@ -171,24 +188,39 @@ function OrdersDashboard() {
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Revenue (paid orders)" value={`${formatFils(stats.revenue_fils)} JOD`} icon={Boxes} />
+        <Link href={ordersLink(stats, "today", "")} className="block">
+          <StatCard
+            label="Today"
+            value={stats.today?.orders ?? 0}
+            hint={`orders · ${stats.today?.revenue_display || formatJod(stats.today?.revenue_fils ?? 0)} net revenue`}
+            icon={CalendarDays}
+            className="h-full transition hover:border-[var(--clicks-border-strong)]"
+          />
+        </Link>
         <StatCard
-          label="Orders"
-          value={stats.orders_count}
-          hint={`${stats.pending_orders} pending payment in total`}
-          icon={ShoppingCart}
+          label="Net revenue (all time)"
+          value={stats.revenue_display || formatJod(stats.revenue_fils)}
+          hint={
+            stats.refunds_fils
+              ? `${formatJod(stats.gross_revenue_fils ?? stats.revenue_fils)} paid − ${formatJod(stats.refunds_fils)} refunded`
+              : "Paid and partly refunded orders, after refunds"
+          }
+          icon={Wallet}
         />
+        <Link href={ordersLink(stats, "pending_orders", "payment_status=PENDING")} className="block">
+          <StatCard
+            label="Orders"
+            value={stats.orders_count}
+            hint={`${stats.pending_orders} not paid yet`}
+            icon={ShoppingCart}
+            className="h-full transition hover:border-[var(--clicks-border-strong)]"
+          />
+        </Link>
         <StatCard
           label="Products"
           value={stats.products_count}
-          hint={`${stats.active_products} published`}
+          hint={`${stats.active_products} published · ${stats.codes_available} codes in stock`}
           icon={Package}
-        />
-        <StatCard
-          label="Customers"
-          value={stats.customers_count}
-          hint={`${stats.codes_available} codes available`}
-          icon={Users}
         />
       </div>
 
@@ -200,7 +232,7 @@ function OrdersDashboard() {
         </div>
       ) : (
         <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-900">
-          Nothing needs attention — all paid orders are delivered and stock is healthy.
+          Nothing needs attention — every paid order is delivered and stock looks fine.
         </p>
       )}
 
@@ -230,7 +262,7 @@ function OrdersDashboard() {
                   {stats.recent_orders.slice(0, 8).map((order) => (
                     <tr key={String(order.id)} className="border-t border-[var(--clicks-border)] hover:bg-[#F8FAFD]">
                       <td className="px-4 py-2.5">
-                        <Link href={`/admin/orders/${order.id}`} className="font-semibold text-[var(--clicks-blue)]">
+                        <Link href={orderHref(order)} className="font-semibold text-[var(--clicks-blue)]">
                           {order.order_number}
                         </Link>
                       </td>
@@ -238,7 +270,9 @@ function OrdersDashboard() {
                         <p className="font-medium text-[var(--clicks-navy)]">{order.full_name}</p>
                         <p className="text-[11px] text-[var(--clicks-muted)]">{order.email}</p>
                       </td>
-                      <td className="px-4 py-2.5 tabular-nums">{formatFils(order.total_fils)} JOD</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 tabular-nums">
+                        {order.total_display || formatJod(order.total_fils)}
+                      </td>
                       <td className="px-4 py-2.5">
                         <div className="flex flex-wrap gap-1">
                           <Badge status={order.payment_status}>{paymentStatusLabel(order.payment_status)}</Badge>
@@ -274,7 +308,7 @@ function OrdersDashboard() {
                     </p>
                   </div>
                   <p className="shrink-0 text-[13px] font-semibold tabular-nums text-[var(--clicks-navy)]">
-                    {formatFils(p.revenue_fils)} JOD
+                    {formatJod(p.revenue_fils)}
                   </p>
                 </li>
               ))}
@@ -286,7 +320,7 @@ function OrdersDashboard() {
       </div>
 
       <div className="mt-3 grid gap-3 lg:grid-cols-3">
-        {can("audit.read") ? (
+        {can("audit.read") && stats.recent_audit ? (
           <AdminCard className="lg:col-span-2" padding="md">
             <AdminSectionHeader
               title="Recent activity"
@@ -296,27 +330,40 @@ function OrdersDashboard() {
                 </Link>
               }
             />
-            {stats.recent_audit?.length ? (
+            {stats.recent_audit.length ? (
               <ul className="divide-y divide-[var(--clicks-border)]">
-                {stats.recent_audit.slice(0, 6).map((a) => (
-                  <li key={a.id} className="flex items-center justify-between gap-3 py-2 text-[13px]">
-                    <span className="font-medium text-[var(--clicks-navy)]">
-                      {auditActionLabel(a.action)}
-                      {a.entity_type ? (
-                        <span className="font-normal text-[var(--clicks-muted)]">
-                          {" "}
-                          · {a.entity_type} {a.entity_id}
+                {stats.recent_audit.slice(0, 6).map((a) => {
+                  const href = auditEntityHref(a);
+                  const target = a.entity_type ? auditEntityText(a) : "";
+                  return (
+                    <li key={a.id} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-0.5 py-2 text-[13px]">
+                      <span className="min-w-0">
+                        <span className="font-medium text-[var(--clicks-navy)]">{auditActionLabel(a.action)}</span>
+                        {target ? (
+                          <>
+                            {" · "}
+                            {href ? (
+                              <Link href={href} className="text-[var(--clicks-blue)]">
+                                {target}
+                              </Link>
+                            ) : (
+                              <span className="text-[var(--clicks-muted)]">{target}</span>
+                            )}
+                          </>
+                        ) : null}
+                        <span className="block text-[11px] text-[var(--clicks-muted)]">
+                          by {a.actor_name || a.actor_email || "System / customer"}
                         </span>
-                      ) : null}
-                    </span>
-                    <span className="shrink-0 text-[11px] text-[var(--clicks-muted)]">
-                      {formatAdminDateTime(a.created_at)}
-                    </span>
-                  </li>
-                ))}
+                      </span>
+                      <span className="shrink-0 text-[11px] text-[var(--clicks-muted)]">
+                        {formatAdminDateTime(a.created_at)}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
-              <p className="py-4 text-[13px] text-[var(--clicks-muted)]">No audit events yet.</p>
+              <p className="py-4 text-[13px] text-[var(--clicks-muted)]">No activity yet.</p>
             )}
           </AdminCard>
         ) : null}
@@ -354,7 +401,10 @@ export function DashboardClient() {
         <OrdersDashboard />
       ) : (
         <AdminCard padding="md">
-          <AdminSectionHeader title="Your sections" description="Order statistics need the orders.read permission." />
+          <AdminSectionHeader
+            title="Your sections"
+            description="Your role does not include order statistics. These are the sections you can open."
+          />
           <QuickLinks columns={3} />
         </AdminCard>
       )}

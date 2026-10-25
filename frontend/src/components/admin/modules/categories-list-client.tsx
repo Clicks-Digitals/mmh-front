@@ -14,7 +14,8 @@ import { PageHeader } from "@/components/admin/ui/page-header";
 import { Pagination } from "@/components/admin/ui/pagination";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage, adminFieldErrors } from "@/components/admin/lib/errors";
-import { useAdminResource } from "@/hooks/use-admin-resource";
+import { slugify } from "@/components/admin/lib/slugify";
+import { useAdminUrlResource } from "@/hooks/use-admin-url-resource";
 import {
   asList,
   createCategory,
@@ -36,7 +37,10 @@ const emptyForm = {
   artwork_key: "",
   sort_order: "0",
   status: "PUBLISHED",
+  show_in_menu: false as boolean,
 };
+
+const STATUS_LABEL: Record<string, string> = { PUBLISHED: "Published", DRAFT: "Draft", ARCHIVED: "Archived" };
 
 /** Ids of `rootId` and all of its descendants (cannot be chosen as its parent). */
 function blockedParentIds(all: AdminCategory[], rootId: string): Set<string> {
@@ -58,11 +62,22 @@ export function CategoriesListClient() {
   const toast = useAdminToast();
   const { can } = useAdminAccess();
   const canWrite = can("catalog.write");
-  const { token, page, setPage, search, setSearch, items, count, loading, error, reload } =
-    useAdminResource<AdminCategory>(async (tok, p, s) => {
-      const data = await listCategories(tok, { page: p, page_size: ADMIN_LIST_PAGE_SIZE, search: s || undefined });
-      return asList(data);
-    });
+  const { state, set, reset, page, hasFilters, token, items, count, loading, error, reload } = useAdminUrlResource<
+    AdminCategory,
+    { search: string; ordering: string; menu: string }
+  >({ search: "", ordering: "", menu: "" }, async (tok, s) =>
+    asList(
+      await listCategories(tok, {
+        page: Number(s.page) || 1,
+        page_size: ADMIN_LIST_PAGE_SIZE,
+        search: s.search || undefined,
+        ordering: s.ordering || "sort_order,name_en",
+        show_in_menu: s.menu || undefined,
+      }),
+    ),
+  );
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<AdminCategory | null>(null);
@@ -83,6 +98,7 @@ export function CategoriesListClient() {
 
   function openCreate() {
     setEditing(null);
+    setSlugTouched(false);
     setForm(emptyForm);
     setErrors({});
     setModalOpen(true);
@@ -101,7 +117,9 @@ export function CategoriesListClient() {
       artwork_key: row.artwork_key ?? "",
       sort_order: String(row.sort_order ?? 0),
       status: row.status,
+      show_in_menu: Boolean(row.show_in_menu),
     });
+    setSlugTouched(true);
     setErrors({});
     setModalOpen(true);
     void loadParents();
@@ -110,8 +128,10 @@ export function CategoriesListClient() {
   async function save() {
     if (!token) return;
     const local: Record<string, string> = {};
-    if (!form.name_en.trim()) local.name_en = "Required";
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(form.slug.trim())) local.slug = "Lowercase letters, numbers and dashes";
+    if (!form.name_en.trim()) local.name_en = "Enter the category name in English.";
+    if (editing && !form.slug.trim()) local.slug = "Enter a web address, e.g. gift-cards.";
+    else if (form.slug.trim() && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(form.slug.trim()))
+      local.slug = "Use only lowercase letters, numbers and dashes (no spaces), e.g. gift-cards.";
     setErrors(local);
     if (Object.keys(local).length) return;
     setPending(true);
@@ -126,10 +146,11 @@ export function CategoriesListClient() {
         artwork_key: form.artwork_key.trim(),
         sort_order: Number(form.sort_order) || 0,
         status: form.status,
+        show_in_menu: form.show_in_menu,
       };
       if (editing) {
         await updateCategory(token, editing.id, body);
-        toast.push("Category updated", "success");
+        toast.push("Category saved", "success");
       } else {
         await createCategory(token, body);
         toast.push("Category created", "success");
@@ -147,13 +168,15 @@ export function CategoriesListClient() {
   async function confirmDelete() {
     if (!token || !deleteTarget) return;
     setPending(true);
+    setDeleteError("");
     try {
       await deleteCategory(token, deleteTarget.id);
       toast.push("Category deleted", "success");
       setDeleteTarget(null);
       reload();
     } catch (err) {
-      toast.push(adminErrorMessage(err, "Delete failed"), "error");
+      // D20: 409 has_children -> "Move or delete its sub-categories first: A, B."
+      setDeleteError(adminErrorMessage(err, "Delete failed"));
     } finally {
       setPending(false);
     }
@@ -166,7 +189,7 @@ export function CategoriesListClient() {
     <div>
       <PageHeader
         title="Categories"
-        description="Store navigation groups. Only published categories (and their products) appear on the store."
+        description="Groups of products on the store. Only published categories (and their products) are visible. Tick “Show in the store's top menu” for the categories that should appear in the header menu; lower sort numbers come first."
         actions={
           canWrite ? (
             <button type="button" onClick={openCreate} className="admin-btn admin-btn-primary">
@@ -175,12 +198,32 @@ export function CategoriesListClient() {
           ) : null
         }
       />
-      <Filters search={search} onSearchChange={setSearch} searchPlaceholder="Search categories…" />
+      <Filters
+        search={state.search}
+        onSearchChange={(v) => set({ search: v })}
+        searchPlaceholder="Search categories…"
+        onClear={reset}
+        filters={[
+          {
+            key: "menu",
+            label: "Top menu",
+            value: state.menu,
+            onChange: (v) => set({ menu: v }),
+            options: [
+              { value: "", label: "In menu or not" },
+              { value: "true", label: "In the top menu" },
+              { value: "false", label: "Not in the menu" },
+            ],
+          },
+        ]}
+      />
       <DataTable
         columns={[
           {
             key: "name",
             header: "Name",
+            sortKey: "name_en",
+            mobilePrimary: true,
             render: (r) => (
               <div>
                 <p className="font-medium">{r.name_en}</p>
@@ -192,11 +235,37 @@ export function CategoriesListClient() {
               </div>
             ),
           },
-          { key: "slug", header: "Slug", render: (r) => <span className="font-mono text-xs">{r.slug}</span> },
-          { key: "parent", header: "Parent", render: (r) => r.parent_slug || "—" },
-          { key: "products", header: "Products", className: "tabular-nums", render: (r) => r.products_count ?? "—" },
-          { key: "status", header: "Status", render: (r) => <Badge status={r.status} /> },
-          { key: "sort", header: "Sort", className: "tabular-nums", render: (r) => r.sort_order ?? 0 },
+          { key: "slug", header: "Web address", sortKey: "slug", render: (r) => <span className="font-mono text-xs">/category/{r.slug}</span> },
+          {
+            key: "parent",
+            header: "Parent",
+            render: (r) => {
+              const parentName = items.find((c) => String(c.id) === String(r.parent))?.name_en;
+              return parentName || r.parent_slug || <span className="text-[var(--clicks-muted)]">Top level</span>;
+            },
+          },
+          {
+            key: "menu",
+            header: "Top menu",
+            render: (r) => (r.show_in_menu ? <Badge tone="success">In menu</Badge> : <span className="text-[var(--clicks-muted)]">—</span>),
+          },
+          {
+            key: "products",
+            header: "Products",
+            className: "tabular-nums",
+            render: (r) => (
+              <span>
+                {r.products_count ?? "—"}
+                {r.children?.length ? (
+                  <span className="block text-[11px] text-[var(--clicks-muted)]">
+                    {r.children.length} sub-categor{r.children.length === 1 ? "y" : "ies"}
+                  </span>
+                ) : null}
+              </span>
+            ),
+          },
+          { key: "status", header: "Status", render: (r) => <Badge status={r.status}>{STATUS_LABEL[r.status] ?? r.status}</Badge> },
+          { key: "sort", header: "Sort", sortKey: "sort_order", className: "tabular-nums", render: (r) => r.sort_order ?? 0 },
           ...(canWrite
             ? [
                 {
@@ -210,7 +279,10 @@ export function CategoriesListClient() {
                       <button
                         type="button"
                         className="text-xs font-medium text-[var(--clicks-error)]"
-                        onClick={() => setDeleteTarget(r)}
+                        onClick={() => {
+                          setDeleteError("");
+                          setDeleteTarget(r);
+                        }}
                       >
                         Delete
                       </button>
@@ -223,23 +295,29 @@ export function CategoriesListClient() {
         rows={items}
         loading={loading}
         rowKey={(r) => String(r.id)}
-        empty={<EmptyState title="No categories" />}
+        ordering={state.ordering}
+        defaultOrdering="sort_order"
+        onOrderingChange={(next) => set({ ordering: next === "sort_order" ? "" : next })}
+        empty={<EmptyState title={hasFilters ? "No categories match these filters" : "No categories yet"} />}
         error={error ? <ErrorState message={error} onRetry={reload} /> : null}
       />
-      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={count} onPageChange={setPage} />
+      <Pagination page={page} pageSize={ADMIN_LIST_PAGE_SIZE} total={count} onPageChange={(p) => set({ page: String(p) })} />
 
       <AdminModal open={modalOpen} onClose={() => setModalOpen(false)} title={editing ? "Edit category" : "New category"} wide>
         <div className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
-            <FormField label="Name (EN)" htmlFor="cat-name-en" required error={errors.name_en}>
+            <FormField label="Name (English)" htmlFor="cat-name-en" required error={errors.name_en}>
               <input
                 id="cat-name-en"
                 className={adminInputClass}
                 value={form.name_en}
-                onChange={(e) => setForm((f) => ({ ...f, name_en: e.target.value }))}
+                onChange={(e) => {
+                  const name = e.target.value;
+                  setForm((f) => ({ ...f, name_en: name, slug: slugTouched ? f.slug : slugify(name) }));
+                }}
               />
             </FormField>
-            <FormField label="Name (AR)" htmlFor="cat-name-ar" error={errors.name_ar}>
+            <FormField label="Name (Arabic)" htmlFor="cat-name-ar" optional error={errors.name_ar}>
               <input
                 id="cat-name-ar"
                 dir="rtl"
@@ -248,15 +326,23 @@ export function CategoriesListClient() {
                 onChange={(e) => setForm((f) => ({ ...f, name_ar: e.target.value }))}
               />
             </FormField>
-            <FormField label="Slug" htmlFor="cat-slug" required hint="URL: /category/<slug>. Changing it breaks old links." error={errors.slug}>
+            <FormField
+              label="Web address (slug)"
+              htmlFor="cat-slug"
+              hint={`Filled in from the English name. The page is /category/${form.slug || "…"}${editing ? " — changing it breaks old links." : "."}`}
+              error={errors.slug}
+            >
               <input
                 id="cat-slug"
                 className={`${adminInputClass} font-mono`}
                 value={form.slug}
-                onChange={(e) => setForm((f) => ({ ...f, slug: e.target.value }))}
+                onChange={(e) => {
+                  setSlugTouched(true);
+                  setForm((f) => ({ ...f, slug: e.target.value.toLowerCase() }));
+                }}
               />
             </FormField>
-            <FormField label="Parent category" htmlFor="cat-parent" hint="Leave empty for a top-level category." error={errors.parent}>
+            <FormField label="Parent category" htmlFor="cat-parent" hint="Choose a parent to make this a sub-category. Empty = top-level category." error={errors.parent}>
               <select
                 id="cat-parent"
                 className={adminInputClass}
@@ -266,15 +352,17 @@ export function CategoriesListClient() {
                 <option value="">— None (top level) —</option>
                 {parentOptions.map((c) => (
                   <option key={String(c.id)} value={String(c.id)}>
-                    {c.name_en} ({c.slug})
+                    {c.parent != null ? "— " : ""}
+                    {c.name_en}
                   </option>
                 ))}
               </select>
             </FormField>
             <FormField
-              label="Artwork key"
+              label="Built-in picture"
               htmlFor="cat-art"
-              hint="Name of the built-in artwork/icon used on category tiles (e.g. playstation)."
+              optional
+              hint="Name of a built-in tile picture (e.g. playstation). Leave empty if unsure."
               error={errors.artwork_key}
             >
               <input
@@ -294,7 +382,7 @@ export function CategoriesListClient() {
                   onChange={(e) => setForm((f) => ({ ...f, sort_order: e.target.value }))}
                 />
               </FormField>
-              <FormField label="Status" htmlFor="cat-status" hint="Draft/archived hide it and its products." error={errors.status}>
+              <FormField label="Status" htmlFor="cat-status" hint="Draft or archived hides it and its products." error={errors.status}>
                 <select
                   id="cat-status"
                   className={adminInputClass}
@@ -308,7 +396,26 @@ export function CategoriesListClient() {
               </FormField>
             </div>
           </div>
-          <FormField label="Description (EN)" htmlFor="cat-desc-en" hint="Shown at the top of the category page.">
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={form.show_in_menu}
+              onChange={(e) => setForm((f) => ({ ...f, show_in_menu: e.target.checked }))}
+            />
+            <span>
+              <span className="font-medium">Show in the store&apos;s top menu</span>
+              <span className="block text-[11px] text-[var(--clicks-muted)]">
+                Adds the category to the header menu, the mobile menu and the home page category tiles (only while it is published).
+              </span>
+            </span>
+          </label>
+          <FormField
+            label="Description (English)"
+            htmlFor="cat-desc-en"
+            optional
+            hint="A short intro shown at the top of the category page on the store."
+          >
             <textarea
               id="cat-desc-en"
               className={adminTextareaClass}
@@ -316,7 +423,7 @@ export function CategoriesListClient() {
               onChange={(e) => setForm((f) => ({ ...f, description_en: e.target.value }))}
             />
           </FormField>
-          <FormField label="Description (AR)" htmlFor="cat-desc-ar">
+          <FormField label="Description (Arabic)" htmlFor="cat-desc-ar" optional>
             <textarea
               id="cat-desc-ar"
               dir="rtl"
@@ -341,15 +448,25 @@ export function CategoriesListClient() {
         title="Delete category?"
         description={
           deleteTarget
-            ? `Permanently delete “${deleteTarget.name_en}”. Categories that still have products cannot be deleted — move the products or archive the category instead.`
+            ? `Permanently delete “${deleteTarget.name_en}”. Categories that still have products or sub-categories can't be deleted — move them first, or archive the category instead.`
             : undefined
         }
         danger
         pending={pending}
         confirmLabel="Delete"
-        onCancel={() => setDeleteTarget(null)}
+        confirmDisabled={Boolean(deleteError)}
+        onCancel={() => {
+          setDeleteTarget(null);
+          setDeleteError("");
+        }}
         onConfirm={() => void confirmDelete()}
-      />
+      >
+        {deleteError ? (
+          <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-800">
+            {deleteError}
+          </p>
+        ) : null}
+      </ConfirmDialog>
     </div>
   );
 }

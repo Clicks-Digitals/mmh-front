@@ -16,8 +16,11 @@ export function CategoryListing({
   source,
   basePath,
   subcategoriesLabel = "Subcategories",
+  description = "",
 }: {
   title: string;
+  /** D20 / CA-17: the category description, shown under the title. */
+  description?: string;
   breadcrumbs: Crumb[];
   subcategories?: CategorySubLink[];
   initial: FilterState;
@@ -31,6 +34,7 @@ export function CategoryListing({
         <div className="container-mmh py-8 sm:py-10">
           <Breadcrumbs tone="onAccent" items={breadcrumbs} />
           <h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">{title}</h1>
+          {description ? <p className="mt-3 max-w-3xl whitespace-pre-line text-sm leading-6 text-white/80 sm:text-base">{description}</p> : null}
           {subcategories.length ? (
             <nav aria-label={subcategoriesLabel} className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
               {subcategories.map((child, index) => (

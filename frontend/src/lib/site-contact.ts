@@ -23,6 +23,18 @@ export const EMPTY_SITE_CONTACT: SiteContact = {
   youtube_url: "",
 };
 
+/** ST-13: whether any way to reach the shop is configured (otherwise contact CTAs are hidden). */
+export function hasContactChannel(contact: Partial<SiteContact>): boolean {
+  return Boolean(
+    contact.support_email?.trim() ||
+      contact.support_phone?.trim() ||
+      contact.whatsapp_number?.replace(/\D/g, "") ||
+      contact.telegram_url?.trim() ||
+      contact.instagram_url?.trim() ||
+      contact.facebook_url?.trim(),
+  );
+}
+
 export function whatsappHref(number: string): string {
   const digits = number.replace(/\D/g, "");
   return digits ? `https://wa.me/${digits}` : "";

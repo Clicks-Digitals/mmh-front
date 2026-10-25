@@ -1,15 +1,18 @@
 "use client";
 
-import { PaymentStep, UsdEstimate, type CheckoutFailure } from "@/components/checkout/payment-step";
+import { CouponBox } from "@/components/cart/coupon-box";
+import { isCouponFailure, PaymentStep, UsdEstimate, type CheckoutFailure } from "@/components/checkout/payment-step";
 import { Button } from "@/components/ui/button";
+import { TEXTAREA } from "@/components/ui/control";
 import { Field } from "@/components/ui/field";
 import { Price } from "@/components/ui/price";
 import { useCart } from "@/context/cart-context";
 import { useLanguage } from "@/context/language-context";
-import { checkoutLine, lineProblem, lineProblemKey, linePrice, maskAccountValue } from "@/lib/cart";
+import { checkoutLine, lineFieldsText, lineLimits, lineProblem, lineProblemKey, linePrice } from "@/lib/cart";
 import { formatDiscount } from "@/lib/coupon";
 import { getProductById } from "@/data/products";
-import { isValidEmail, isValidPhone } from "@/lib/validation";
+import { cn } from "@/lib/cn";
+import { isValidEmail, isValidPhone, MAX_CUSTOMER_NOTE } from "@/lib/validation";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -18,13 +21,26 @@ import Link from "next/link";
 type Contact = { fullName: string; email: string; phone: string };
 
 export function CheckoutView() {
-  const { items, subtotal, total, discountFils, totalFils, promoCode, clear, hydrated } = useCart();
+  const {
+    items,
+    subtotal,
+    total,
+    discountFils,
+    totalFils,
+    promoCode,
+    freeOrder,
+    removePromo,
+    setCouponEmail,
+    clear,
+    hydrated,
+  } = useCart();
   const { t, locale } = useLanguage();
   const { data: session, status } = useSession();
   const router = useRouter();
   const sessionEmail = status === "authenticated" && session?.user?.kind === "CUSTOMER" ? session.user.email : "";
   const [step, setStep] = useState(1);
   const [contact, setContact] = useState<Contact>({ fullName: "", email: "", phone: "" });
+  const [notes, setNotes] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
   const [failure, setFailure] = useState<CheckoutFailure | null>(null);
@@ -36,6 +52,7 @@ export function CheckoutView() {
     name: fullName.length < 2 ? t("validation.required") : "",
     email: !isValidEmail(email) ? t("validation.email") : "",
     phone: contact.phone.trim() && !isValidPhone(contact.phone) ? t("validation.phone") : "",
+    notes: notes.length > MAX_CUSTOMER_NOTE ? t("validation.tooLongN", { max: MAX_CUSTOMER_NOTE }) : "",
   };
   const serverFieldError = (key: string) => (failure?.field === key && failure.message ? failure.message : "");
 
@@ -54,6 +71,8 @@ export function CheckoutView() {
     if (step === 1) {
       setShowErrors(true);
       if (errors.name || errors.email || errors.phone) return;
+      // OR-25: per-customer coupon limits are checked once the email is known.
+      setCouponEmail(email);
     }
     if (step === 2 && blocked) return;
     setStep((value) => Math.min(3, value + 1));
@@ -94,7 +113,7 @@ export function CheckoutView() {
             ) : (
               <p className="text-sm text-muted">
                 {t("checkout.signInOptional")}{" "}
-                <Link href="/login?callbackUrl=%2Fcheckout" className="font-semibold text-brand-deep hover:text-fg">
+                <Link href="/login?callbackUrl=%2Fcheckout" className="font-semibold text-gold underline-offset-2 hover:underline">
                   {t("account.signIn")}
                 </Link>
               </p>
@@ -110,6 +129,7 @@ export function CheckoutView() {
               label={t("checkout.email")}
               type="email"
               autoComplete="email"
+              dir="ltr"
               hint={t("checkout.contactHint")}
               value={contact.email || sessionEmail}
               error={(showErrors && errors.email) || serverFieldError("email") || undefined}
@@ -120,13 +140,14 @@ export function CheckoutView() {
               type="tel"
               inputMode="tel"
               autoComplete="tel"
+              dir="ltr"
               placeholder="+962 79 123 4567"
               hint={t("checkout.phoneHint")}
               value={contact.phone}
               error={errors.phone || serverFieldError("phone") || undefined}
               onChange={(event) => setContact((current) => ({ ...current, phone: event.target.value }))}
             />
-            <UsdEstimate totalFils={totalFils} className="text-sm text-muted" />
+            {freeOrder ? null : <UsdEstimate totalFils={totalFils} className="text-sm text-muted" />}
           </div>
         ) : null}
 
@@ -140,27 +161,22 @@ export function CheckoutView() {
                   </article>
                 );
               }
-              const fieldsText = product.digitalOptions.requiredCustomerFields
-                .map((field) => {
-                  const value = item.digital?.customerFields?.[field.id];
-                  return value ? `${locale === "ar" ? field.labelAr || field.label : field.label}: ${maskAccountValue(value)}` : "";
-                })
-                .filter(Boolean)
-                .join(" · ");
+              const fieldsText = lineFieldsText(item, product, locale);
               const serverError = product.digitalOptions.requiredCustomerFields.map((field) => serverFieldError(field.id)).find(Boolean);
+              const topup = product.fulfillmentType === "direct_topup";
               return (
                 <article key={item.lineId} className="rounded-[12px] border border-line bg-card p-4 text-sm">
                   <p className="font-medium">
                     {locale === "ar" ? product.nameAr : product.name} × {item.quantity}
                   </p>
                   <p className="mt-1 text-muted">
-                    {[item.digital?.platform, item.digital?.regionName, item.digital?.denominationLabel].filter(Boolean).join(" · ")}
+                    {[item.digital?.platform, topup ? "" : item.digital?.regionName, item.digital?.denominationLabel].filter(Boolean).join(" · ")}
                   </p>
-                  <p className="text-accent">
-                    {product.fulfillmentType === "direct_topup" ? t("delivery.topupAfterPayment") : t("delivery.afterPayment")}
+                  <p className="text-muted">
+                    {topup ? t("delivery.topupAfterPayment") : t("delivery.afterPayment")}
                     {fieldsText ? ` · ${fieldsText}` : ""}
                   </p>
-                  {problem ? <p className="mt-2 text-xs text-danger">{t(lineProblemKey(problem), { max: 5 })}</p> : null}
+                  {problem ? <p className="mt-2 text-xs text-danger">{t(lineProblemKey(problem), { max: lineLimits(item, product).max })}</p> : null}
                   {serverError ? <p className="mt-2 text-xs text-danger">{serverError}</p> : null}
                   <p className="mt-2 text-xs text-amber">{t("checkout.refundWarn")}</p>
                   <Link href="/cart" className="mt-2 inline-block text-xs text-gold">
@@ -175,11 +191,32 @@ export function CheckoutView() {
         {step === 3 ? (
           <div className="mt-8 space-y-4 text-sm">
             <p className="break-words">
-              <strong>{fullName}</strong> · {email}
-              {contact.phone ? ` · ${contact.phone}` : ""}
+              <strong>{fullName}</strong> · <span dir="ltr">{email}</span>
+              {contact.phone ? (
+                <>
+                  {" · "}
+                  <span dir="ltr">{contact.phone}</span>
+                </>
+              ) : null}
             </p>
-            <p className="rounded-xl border border-line bg-card p-3 text-muted">{t("checkout.payNote")}</p>
+            {freeOrder ? null : <p className="rounded-xl border border-line bg-card p-3 text-muted">{t("checkout.payNote")}</p>}
             <p className="text-muted">{t("delivery.where")}</p>
+            <label className="block space-y-1.5">
+              <span className="text-sm font-medium text-fg">{t("checkout.notesLabel")}</span>
+              <textarea
+                className={cn(TEXTAREA, "min-h-24", errors.notes && "border-danger")}
+                value={notes}
+                maxLength={MAX_CUSTOMER_NOTE}
+                placeholder={t("checkout.notesPlaceholder")}
+                onChange={(event) => setNotes(event.target.value)}
+              />
+              <span className={cn("flex justify-between text-xs", errors.notes ? "text-danger" : "text-muted")}>
+                <span>{errors.notes || t("checkout.notesHint")}</span>
+                <span dir="ltr">
+                  {notes.length}/{MAX_CUSTOMER_NOTE}
+                </span>
+              </span>
+            </label>
             <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-card p-4 leading-5 text-muted">
               <input
                 type="checkbox"
@@ -195,10 +232,13 @@ export function CheckoutView() {
                 email,
                 fullName,
                 phone: contact.phone,
+                notes,
+                locale,
                 couponCode: promoCode || undefined,
                 items: lines.filter((line) => line.product).map((line) => checkoutLine(line.item, line.product!)),
               }}
               totalFils={totalFils}
+              freeOrder={freeOrder}
               disabled={blocked}
               onBeforePrepare={() => {
                 setShowErrors(true);
@@ -206,11 +246,18 @@ export function CheckoutView() {
                   setStep(1);
                   return false;
                 }
+                if (errors.notes) return false;
                 return confirmed && !blocked;
               }}
               onFailure={(next) => {
                 setFailure(next);
-                if (!next?.field) return;
+                if (!next) return;
+                // The coupon was rejected at order time: drop it so the totals are honest again.
+                if (isCouponFailure(next)) {
+                  removePromo();
+                  return;
+                }
+                if (!next.field) return;
                 if (["email", "full_name", "phone"].includes(next.field)) setStep(1);
                 else if (next.field !== "coupon_code") setStep(2);
               }}
@@ -259,19 +306,18 @@ export function CheckoutView() {
           {discountFils > 0 ? (
             <div className="flex justify-between text-success">
               <dt>
-                {t("checkout.discount")} ({promoCode})
+                {t("checkout.discount")} (<span dir="ltr">{promoCode}</span>)
               </dt>
               <dd>{formatDiscount(discountFils, locale)}</dd>
             </div>
           ) : null}
           <div className="flex justify-between border-t border-line pt-3 font-semibold">
             <dt>{t("checkout.total")}</dt>
-            <dd>
-              <Price amount={total} locale={locale} />
-            </dd>
+            <dd>{freeOrder ? <span className="text-success">{t("order.free")}</span> : <Price amount={total} locale={locale} />}</dd>
           </div>
         </dl>
-        <UsdEstimate totalFils={totalFils} className="mt-2 text-xs text-muted" />
+        {freeOrder ? null : <UsdEstimate totalFils={totalFils} className="mt-2 text-xs text-muted" />}
+        <CouponBox email={isValidEmail(email) ? email : ""} />
       </aside>
     </div>
   );

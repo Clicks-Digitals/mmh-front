@@ -6,11 +6,32 @@ export interface QuantityLimits {
   max: number;
 }
 
-export function quantityLimits(minQuantity?: number | null, maxQuantity?: number | null): QuantityLimits {
-  const min = Math.max(1, Math.floor(Number(minQuantity) || 1));
+/** Show "Only N left" at or below this many sellable units (D2). */
+export const LOW_STOCK_NOTICE = 5;
+
+/**
+ * Per-line quantity limits. `availableQuantity` (D2, reservation-aware stock of a CODE variant)
+ * caps the maximum; null/undefined means "not limited by stock" (top-ups, supplier stock).
+ */
+export function quantityLimits(
+  minQuantity?: number | null,
+  maxQuantity?: number | null,
+  availableQuantity?: number | null,
+): QuantityLimits {
+  const min = Math.min(Math.max(1, Math.floor(Number(minQuantity) || 1)), MAX_QTY_PER_LINE);
   const rawMax = Math.floor(Number(maxQuantity) || MAX_QTY_PER_LINE);
-  const max = Math.max(min, Math.min(MAX_QTY_PER_LINE, rawMax));
-  return { min: Math.min(min, MAX_QTY_PER_LINE), max };
+  let max = Math.max(min, Math.min(MAX_QTY_PER_LINE, rawMax));
+  if (typeof availableQuantity === "number" && Number.isFinite(availableQuantity)) {
+    max = Math.max(1, Math.min(max, Math.floor(availableQuantity)));
+  }
+  return { min: Math.min(min, max), max };
+}
+
+/** "Only N left" count, or null when stock is not low / not tracked. */
+export function lowStockCount(availableQuantity?: number | null): number | null {
+  if (typeof availableQuantity !== "number" || !Number.isFinite(availableQuantity)) return null;
+  const count = Math.floor(availableQuantity);
+  return count > 0 && count <= LOW_STOCK_NOTICE ? count : null;
 }
 
 export function clampQuantity(value: number, limits: QuantityLimits): number {

@@ -53,3 +53,16 @@ export function getPage(slug: string) {
 export function getSettings() {
   return apiFetch<ApiSiteSettings>("/cms/settings/");
 }
+
+/** D19: published content pages (ordered); `show_in_footer` ones are linked in the footer. */
+export type ApiCmsPageSummary = {
+  slug: string;
+  title_en: string;
+  title_ar: string;
+  show_in_footer?: boolean;
+  sort_order?: number;
+};
+
+export function listPages() {
+  return apiFetch<ApiCmsPageSummary[] | { results: ApiCmsPageSummary[] }>("/cms/pages/");
+}

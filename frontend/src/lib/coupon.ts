@@ -33,7 +33,7 @@ export function cartTotals(subtotalFils: number, coupon: AppliedCoupon | null) {
 }
 
 export function formatDiscount(discountFils: number, locale: Locale = "en"): string {
-  const amount = new Intl.NumberFormat(locale === "ar" ? "ar-JO" : "en-JO", {
+  const amount = new Intl.NumberFormat(locale === "ar" ? "ar-JO-u-nu-latn" : "en-JO", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 3,
   }).format(filsToJod(discountFils));

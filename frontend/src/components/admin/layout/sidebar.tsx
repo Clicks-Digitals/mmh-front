@@ -2,6 +2,7 @@
 
 import { cn } from "@/lib/cn";
 import { useAdminAccess } from "@/components/admin/admin-access";
+import { roleLabel } from "@/components/admin/lib/roles";
 import { type PermissionKey } from "@/server/auth/permissions";
 import {
   CreditCard,
@@ -181,11 +182,15 @@ export function AdminSidebar({
   onClose,
   collapsed,
   onToggleCollapse,
+  name = "",
+  email = "",
 }: {
   open: boolean;
   onClose: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
+  name?: string;
+  email?: string;
 }) {
   const pathname = usePathname();
   const { can, role } = useAdminAccess();
@@ -305,10 +310,12 @@ export function AdminSidebar({
 
         {!collapsed ? (
           <div className="shrink-0 border-t border-white/[0.07] px-3 py-3">
-            <div className="rounded-lg bg-white/[0.04] px-2.5 py-2">
-              <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-white/35">Signed in as</p>
-              <p className="mt-0.5 truncate text-[12px] font-medium text-white/75">
-                {(role || "admin").replaceAll("_", " ")}
+            <div className="rounded-lg bg-white/[0.04] px-2.5 py-2" title={email || name}>
+              <p className="text-[11px] text-white/45">Signed in as</p>
+              <p className="mt-0.5 truncate text-[12px] font-medium text-white/85">{name || email || "Administrator"}</p>
+              <p className="truncate text-[11px] text-white/50">
+                {email && email !== name ? `${email} · ` : ""}
+                {roleLabel(role)}
               </p>
             </div>
           </div>

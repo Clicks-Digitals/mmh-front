@@ -7,14 +7,16 @@ import { useMemo, type ReactNode } from "react";
 export function CatalogBoot({
   products,
   categories,
+  menuCategories = [],
   children,
 }: {
   products: Product[];
   categories: Category[];
+  menuCategories?: Category[];
   children: ReactNode;
 }) {
   useMemo(() => {
-    setCatalogSnapshot(products, categories);
-  }, [products, categories]);
+    setCatalogSnapshot(products, categories, menuCategories);
+  }, [products, categories, menuCategories]);
   return children;
 }

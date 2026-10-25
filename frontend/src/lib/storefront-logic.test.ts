@@ -222,10 +222,16 @@ describe("orders", () => {
     const order = mapApiOrder(api);
     expect(order.items[0].fulfillmentType).toBe("DIRECT_TOPUP");
     expect(order.items[1].fulfillmentType).toBe("CODE");
-    expect(order.items[0].fields[0]).toEqual({ key: "playerId", label: "Player ID", maskedValue: "51••••89" });
+    expect(order.items[0].fields[0]).toEqual({
+      key: "playerId",
+      label: "Player ID",
+      labelAr: "معرّف اللاعب",
+      displayValue: "•••789",
+      displayValueAr: "•••789",
+    });
     expect(order.items[1].codes).toEqual([{ id: "3", masked: "••••AB12" }]);
     expect(order.totalFils).toBe(9000);
-    expect(maskValue("abc")).toBe("••••");
+    expect(maskValue("abc")).toBe("abc");
   });
   it("polls while paid but not delivered", () => {
     const order = mapApiOrder(api);

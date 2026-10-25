@@ -12,6 +12,9 @@ import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage } from "@/components/admin/lib/errors";
 import { formatAdminDateTime } from "@/lib/admin/format";
 import { useAdminQuery } from "@/hooks/use-admin-query";
+import { useAdminBreadcrumbLabel } from "@/components/admin/layout/breadcrumbs";
+import { supplierModeBadge } from "@/components/admin/modules/suppliers-list-client";
+import { MappingStockCell } from "@/components/admin/product/mapping-tab";
 import {
   deleteSupplierMapping,
   getSupplier,
@@ -31,6 +34,7 @@ export function SupplierDetailClient({ id }: { id: string }) {
   const [form, setForm] = useState({ external_product_id: "", external_name: "", ignored: false });
   const [deleteTarget, setDeleteTarget] = useState<SupplierMappingRow | null>(null);
   const [pending, setPending] = useState(false);
+  useAdminBreadcrumbLabel(supplier?.name);
 
   if (loading) return <div className="h-40 animate-pulse rounded-xl border border-[var(--clicks-border)] bg-white" />;
   if (error) return <ErrorState message={error} onRetry={reload} />;
@@ -58,7 +62,7 @@ export function SupplierDetailClient({ id }: { id: string }) {
       setMappings(
         mappings.map((m) =>
           String(m.id) === String(editing.id)
-            ? { ...m, external_product_id: updated.external_product_id, external_name: updated.external_name, ignored: updated.ignored }
+            ? { ...m, external_product_id: updated.external_product_id, external_name: updated.external_name, ignored: updated.ignored, counts_as_stock: updated.counts_as_stock, counts_as_stock_message: updated.counts_as_stock_message }
             : m,
         ),
       );
@@ -117,14 +121,17 @@ export function SupplierDetailClient({ id }: { id: string }) {
       />
       {supplier.live_locked ? (
         <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-          <p className="font-semibold">Live locked</p>
-          <p className="mt-1">Live supplier purchasing is disabled; only mock/test calls run.</p>
+          <p className="font-semibold">Test mode</p>
+          <p className="mt-1">
+            No real purchases are made from this supplier, so its mappings don&apos;t keep variants on sale. Live purchasing can
+            only be switched on by your developer on the server.
+          </p>
         </div>
       ) : null}
       <div className="admin-card p-4 text-sm">
         <div className="flex flex-wrap items-center gap-3">
-          <Badge status={supplier.active ? "ACTIVE" : "DISABLED"}>{supplier.active ? "Active" : "Inactive"}</Badge>
-          {supplier.environment ? <Badge tone="info">{supplier.environment}</Badge> : null}
+          {supplierModeBadge(supplier)}
+          {supplier.environment ? <Badge tone="neutral">{`Environment: ${supplier.environment}`}</Badge> : null}
           <span className="text-[var(--clicks-muted)]">Last checked {formatAdminDateTime(supplier.last_checked_at)}</span>
         </div>
         <dl className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -162,7 +169,7 @@ export function SupplierDetailClient({ id }: { id: string }) {
                   <th className="px-3 py-2 text-start">Variant</th>
                   <th className="px-3 py-2 text-start">External ID</th>
                   <th className="px-3 py-2 text-start">External name</th>
-                  <th className="px-3 py-2 text-start">Status</th>
+                  <th className="px-3 py-2 text-start">Counts as stock?</th>
                   <th className="px-3 py-2" />
                 </tr>
               </thead>
@@ -174,7 +181,7 @@ export function SupplierDetailClient({ id }: { id: string }) {
                     <td className="px-3 py-2 font-mono text-xs">{m.external_product_id}</td>
                     <td className="px-3 py-2 text-xs">{m.external_name || "—"}</td>
                     <td className="px-3 py-2">
-                      <Badge tone={m.ignored ? "neutral" : "success"}>{m.ignored ? "Ignored" : "Active"}</Badge>
+                      <MappingStockCell mapping={m} />
                     </td>
                     <td className="px-3 py-2">
                       {canWrite ? (

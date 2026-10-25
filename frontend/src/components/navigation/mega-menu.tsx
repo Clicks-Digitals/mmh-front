@@ -4,7 +4,7 @@ import { MEGA_GROUPS, type MegaKey } from "@/data/navigation";
 import { catalog } from "@/data/products";
 import { getSnapshotCategories } from "@/lib/catalog-snapshot";
 import { productsForListing } from "@/lib/listing";
-import { categoryTiles, platformTiles, staticTiles, type MenuTile } from "@/lib/nav-menu";
+import { categoryTiles, platformTiles, staticTiles, type MenuEntry, type MenuTile } from "@/lib/nav-menu";
 import { useLanguage } from "@/context/language-context";
 import { ProductCover } from "@/components/product/product-artwork";
 import { Price } from "@/components/ui/price";
@@ -61,6 +61,47 @@ export function MegaMenu({ type, onNavigate }: { type: MegaKey; onNavigate?: () 
                 {t(brandCountKey(tile.count, locale), { count: tile.count })}
               </p>
             ) : null}
+          </Link>
+        ))}
+      </div>
+      {featured ? (
+        <Link
+          href={`/product/${featured.slug}`}
+          onClick={onNavigate}
+          className="overflow-hidden rounded-[12px] border border-line bg-card-hover"
+          data-mega-item
+        >
+          <ProductCover product={featured} className="aspect-[16/10] h-36 w-full" compact />
+          <div className="p-3">
+            <p className="text-[11px] uppercase tracking-wide text-gold">{t("nav.megaFeatured")}</p>
+            <p className="mt-1 text-sm font-semibold">{locale === "ar" ? featured.nameAr : featured.name}</p>
+            <Price amount={featured.priceJod} compareAt={featured.compareAtPriceJod} locale={locale} size="sm" />
+          </div>
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
+/** D20: mega panel of an admin-managed menu category — its sub-categories plus "View all". */
+export function MenuEntryPanel({ entry, onNavigate }: { entry: MenuEntry; onNavigate?: () => void }) {
+  const { t, locale } = useLanguage();
+  const products = catalog();
+  const pool = productsForListing(entry.slug, products, getSnapshotCategories());
+  const featured = pool.find((product) => product.featured && product.inStock) ?? pool.find((product) => product.inStock);
+  const tiles = [...entry.children, { ...entry, label: t("nav.viewAll"), labelAr: t("nav.viewAll"), children: [] }];
+  return (
+    <div className="container-mmh grid gap-6 py-6 lg:grid-cols-[1fr_260px]" role="navigation" aria-label={locale === "ar" ? entry.labelAr : entry.label}>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+        {tiles.map((tile) => (
+          <Link
+            key={tile.href + tile.label}
+            href={tile.href}
+            onClick={onNavigate}
+            className="rounded-[12px] border border-line bg-card p-4 transition-colors hover:bg-brand/16 hover:text-gold"
+            data-mega-item
+          >
+            <p className="text-sm font-semibold">{locale === "ar" ? tile.labelAr : tile.label}</p>
           </Link>
         ))}
       </div>

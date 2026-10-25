@@ -2,7 +2,9 @@
 
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
 import { ErrorState } from "@/components/admin/ui/error-state";
-import { FormField, adminInputClass } from "@/components/admin/ui/form-field";
+import { notifySettingsChanged } from "@/components/admin/layout/maintenance-bar";
+import { validateSettingsForm } from "@/components/admin/lib/settings-form";
+import { FormErrorSummary, FormField, adminInputClass } from "@/components/admin/ui/form-field";
 import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage, adminFieldErrors } from "@/components/admin/lib/errors";
@@ -15,12 +17,17 @@ const CONTACT_FIELDS = [
   { name: "support_email", label: "Support email", type: "email", hint: "" },
   { name: "support_phone", label: "Support phone", type: "tel", hint: "" },
   { name: "business_hours", label: "Business hours", type: "text", hint: "e.g. Daily 10:00–22:00" },
-  { name: "whatsapp_number", label: "WhatsApp number", type: "tel", hint: "International format without +, e.g. 962791234567" },
+  {
+    name: "whatsapp_number",
+    label: "WhatsApp number",
+    type: "tel",
+    hint: "Digits only, with the country code and without + or spaces, e.g. 962791234567.",
+  },
   { name: "telegram_url", label: "Telegram link", type: "url", hint: "e.g. https://t.me/yourchannel" },
-  { name: "instagram_url", label: "Instagram link", type: "url", hint: "" },
-  { name: "facebook_url", label: "Facebook link", type: "url", hint: "" },
-  { name: "tiktok_url", label: "TikTok link", type: "url", hint: "" },
-  { name: "youtube_url", label: "YouTube link", type: "url", hint: "" },
+  { name: "instagram_url", label: "Instagram link", type: "url", hint: "e.g. https://instagram.com/yourshop" },
+  { name: "facebook_url", label: "Facebook link", type: "url", hint: "e.g. https://facebook.com/yourshop" },
+  { name: "tiktok_url", label: "TikTok link", type: "url", hint: "e.g. https://tiktok.com/@yourshop" },
+  { name: "youtube_url", label: "YouTube link", type: "url", hint: "e.g. https://youtube.com/@yourshop" },
 ] as const;
 
 type ContactKey = (typeof CONTACT_FIELDS)[number]["name"];
@@ -46,8 +53,15 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
   const [pending, setPending] = useState(false);
   const [confirmMaintenance, setConfirmMaintenance] = useState(false);
 
+  function check(): boolean {
+    const local = validateSettingsForm(form);
+    setErrors(local);
+    return Object.keys(local).length === 0;
+  }
+
   async function save() {
     if (!token) return;
+    if (!check()) return;
     setPending(true);
     setErrors({});
     try {
@@ -59,10 +73,12 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
       });
       onSaved(next);
       setForm(toForm(next));
+      notifySettingsChanged(next);
       toast.push("Settings saved", "success");
     } catch (err) {
-      setErrors(adminFieldErrors(err));
-      toast.push(adminErrorMessage(err, "Save failed"), "error");
+      const fieldErrs = adminFieldErrors(err);
+      setErrors(fieldErrs);
+      toast.push(Object.keys(fieldErrs).length ? "Settings were not saved — please fix the highlighted fields." : adminErrorMessage(err, "Save failed"), "error");
     } finally {
       setPending(false);
     }
@@ -73,12 +89,23 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
   return (
     <form
       className="max-w-xl space-y-4 rounded-xl border border-[var(--clicks-border)] bg-white p-5"
+      noValidate
       onSubmit={(e) => {
         e.preventDefault();
+        if (!check()) return;
         if (enablingMaintenance) setConfirmMaintenance(true);
         else void save();
       }}
     >
+      <FormErrorSummary
+        errors={errors}
+        labels={Object.fromEntries([
+          ["store_name", "Store name"],
+          ["low_stock_threshold", "Low stock threshold"],
+          ...CONTACT_FIELDS.map((f) => [f.name, f.label]),
+        ])}
+        idFor={(key) => key}
+      />
       <FormField label="Store name" htmlFor="store_name" hint="Used in the store footer and e-mails." error={errors.store_name}>
         <input
           id="store_name"
@@ -107,7 +134,19 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
             type={field.type}
             className={adminInputClass}
             value={form[field.name]}
-            onChange={(e) => setForm((f) => ({ ...f, [field.name]: e.target.value }))}
+            inputMode={field.name === "whatsapp_number" ? "numeric" : undefined}
+            placeholder={field.name === "whatsapp_number" ? "962791234567" : undefined}
+            aria-invalid={errors[field.name] ? true : undefined}
+            onChange={(e) => {
+              const value = e.target.value;
+              setForm((f) => ({ ...f, [field.name]: value }));
+              setErrors((prev) => {
+                if (!prev[field.name]) return prev;
+                const next = { ...prev };
+                delete next[field.name];
+                return next;
+              });
+            }}
           />
         </FormField>
       ))}
@@ -117,7 +156,7 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
       <FormField
         label="Low stock threshold"
         htmlFor="low_stock_threshold"
-        hint="Code variants with fewer available codes than this are flagged as low stock on the dashboard and inventory."
+        hint="A published code variant counts as low stock when its available codes are at or below this number (available ≤ threshold). Used on the dashboard, Inventory and the products filter."
         error={errors.low_stock_threshold}
       >
         <input
@@ -139,7 +178,8 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
           Maintenance mode
         </label>
         <p className="ps-6 text-[11px] text-[var(--clicks-muted)]">
-          Shows a “back soon” page to shoppers instead of the store. The admin panel keeps working.
+          Shows a “back soon” page to shoppers instead of the catalog, so nobody can buy. Order pages, accounts, sign-in and
+          contact keep working, and so does this admin panel. A yellow bar at the top of the panel reminds you while it is on.
         </p>
       </div>
       <button type="submit" disabled={pending} className="admin-btn admin-btn-primary disabled:opacity-60">
