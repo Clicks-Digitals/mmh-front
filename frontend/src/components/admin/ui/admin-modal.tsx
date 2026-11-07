@@ -30,17 +30,20 @@ export function AdminModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[var(--clicks-navy)]/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--clicks-navy)]/40 p-3 sm:p-6"
       onClick={onClose}
     >
+      {/* The dialog never grows past the viewport: the title bar stays put and the body scrolls
+          (e.g. when "Advanced: built-in picture" expands). */}
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="admin-modal-title"
-        className={`admin-card my-4 w-full p-5 shadow-[var(--admin-shadow-hover)] ${wide ? "max-w-2xl" : "max-w-lg"}`}
+        className={`admin-card flex w-full flex-col overflow-hidden p-0 shadow-[var(--admin-shadow-hover)] ${wide ? "max-w-2xl" : "max-w-lg"}`}
+        style={{ maxHeight: "calc(100dvh - 1.5rem)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="mb-4 flex items-start justify-between gap-3">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--clicks-border)] px-5 pb-3 pt-5">
           <div className="min-w-0 break-words">
             <h2 id="admin-modal-title" className="text-base font-semibold text-[var(--clicks-navy)]">
               {title}
@@ -56,7 +59,7 @@ export function AdminModal({
             ✕
           </button>
         </div>
-        {children}
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-5 pt-4">{children}</div>
       </div>
     </div>
   );
