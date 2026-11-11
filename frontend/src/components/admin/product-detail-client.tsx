@@ -3,17 +3,27 @@
 import { useAdminAccess } from "@/components/admin/admin-access";
 import { useAdminBreadcrumbLabel } from "@/components/admin/layout/breadcrumbs";
 import { useUnsavedChangesGuard } from "@/components/admin/layout/navigation-guard";
-import { FieldsTab } from "@/components/admin/product/fields-tab";
-import { GeneralTab } from "@/components/admin/product/general-tab";
+import { CheckoutFieldsSection } from "@/components/admin/product/checkout-fields-section";
+import {
+  AdvancedCard,
+  BasicsSection,
+  ContentSection,
+  OrganizeCard,
+  PromoteCard,
+  StatusCard,
+  type ReadinessItem,
+} from "@/components/admin/product/details-sections";
+import { CountPill, EditorSection } from "@/components/admin/product/editor-ui";
 import { MappingTab } from "@/components/admin/product/mapping-tab";
-import { MediaTab } from "@/components/admin/product/media-tab";
-import { VariantsTab } from "@/components/admin/product/variants-tab";
+import { OptionsSection } from "@/components/admin/product/options-section";
+import { PhotosSection } from "@/components/admin/product/photos-section";
 import { Badge } from "@/components/admin/ui/badge";
+import { EntityThumb } from "@/components/admin/ui/entity-thumb";
+import { RowActions } from "@/components/admin/ui/row-actions";
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
 import { EmptyState } from "@/components/admin/ui/empty-state";
 import { ErrorState } from "@/components/admin/ui/error-state";
 import { FormErrorSummary } from "@/components/admin/ui/form-field";
-import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { adminErrorMessage, errorCode } from "@/components/admin/lib/errors";
 import { jodInputToFils } from "@/components/admin/lib/money";
@@ -26,6 +36,7 @@ import {
   nestedListErrors,
   newFieldDraft,
   newVariantDraft,
+  patchFieldLabel,
   productToDraft,
   publishWarnings,
   validateField,
@@ -62,19 +73,27 @@ import {
   type Supplier,
 } from "@/lib/api/admin";
 import { ApiError } from "@/lib/api/client";
+import { cn } from "@/lib/cn";
+import { ArrowLeft, ExternalLink } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-const TABS = [
-  { id: "general", label: "General" },
-  { id: "variants", label: "Variants" },
-  { id: "fields", label: "Required details" },
-  { id: "media", label: "Photos" },
-  { id: "supplier", label: "Supplier mapping" },
-] as const;
+/** Which editor section shows a General-form field (to scroll to the first problem). */
+function sectionForGeneralKey(key: string): string {
+  if (["name_en", "name_ar", "short_description_en", "short_description_ar"].includes(key)) return "section-basics";
+  if (["category_id", "platform_id", "kind", "fulfillment_type", "brand", "category", "platform"].includes(key)) return "section-organize";
+  if (["slug", "id", "sort_order", "account_currency"].includes(key)) return "section-advanced";
+  if (["badges", "tags", "featured", "bestseller", "trending", "refundable"].includes(key)) return "section-promote";
+  if (["artwork_key", "image_url"].includes(key)) return "section-photos";
+  if (key === "status") return "section-status";
+  return "section-content";
+}
 
-type TabId = (typeof TABS)[number]["id"];
+function scrollToSection(id: string) {
+  // After React renders the errors (collapsed sections open themselves while they have problems).
+  window.requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }));
+}
 type Lookups = {
   categories: AdminCategory[];
   platforms: AdminPlatform[];
@@ -101,15 +120,14 @@ function ProductEditor({
   product,
   lookups,
   token,
-  tab,
-  setTab,
+  focusSupplier,
   onSaved,
 }: {
   product: AdminProduct;
   lookups: Lookups;
   token?: string;
-  tab: TabId;
-  setTab: (tab: TabId) => void;
+  /** opened from a 1Epin page (?tab=supplier): jump to the supplier section */
+  focusSupplier?: boolean;
   onSaved: (p: AdminProduct) => void;
 }) {
   const toast = useAdminToast();
@@ -142,13 +160,9 @@ function ProductEditor({
   const platform = lookups.platforms.find((p) => String(p.id) === general.platform_id);
   const pendingWarnings = publishWarnings(draft, { categoryStatus: category?.status, platformStatus: platform?.status });
 
-  const tabErrorCount: Record<TabId, number> = {
-    general: Object.keys(generalErrors).length + (serverTabErrors.general ? 1 : 0),
-    variants: Object.keys(variantErrors).length + (serverTabErrors.variants ? 1 : 0),
-    fields: Object.keys(fieldErrors).length + (serverTabErrors.fields ? 1 : 0),
-    media: 0,
-    supplier: 0,
-  };
+  useEffect(() => {
+    if (focusSupplier) scrollToSection("section-supplier");
+  }, [focusSupplier]);
 
   function clearErrors() {
     setGeneralErrors({});
@@ -203,13 +217,16 @@ function ProductEditor({
     setVariantErrors(vErr);
     setFieldErrors(fErr);
     setServerTabErrors({});
-    const bad: TabId[] = [];
-    if (Object.keys(gErr).length) bad.push("general");
-    if (Object.keys(vErr).length) bad.push("variants");
-    if (Object.keys(fErr).length) bad.push("fields");
-    if (bad.length) {
-      toast.push(`Please fix the highlighted fields on: ${bad.map((t) => TABS.find((x) => x.id === t)?.label).join(", ")}.`, "error");
-      if (!bad.includes(tab)) setTab(bad[0]);
+    const first = Object.keys(gErr).length
+      ? sectionForGeneralKey(Object.keys(gErr)[0])
+      : Object.keys(vErr).length
+        ? "section-options"
+        : Object.keys(fErr).length
+          ? "section-fields"
+          : null;
+    if (first) {
+      toast.push("Please fix the fields marked in red.", "error");
+      scrollToSection(first);
       return false;
     }
     return true;
@@ -273,12 +290,15 @@ function ProductEditor({
       setVariantErrors(vErr);
       setFieldErrors(fErr);
       setServerTabErrors(byTab);
-      const order: TabId[] = ["general", "variants", "fields"];
-      const firstBad = order.find((t) =>
-        t === "general" ? Object.keys(gen).length : t === "variants" ? Object.keys(vErr).length || byTab.variants : Object.keys(fErr).length || byTab.fields,
-      );
-      if (firstBad && firstBad !== tab) setTab(firstBad);
-      toast.push(firstBad ? "The product was not saved — please fix the highlighted fields." : adminErrorMessage(err, "Save failed"), "error");
+      const firstBad = Object.keys(gen).length
+        ? sectionForGeneralKey(Object.keys(gen)[0])
+        : Object.keys(vErr).length || byTab.variants
+          ? "section-options"
+          : Object.keys(fErr).length || byTab.fields
+            ? "section-fields"
+            : null;
+      if (firstBad) scrollToSection(firstBad);
+      toast.push(firstBad ? "The product was not saved — please fix the fields marked in red." : adminErrorMessage(err, "Save failed"), "error");
     } finally {
       setPending(false);
     }
@@ -364,7 +384,6 @@ function ProductEditor({
   }
 
   const isArchived = product.status === "ARCHIVED";
-  const showSave = canWrite && (tab === "general" || tab === "variants" || tab === "fields");
   const variantRows = variants
     .filter((v) => !v.delete && v.id)
     .map((v) => {
@@ -373,57 +392,103 @@ function ProductEditor({
       return { id: v.id!, sku: v.sku, name_en: v.name_en, price_fils: jodInputToFils(saved?.price ?? v.price) ?? 0 };
     });
   const unsavedNote = dirty ? " Your unsaved changes will be discarded." : "";
+  const isCode = general.fulfillment_type === "CODE";
+  const liveVariants = variants.filter((v) => !v.delete);
+  const primary = media.find((m) => m.is_primary) ?? media[0];
+
+  const readiness: ReadinessItem[] = [
+    {
+      label: "Name, category and platform",
+      ok: Boolean(general.name_en.trim() && general.category_id && general.platform_id),
+      action: { label: "Fix", target: general.name_en.trim() ? "section-organize" : "section-basics" },
+    },
+    {
+      label: "An option with a price, shown on the store",
+      ok: liveVariants.some((v) => v.published && (jodInputToFils(v.price) ?? 0) > 0),
+      action: { label: "Add", target: "section-options" },
+    },
+    isCode
+      ? {
+          label: "Codes in stock (or a supplier link)",
+          ok: liveVariants.some((v) => v.id && v.published && (v.effective_stock_status ?? v.stock_status) === "IN_STOCK"),
+          action: { label: "Options", target: "section-options" },
+        }
+      : {
+          label: "A checkout detail, e.g. Player ID",
+          ok: fields.some((f) => !f.delete),
+          action: { label: "Add", target: "section-fields" },
+        },
+    {
+      label: "Category and platform are visible",
+      ok: (!category || category.status === "PUBLISHED") && (!platform || platform.status === "PUBLISHED"),
+    },
+    { label: "A photo", ok: media.length > 0 || Boolean(general.image_url.trim()), optional: true, action: { label: "Upload", target: "section-photos" } },
+    { label: "Arabic name", ok: Boolean(general.name_ar.trim()), optional: true, action: { label: "Add", target: "section-basics" } },
+  ];
+
+  const moreActions = canWrite
+    ? [
+        { label: "Duplicate", onClick: () => setConfirm("duplicate"), disabled: pending },
+        { label: isArchived ? "Unarchive" : "Archive", onClick: () => setConfirm(isArchived ? "unarchive" : "archive"), disabled: pending },
+        { label: "Delete permanently", onClick: () => setConfirm("delete"), tone: "danger" as const, disabled: pending },
+      ]
+    : [];
 
   return (
-    <div>
-      <PageHeader
-        title={product.name_en}
-        description={`${product.fulfillment_type === "DIRECT_TOPUP" ? "Direct top-up" : "Code"} product · /product/${product.slug}`}
-        actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge status={product.status}>
-              {product.status === "PUBLISHED" ? "Published" : product.status === "ARCHIVED" ? "Archived" : "Draft"}
-            </Badge>
-            {product.status === "PUBLISHED" ? (
-              <a href={`/product/${product.slug}`} target="_blank" rel="noreferrer" className="admin-btn admin-btn-secondary">
-                View on store
-              </a>
-            ) : null}
-            {canWrite ? (
-              <button type="button" className="admin-btn admin-btn-secondary" disabled={pending} onClick={() => setConfirm("duplicate")}>
-                Duplicate
-              </button>
-            ) : null}
-            {canWrite ? (
-              <button
-                type="button"
-                className="admin-btn admin-btn-secondary"
-                disabled={pending}
-                onClick={() => setConfirm(isArchived ? "unarchive" : "archive")}
-              >
-                {isArchived ? "Unarchive" : "Archive"}
-              </button>
-            ) : null}
-            {canWrite ? (
-              <button type="button" className="admin-btn admin-btn-danger" disabled={pending} onClick={() => setConfirm("delete")}>
-                Delete permanently
-              </button>
-            ) : null}
-            <Link href="/admin/products" className="text-sm font-medium text-[var(--clicks-blue)]">
-              Back to products
-            </Link>
+    <div className="pb-4">
+      <Link
+        href="/admin/products"
+        className="mb-3 inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--clicks-muted)] hover:text-[var(--clicks-navy)]"
+      >
+        <ArrowLeft className="h-3.5 w-3.5 rtl:rotate-180" aria-hidden />
+        Products
+      </Link>
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <EntityThumb
+            imageUrl={primary?.url || general.image_url}
+            artworkKey={general.artwork_key}
+            slug={product.slug}
+            className="h-12 w-12 rounded-lg"
+          />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate text-[1.25rem] font-semibold tracking-tight text-[var(--clicks-navy)]">{product.name_en}</h1>
+              <Badge status={product.status}>
+                {product.status === "PUBLISHED" ? "Live" : product.status === "ARCHIVED" ? "Archived" : "Hidden"}
+              </Badge>
+            </div>
+            <p className="mt-0.5 text-[12px] text-[var(--clicks-muted)]">
+              {product.fulfillment_type === "DIRECT_TOPUP" ? "Top-up product" : "Code product"}
+              {category ? ` · ${category.name_en}` : ""}
+              {platform ? ` · ${platform.name_en}` : ""}
+            </p>
           </div>
-        }
-      />
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {product.status === "PUBLISHED" ? (
+            <a href={`/product/${product.slug}`} target="_blank" rel="noreferrer" className="admin-btn admin-btn-secondary gap-1.5">
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+              View on store
+            </a>
+          ) : null}
+          <RowActions label="More" actions={moreActions} />
+          {canWrite ? (
+            <button type="button" disabled={pending || !dirty} onClick={requestSave} className="admin-btn admin-btn-primary disabled:opacity-60">
+              {pending ? "Saving…" : dirty ? "Save" : "Saved"}
+            </button>
+          ) : null}
+        </div>
+      </div>
 
       {serverWarnings.length ? (
         <div role="status" className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-[13px] text-amber-950">
           {serverWarnings.map((w) => (
             <p key={w}>
               <span className="font-semibold">Heads up:</span> {warningMessage(w)}
-              {w === "no_published_variants" ? (
-                <button type="button" className="ms-2 font-medium underline" onClick={() => setTab("variants")}>
-                  Go to variants
+              {w === "no_published_variants" || w === "no_variants" || w === "no_stock" ? (
+                <button type="button" className="ms-2 font-medium underline" onClick={() => scrollToSection("section-options")}>
+                  Go to options
                 </button>
               ) : null}
             </p>
@@ -431,129 +496,145 @@ function ProductEditor({
         </div>
       ) : null}
 
-      <div className="admin-card mb-4 flex flex-wrap items-center gap-1 p-1.5" role="tablist" aria-label="Product sections">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
-            className={`flex h-8 items-center gap-1.5 rounded-[var(--admin-radius-sm)] px-3 text-[12px] font-semibold transition ${
-              tab === t.id
-                ? "bg-[var(--clicks-blue)] text-white shadow-sm"
-                : "text-[var(--clicks-muted)] hover:bg-[#F3F5F9] hover:text-[var(--clicks-navy)]"
-            }`}
-          >
-            {t.label}
-            {tabErrorCount[t.id] ? (
-              <span
-                className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] text-white"
-                aria-label="has errors"
-              >
-                !
-              </span>
-            ) : null}
-          </button>
-        ))}
-        {dirty ? <span className="ms-auto pe-2 text-[11px] font-medium text-amber-700">Unsaved changes</span> : null}
-      </div>
+      <FormErrorSummary
+        className="mb-4"
+        errors={generalErrors}
+        labels={GENERAL_FIELD_LABELS}
+        idFor={(key) => (key === "badges" ? "pg-badges" : key === "status" ? "section-status" : `pg-${key}`)}
+      />
 
-      {serverTabErrors[tab] && tab !== "general" ? (
-        <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-800">
-          {serverTabErrors[tab]}
-        </p>
-      ) : null}
-
-      {tab === "general" ? (
-        <>
-          <FormErrorSummary
-            className="mb-3"
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="min-w-0 space-y-5">
+          <div className="lg:hidden">
+            <StatusCard
+              idPrefix="pg-status-mobile"
+              form={general}
+              disabled={!canWrite}
+              onChange={patchGeneral}
+              savedStatus={initial.general.status}
+              readiness={readiness}
+            />
+          </div>
+          <BasicsSection form={general} errors={generalErrors} disabled={!canWrite} onChange={patchGeneral} />
+          <PhotosSection
+            token={token}
+            slug={product.slug}
+            media={media}
+            setMedia={setMedia}
+            canWrite={canWrite}
+            form={general}
             errors={generalErrors}
-            labels={GENERAL_FIELD_LABELS}
-            idFor={(key) => (key === "badges" ? "pg-badges" : `pg-${key}`)}
+            onChange={patchGeneral}
           />
-          <GeneralTab
+          <OptionsSection
+            variants={variants}
+            errors={variantErrors}
+            listError={serverTabErrors.variants}
+            disabled={!canWrite}
+            isCodeProduct={isCode}
+            regions={lookups.regions}
+            canImport={canImport}
+            accountCurrency={general.account_currency}
+            onChange={patchVariant}
+            onAdd={() => {
+              const next = newVariantDraft({ productId: product.id, index: variants.length, currency: "" });
+              setDraft((d) => ({ ...d, variants: [...d.variants, next] }));
+              return next.key;
+            }}
+            onRemove={(v) => {
+              if (v.id) setVariantToDelete(v);
+              else setDraft((d) => ({ ...d, variants: d.variants.filter((x) => x.key !== v.key) }));
+            }}
+            onMove={(key, dir) => setDraft((d) => ({ ...d, variants: move(d.variants, (v) => v.key === key, dir, (v) => !v.delete) }))}
+          />
+          <CheckoutFieldsSection
+            fields={fields}
+            errors={fieldErrors}
+            listError={serverTabErrors.fields}
+            disabled={!canWrite}
+            isTopup={general.fulfillment_type === "DIRECT_TOPUP"}
+            onChange={patchField}
+            onAdd={(preset) => {
+              const base = newFieldDraft(fields.length);
+              const next = preset ? { ...base, ...preset, ...patchFieldLabel(base, String(preset.label_en ?? "")) } : base;
+              setDraft((d) => ({ ...d, fields: [...d.fields, next] }));
+              return next.key_local;
+            }}
+            onRemove={(key) =>
+              setDraft((d) => ({
+                ...d,
+                fields: d.fields.flatMap((f) => (f.key_local !== key ? [f] : f.id ? [{ ...f, delete: true }] : [])),
+              }))
+            }
+            onMove={(key, dir) => setDraft((d) => ({ ...d, fields: move(d.fields, (f) => f.key_local === key, dir, (f) => !f.delete) }))}
+          />
+          <ContentSection form={general} errors={generalErrors} disabled={!canWrite} onChange={patchGeneral} />
+          <EditorSection
+            id="section-supplier"
+            title="Supplier (1Epin)"
+            description="Optional — let 1Epin deliver an option automatically when a customer pays."
+            collapsible
+            defaultOpen={Boolean(focusSupplier) || mappings.length > 0}
+            badge={mappings.length ? <CountPill>{mappings.length} linked</CountPill> : null}
+          >
+            <MappingTab
+              embedded
+              token={token}
+              slug={product.slug}
+              mappings={mappings}
+              setMappings={setMappings}
+              suppliers={lookups.suppliers}
+              variants={variantRows}
+              canMap={canMap}
+              productName={product.name_en}
+              fulfillmentType={product.fulfillment_type}
+              customerFields={product.fields}
+            />
+          </EditorSection>
+        </div>
+
+        <aside className="min-w-0 space-y-5">
+          <div id="section-status" className="hidden lg:block">
+            <StatusCard form={general} disabled={!canWrite} onChange={patchGeneral} savedStatus={initial.general.status} readiness={readiness} />
+          </div>
+          <OrganizeCard
             form={general}
             errors={generalErrors}
             disabled={!canWrite}
+            onChange={patchGeneral}
             categories={lookups.categories}
             platforms={lookups.platforms}
-            onChange={patchGeneral}
-            productId={product.id}
             hasVariants={variants.some((v) => v.id)}
+            savedFulfillment={initial.general.fulfillment_type}
           />
-        </>
-      ) : null}
-      {tab === "variants" ? (
-        <VariantsTab
-          variants={variants}
-          errors={variantErrors}
-          disabled={!canWrite}
-          isCodeProduct={general.fulfillment_type === "CODE"}
-          regions={lookups.regions}
-          canImport={canImport}
-          accountCurrency={general.account_currency}
-          onChange={patchVariant}
-          onAdd={() =>
-            setDraft((d) => ({
-              ...d,
-              variants: [...d.variants, newVariantDraft({ productId: product.id, index: d.variants.length, currency: "" })],
-            }))
-          }
-          onRemove={(v) => {
-            if (v.id) setVariantToDelete(v);
-            else setDraft((d) => ({ ...d, variants: d.variants.filter((x) => x.key !== v.key) }));
-          }}
-          onMove={(key, dir) => setDraft((d) => ({ ...d, variants: move(d.variants, (v) => v.key === key, dir, (v) => !v.delete) }))}
-        />
-      ) : null}
-      {tab === "fields" ? (
-        <FieldsTab
-          fields={fields}
-          errors={fieldErrors}
-          disabled={!canWrite}
-          isTopup={general.fulfillment_type === "DIRECT_TOPUP"}
-          onChange={patchField}
-          onAdd={() => setDraft((d) => ({ ...d, fields: [...d.fields, newFieldDraft(d.fields.length)] }))}
-          onRemove={(key) =>
-            setDraft((d) => ({
-              ...d,
-              fields: d.fields.flatMap((f) => (f.key_local !== key ? [f] : f.id ? [{ ...f, delete: true }] : [])),
-            }))
-          }
-          onMove={(key, dir) => setDraft((d) => ({ ...d, fields: move(d.fields, (f) => f.key_local === key, dir, (f) => !f.delete) }))}
-        />
-      ) : null}
-      {tab === "media" ? <MediaTab token={token} slug={product.slug} media={media} setMedia={setMedia} canWrite={canWrite} /> : null}
-      {tab === "supplier" ? (
-        <MappingTab
-          token={token}
-          slug={product.slug}
-          mappings={mappings}
-          setMappings={setMappings}
-          suppliers={lookups.suppliers}
-          variants={variantRows}
-          canMap={canMap}
-          productName={product.name_en}
-          fulfillmentType={product.fulfillment_type}
-          customerFields={product.fields}
-        />
-      ) : null}
+          <PromoteCard form={general} errors={generalErrors} disabled={!canWrite} onChange={patchGeneral} />
+          <AdvancedCard form={general} errors={generalErrors} disabled={!canWrite} onChange={patchGeneral} productId={product.id} />
+        </aside>
+      </div>
 
-      {showSave ? (
-        <div className="sticky bottom-0 z-10 mt-4 flex flex-wrap items-center gap-3 border-t border-[var(--clicks-border)] bg-[var(--clicks-bg)]/95 py-3 backdrop-blur">
-          <button type="button" disabled={pending || !dirty} onClick={requestSave} className="admin-btn admin-btn-primary disabled:opacity-60">
-            {pending ? "Saving…" : dirty ? "Save changes" : "Saved"}
-          </button>
-          <p className="text-[11px] text-[var(--clicks-muted)]">
-            {dirty ? "Saves General, Variants and Required details together." : "No unsaved changes. Photos and supplier mappings save on their own."}
-          </p>
-          {dirty ? (
-            <button type="button" className="admin-btn admin-btn-ghost ms-auto text-xs" disabled={pending} onClick={discard}>
-              Discard changes
+      {canWrite && dirty ? (
+        <div className="sticky bottom-3 z-20 mt-5 flex flex-wrap items-center gap-3 rounded-xl bg-[var(--clicks-navy)] px-4 py-3 text-white shadow-[0_10px_30px_rgba(16,24,40,0.25)]">
+          <span className="h-2 w-2 rounded-full bg-amber-400" aria-hidden />
+          <p className="text-[13px] font-medium">Unsaved changes</p>
+          <p className="hidden text-[12px] text-white/60 sm:block">Photos and supplier links save on their own.</p>
+          <div className="ms-auto flex gap-2">
+            <button
+              type="button"
+              className="h-9 rounded-lg px-3 text-[13px] font-medium text-white/80 hover:bg-white/10 hover:text-white"
+              disabled={pending}
+              onClick={discard}
+            >
+              Discard
             </button>
-          ) : null}
+            <button
+              type="button"
+              disabled={pending}
+              onClick={requestSave}
+              className={cn("h-9 rounded-lg bg-white px-4 text-[13px] font-semibold text-[var(--clicks-navy)] hover:bg-white/90", pending && "opacity-70")}
+            >
+              {pending ? "Saving…" : "Save changes"}
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -593,7 +674,7 @@ function ProductEditor({
       <ConfirmDialog
         open={confirm === "unarchive"}
         title="Unarchive this product?"
-        description={`The product returns as a Draft. Publish it from the General tab when ready.${unsavedNote}`}
+        description={`The product returns as a Draft. Make it Live from Visibility when ready.${unsavedNote}`}
         confirmLabel="Unarchive"
         pending={pending}
         onCancel={() => setConfirm(null)}
@@ -639,8 +720,8 @@ function ProductEditor({
 export function ProductDetailClient({ id }: { id: string }) {
   // ?tab=supplier deep link (1Epin pages link here). Only read on the client; the first
   // render is the loading skeleton, so there is no hydration difference.
-  const [tab, setTab] = useState<TabId>(() =>
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "supplier" ? "supplier" : "general",
+  const [focusSupplier] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "supplier",
   );
   const { can } = useAdminAccess();
   const canSuppliers = can("suppliers.read") || can("catalog.read");
@@ -669,8 +750,7 @@ export function ProductDetailClient({ id }: { id: string }) {
       product={product}
       lookups={lookups}
       token={token}
-      tab={tab}
-      setTab={setTab}
+      focusSupplier={focusSupplier}
       onSaved={(p) => setData((prev) => (prev ? { ...prev, product: p } : prev))}
     />
   );

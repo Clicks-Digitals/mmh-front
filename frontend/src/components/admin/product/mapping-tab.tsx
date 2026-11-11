@@ -61,7 +61,10 @@ export function MappingTab({
   productName,
   fulfillmentType,
   customerFields,
+  embedded,
 }: {
+  /** rendered inside another card (product editor): no own card or heading */
+  embedded?: boolean;
   token?: string;
   slug: string;
   mappings: AdminSupplierMapping[];
@@ -151,9 +154,9 @@ export function MappingTab({
   }
 
   return (
-    <section className="admin-card p-4">
-      <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Supplier (1Epin)</h2>
-      <p className="mb-4 mt-0.5 max-w-3xl text-xs text-[var(--clicks-muted)]">
+    <section className={embedded ? "" : "admin-card p-4"}>
+      {embedded ? null : <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Supplier (1Epin)</h2>}
+      <p className={`mb-4 max-w-3xl text-xs text-[var(--clicks-muted)] ${embedded ? "" : "mt-0.5"}`}>
         Link a product option to a 1Epin product so 1Epin can deliver it when a customer pays. A link only counts as stock (keeps the
         option on sale with no codes of our own) in live mode — and in mock mode on a development computer — with “Buy automatically” on and a recently synced catalog. Changes
         here are saved immediately.

@@ -11,9 +11,9 @@ import {
   reconcileKindFulfillment,
 } from "@/components/admin/lib/product-form";
 import { autoSlug, isValidSlug } from "@/components/admin/lib/slugify";
-import { AdminCard, AdminSectionHeader } from "@/components/admin/ui/card";
-import { FormErrorSummary, FormField, adminInputClass, adminTextareaClass } from "@/components/admin/ui/form-field";
-import { PageHeader } from "@/components/admin/ui/page-header";
+import { ChoiceCards, EditorSection } from "@/components/admin/product/editor-ui";
+import { FormErrorSummary, FormField, adminInputClass } from "@/components/admin/ui/form-field";
+import { ArrowLeft, KeyRound, Zap } from "lucide-react";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { useAdminQuery } from "@/hooks/use-admin-query";
 import { createProduct, fetchAllPages, listCategories, listPlatforms } from "@/lib/api/admin";
@@ -147,34 +147,32 @@ export function ProductNewClient() {
   }
 
   return (
-    <div>
-      <PageHeader
-        title="New product"
-        description="Start with the basics. On the next screen you add variants (prices), photos and codes. The product stays hidden (draft) until you publish it."
-        actions={
-          <div className="flex items-center gap-2">
-            <Link href="/admin/products" className="admin-btn admin-btn-secondary">
-              Cancel
-            </Link>
-            <button type="submit" form="new-product-form" disabled={pending || metaLoading} className="admin-btn admin-btn-primary">
-              {pending ? "Creating…" : "Create product"}
-            </button>
+    <div className="mx-auto max-w-3xl pb-6">
+      <Link
+        href="/admin/products"
+        className="mb-3 inline-flex items-center gap-1.5 text-[12px] font-medium text-[var(--clicks-muted)] hover:text-[var(--clicks-navy)]"
+      >
+        <ArrowLeft className="h-3.5 w-3.5 rtl:rotate-180" aria-hidden />
+        Products
+      </Link>
+      <div className="mb-5">
+        <h1 className="text-[1.25rem] font-semibold tracking-tight text-[var(--clicks-navy)]">New product</h1>
+        <p className="mt-1 text-[13px] text-[var(--clicks-muted)]">
+          Just the basics. Prices, photos and codes come on the next screen. It stays hidden until you make it Live.
+        </p>
+      </div>
+
+      <form id="new-product-form" onSubmit={onSubmit} noValidate className="space-y-5">
+        <FormErrorSummary errors={errors} labels={{ ...GENERAL_FIELD_LABELS, id: "Web address" }} idFor={(k) => FIELD_IDS[k]} />
+        {formError ? (
+          <div role="alert" className="rounded-[var(--admin-radius)] border border-red-200 bg-red-50 px-3 py-2.5 text-[12px] text-red-800">
+            {formError}
           </div>
-        }
-      />
+        ) : null}
 
-      <form id="new-product-form" onSubmit={onSubmit} noValidate className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-        <div className="space-y-4">
-          <FormErrorSummary errors={errors} labels={{ ...GENERAL_FIELD_LABELS, id: "Web address (slug)" }} idFor={(k) => FIELD_IDS[k]} />
-          {formError ? (
-            <div role="alert" className="rounded-[var(--admin-radius)] border border-red-200 bg-red-50 px-3 py-2.5 text-[12px] text-red-800">
-              {formError}
-            </div>
-          ) : null}
-
-          <AdminCard padding="md">
-            <AdminSectionHeader title="Name" description="Fields marked * are required." />
-            <div className="space-y-3.5">
+        <EditorSection title="1. What are you selling?">
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
               <FormField label="Name (English)" htmlFor="np-name_en" required error={errors.name_en}>
                 <input
                   id="np-name_en"
@@ -185,7 +183,7 @@ export function ProductNewClient() {
                   onChange={(e) => set({ name_en: e.target.value })}
                 />
               </FormField>
-              <FormField label="Name (Arabic)" htmlFor="np-name_ar" optional hint="Shown on the Arabic store. Falls back to English.">
+              <FormField label="Name (Arabic)" htmlFor="np-name_ar" optional hint="You can add it later.">
                 <input
                   id="np-name_ar"
                   className={adminInputClass}
@@ -195,19 +193,92 @@ export function ProductNewClient() {
                   onChange={(e) => set({ name_ar: e.target.value })}
                 />
               </FormField>
-              <FormField
-                label="Web address (slug)"
-                htmlFor="np-slug"
-                optional
-                hint={
-                  <>
-                    Filled in from the English name. The page will be{" "}
-                    <span className="font-mono">/product/{slug || "…"}</span>
-                    {!slug ? " (created automatically when you save)" : ""}.
-                  </>
-                }
-                error={errors.slug}
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-[12px] font-medium text-[var(--clicks-text)]">How does the customer receive it?</p>
+              <ChoiceCards
+                name="np-fulfillment_type"
+                value={form.fulfillment_type as "CODE" | "DIRECT_TOPUP"}
+                onChange={(fulfillment_type) => set(reconcileKindFulfillment(form, { fulfillment_type }))}
+                options={[
+                  {
+                    value: "CODE",
+                    label: "A code",
+                    hint: "Gift cards and game codes, sent from your code stock.",
+                    icon: <KeyRound className="h-3.5 w-3.5" aria-hidden />,
+                  },
+                  {
+                    value: "DIRECT_TOPUP",
+                    label: "A top-up",
+                    hint: "Credited to their game account using the Player ID they enter.",
+                    icon: <Zap className="h-3.5 w-3.5" aria-hidden />,
+                  },
+                ]}
+              />
+            </div>
+          </div>
+        </EditorSection>
+
+        <EditorSection title="2. Where does it appear?">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <FormField label="Category" htmlFor="np-category_id" required error={errors.category_id}>
+              <select
+                id="np-category_id"
+                className={adminInputClass}
+                value={form.category_id}
+                disabled={metaLoading}
+                onChange={(e) => set({ category_id: e.target.value })}
               >
+                <option value="">{metaLoading ? "Loading…" : "Choose a category…"}</option>
+                {categoryTreeOptions(categories).map(({ category: c, label }) => (
+                  <option key={String(c.id)} value={String(c.id)}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            <FormField label="Platform" htmlFor="np-platform_id" required error={errors.platform_id}>
+              <select
+                id="np-platform_id"
+                className={adminInputClass}
+                value={form.platform_id}
+                disabled={metaLoading}
+                onChange={(e) => set({ platform_id: e.target.value })}
+              >
+                <option value="">{metaLoading ? "Loading…" : "Choose a platform…"}</option>
+                {platforms.map((p) => (
+                  <option key={String(p.id)} value={String(p.id)}>
+                    {p.name_en}
+                    {p.status !== "PUBLISHED" ? ` (${p.status.toLowerCase()})` : ""}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            <FormField label="Type" htmlFor="np-kind" hint="Used by the store's filters." error={errors.kind}>
+              <select id="np-kind" className={adminInputClass} value={form.kind} onChange={(e) => set(reconcileKindFulfillment(form, { kind: e.target.value }))}>
+                {PRODUCT_KINDS.filter((k) => allowedKinds.has(k.value)).map((k) => (
+                  <option key={k.value} value={k.value}>
+                    {k.label}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            <FormField label="Brand" htmlFor="np-brand" optional hint="Shown above the name. Empty = the platform name." error={errors.brand}>
+              <input
+                id="np-brand"
+                placeholder={platform?.name_en || "PlayStation, Steam, …"}
+                className={adminInputClass}
+                value={form.brand}
+                onChange={(e) => set({ brand: e.target.value })}
+              />
+            </FormField>
+          </div>
+          <details className="mt-4 rounded-lg border border-dashed border-[var(--clicks-border)] px-3 py-2" open={Boolean(errors.slug)}>
+            <summary className="cursor-pointer text-[12px] font-medium text-[var(--clicks-navy)]">
+              Web address: <span className="font-mono font-normal text-[var(--clicks-muted)]">/product/{slug || "…"}</span>
+            </summary>
+            <div className="mt-2">
+              <FormField label="Web address" htmlFor="np-slug" optional hint="Filled in from the English name. Change it only if needed." error={errors.slug}>
                 <input
                   id="np-slug"
                   className={`${adminInputClass} font-mono text-[13px]`}
@@ -220,146 +291,27 @@ export function ProductNewClient() {
                 />
               </FormField>
             </div>
-          </AdminCard>
+          </details>
+        </EditorSection>
 
-          <AdminCard padding="md">
-            <AdminSectionHeader title="Where it appears" description="Category and platform decide where shoppers find it." />
-            <div className="grid gap-3.5 sm:grid-cols-2">
-              <FormField label="Category" htmlFor="np-category_id" required error={errors.category_id}>
-                <select
-                  id="np-category_id"
-                  className={adminInputClass}
-                  value={form.category_id}
-                  disabled={metaLoading}
-                  onChange={(e) => set({ category_id: e.target.value })}
-                >
-                  <option value="">{metaLoading ? "Loading…" : "Choose a category…"}</option>
-                  {categoryTreeOptions(categories).map(({ category: c, label }) => (
-                    <option key={String(c.id)} value={String(c.id)}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </FormField>
-              <FormField label="Platform" htmlFor="np-platform_id" required error={errors.platform_id}>
-                <select
-                  id="np-platform_id"
-                  className={adminInputClass}
-                  value={form.platform_id}
-                  disabled={metaLoading}
-                  onChange={(e) => set({ platform_id: e.target.value })}
-                >
-                  <option value="">{metaLoading ? "Loading…" : "Choose a platform…"}</option>
-                  {platforms.map((p) => (
-                    <option key={String(p.id)} value={String(p.id)}>
-                      {p.name_en}
-                      {p.status !== "PUBLISHED" ? ` (${p.status.toLowerCase()})` : ""}
-                    </option>
-                  ))}
-                </select>
-              </FormField>
-              <FormField
-                label="How is it delivered?"
-                htmlFor="np-fulfillment_type"
-                hint={
-                  form.fulfillment_type === "CODE"
-                    ? "The customer receives a code from your code stock (gift cards, game codes)."
-                    : "You or a supplier credit the player's account with the ID the customer enters."
-                }
-                error={errors.fulfillment_type}
-              >
-                <select
-                  id="np-fulfillment_type"
-                  className={adminInputClass}
-                  value={form.fulfillment_type}
-                  onChange={(e) => set(reconcileKindFulfillment(form, { fulfillment_type: e.target.value }))}
-                >
-                  <option value="CODE">Code delivery</option>
-                  <option value="DIRECT_TOPUP">Direct top-up to the player&apos;s account</option>
-                </select>
-              </FormField>
-              <FormField label="Kind" htmlFor="np-kind" hint="Groups the product in store filters." error={errors.kind}>
-                <select
-                  id="np-kind"
-                  className={adminInputClass}
-                  value={form.kind}
-                  onChange={(e) => set(reconcileKindFulfillment(form, { kind: e.target.value }))}
-                >
-                  {PRODUCT_KINDS.filter((k) => allowedKinds.has(k.value)).map((k) => (
-                    <option key={k.value} value={k.value}>
-                      {k.label} — {k.hint}
-                    </option>
-                  ))}
-                </select>
-              </FormField>
-              <FormField
-                label="Brand"
-                htmlFor="np-brand"
-                optional
-                hint={`Shown above the name. Empty = the platform name${platform ? ` (${platform.name_en})` : ""}.`}
-                error={errors.brand}
-              >
-                <input
-                  id="np-brand"
-                  placeholder={platform?.name_en || "PlayStation, Steam, …"}
-                  className={adminInputClass}
-                  value={form.brand}
-                  onChange={(e) => set({ brand: e.target.value })}
-                />
-              </FormField>
-              <FormField
-                label="Built-in artwork"
-                htmlFor="np-artwork_key"
-                optional
-                hint="Only used until you upload a photo. Leave empty if unsure — you can upload photos on the next screen."
-                error={errors.artwork_key}
-              >
-                <input
-                  id="np-artwork_key"
-                  className={`${adminInputClass} font-mono`}
-                  placeholder="e.g. psn"
-                  value={form.artwork_key}
-                  onChange={(e) => set({ artwork_key: e.target.value })}
-                />
-              </FormField>
-            </div>
-          </AdminCard>
-
-          <AdminCard padding="md">
-            <AdminSectionHeader title="Short description" description="One or two lines shown under the title." />
-            <FormField label="Short description (English)" htmlFor="np-short_description_en" optional>
-              <textarea
-                id="np-short_description_en"
-                rows={4}
-                placeholder="Brief product summary for customers…"
-                className={adminTextareaClass}
-                value={form.short_description_en}
-                onChange={(e) => set({ short_description_en: e.target.value })}
-              />
-            </FormField>
-          </AdminCard>
+        <div className="rounded-xl border border-[var(--clicks-border)] bg-[#F8F9FC] px-5 py-4">
+          <p className="text-[12px] font-semibold text-[var(--clicks-navy)]">Next, on the product page</p>
+          <ol className="mt-1.5 grid gap-1 text-[12px] text-[var(--clicks-muted)] sm:grid-cols-2">
+            <li>① Add options with prices (e.g. $10, $25)</li>
+            <li>② Upload a photo</li>
+            <li>③ {form.fulfillment_type === "CODE" ? "Import codes for each option" : "Add the Player ID checkout detail"}</li>
+            <li>④ Switch Visibility to Live</li>
+          </ol>
         </div>
 
-        <aside className="space-y-4 lg:sticky lg:top-0 lg:self-start">
-          <AdminCard padding="md">
-            <AdminSectionHeader title="Next steps" />
-            <ol className="list-decimal space-y-2 ps-4 text-[12px] leading-relaxed text-[var(--clicks-muted)]">
-              <li>Add variants with prices (e.g. $10, $25).</li>
-              <li>Upload a photo.</li>
-              <li>{form.fulfillment_type === "CODE" ? "Import codes for each variant." : "Add the required customer details (Player ID…)."}</li>
-              <li>Set the status to Published.</li>
-            </ol>
-          </AdminCard>
-
-          <div className="flex flex-col gap-2">
-            <button type="submit" disabled={pending || metaLoading} className="admin-btn admin-btn-primary w-full">
-              {pending ? "Creating…" : "Create product"}
-            </button>
-            <Link href="/admin/products" className="admin-btn admin-btn-secondary w-full">
-              Cancel
-            </Link>
-          </div>
-        </aside>
+        <div className="flex items-center justify-end gap-2">
+          <Link href="/admin/products" className="admin-btn admin-btn-secondary">
+            Cancel
+          </Link>
+          <button type="submit" disabled={pending || metaLoading} className="admin-btn admin-btn-primary">
+            {pending ? "Creating…" : "Create product"}
+          </button>
+        </div>
       </form>
     </div>
   );

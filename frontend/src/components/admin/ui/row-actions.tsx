@@ -11,7 +11,16 @@ export type RowAction = {
   disabled?: boolean;
 };
 
-export function RowActions({ actions, className }: { actions: RowAction[]; className?: string }) {
+export function RowActions({
+  actions,
+  className,
+  label,
+}: {
+  actions: RowAction[];
+  className?: string;
+  /** text trigger (e.g. "More") instead of the bare ⋯ icon */
+  label?: string;
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const menuId = useId();
@@ -38,19 +47,25 @@ export function RowActions({ actions, className }: { actions: RowAction[]; class
     <div ref={ref} className={cn("relative inline-flex", className)}>
       <button
         type="button"
-        className="inline-flex h-8 w-8 items-center justify-center rounded-[var(--admin-radius-sm)] text-[var(--clicks-muted)] hover:bg-[#F3F5F9] hover:text-[var(--clicks-text)]"
+        className={
+          label
+            ? "admin-btn admin-btn-secondary gap-1.5"
+            : "inline-flex h-8 w-8 items-center justify-center rounded-[var(--admin-radius-sm)] text-[var(--clicks-muted)] hover:bg-[#F3F5F9] hover:text-[var(--clicks-text)]"
+        }
+        aria-label={label ? undefined : "More actions"}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={menuId}
         onClick={() => setOpen((v) => !v)}
       >
+        {label ? <span>{label}</span> : null}
         <MoreHorizontal className="h-4 w-4" />
       </button>
       {open ? (
         <div
           id={menuId}
           role="menu"
-          className="absolute end-0 top-full z-30 mt-1 min-w-[148px] overflow-hidden rounded-[var(--admin-radius)] border border-[var(--clicks-border)] bg-white py-1 shadow-[var(--admin-shadow-hover)]"
+          className="absolute end-0 top-full z-30 mt-1 min-w-[168px] overflow-hidden rounded-[var(--admin-radius)] border border-[var(--clicks-border)] bg-white py-1 shadow-[var(--admin-shadow-hover)]"
         >
           {actions.map((action) => (
             <button
