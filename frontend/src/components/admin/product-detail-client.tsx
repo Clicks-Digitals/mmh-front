@@ -422,7 +422,7 @@ function ProductEditor({
       label: "Category and platform are visible",
       ok: (!category || category.status === "PUBLISHED") && (!platform || platform.status === "PUBLISHED"),
     },
-    { label: "A photo", ok: media.length > 0 || Boolean(general.image_url.trim()), optional: true, action: { label: "Upload", target: "section-photos" } },
+    { label: "A photo", ok: media.length > 0, optional: true, action: { label: "Upload", target: "section-photos" } },
     { label: "Arabic name", ok: Boolean(general.name_ar.trim()), optional: true, action: { label: "Add", target: "section-basics" } },
   ];
 
@@ -523,7 +523,6 @@ function ProductEditor({
             setMedia={setMedia}
             canWrite={canWrite}
             form={general}
-            errors={generalErrors}
             onChange={patchGeneral}
           />
           <OptionsSection
@@ -536,8 +535,8 @@ function ProductEditor({
             canImport={canImport}
             accountCurrency={general.account_currency}
             onChange={patchVariant}
-            onAdd={() => {
-              const next = newVariantDraft({ productId: product.id, index: variants.length, currency: "" });
+            onAdd={(region) => {
+              const next = { ...newVariantDraft({ productId: product.id, index: variants.length, currency: "" }), region: region ?? "" };
               setDraft((d) => ({ ...d, variants: [...d.variants, next] }));
               return next.key;
             }}
@@ -545,7 +544,16 @@ function ProductEditor({
               if (v.id) setVariantToDelete(v);
               else setDraft((d) => ({ ...d, variants: d.variants.filter((x) => x.key !== v.key) }));
             }}
-            onMove={(key, dir) => setDraft((d) => ({ ...d, variants: move(d.variants, (v) => v.key === key, dir, (v) => !v.delete) }))}
+            onSwap={(a, b) =>
+              setDraft((d) => {
+                const list = [...d.variants];
+                const i = list.findIndex((v) => v.key === a);
+                const j = list.findIndex((v) => v.key === b);
+                if (i < 0 || j < 0) return d;
+                [list[i], list[j]] = [list[j], list[i]];
+                return { ...d, variants: list };
+              })
+            }
           />
           <CheckoutFieldsSection
             fields={fields}

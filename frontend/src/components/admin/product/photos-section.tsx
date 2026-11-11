@@ -6,7 +6,7 @@ import type { GeneralForm } from "@/components/admin/lib/product-form";
 import { CountPill, EditorSection } from "@/components/admin/product/editor-ui";
 import { ArtworkPicker } from "@/components/admin/ui/artwork-picker";
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
-import { FormField, adminInputClass } from "@/components/admin/ui/form-field";
+import { adminInputClass } from "@/components/admin/ui/form-field";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import {
   deleteMediaAsset,
@@ -28,7 +28,6 @@ export function PhotosSection({
   setMedia,
   canWrite,
   form,
-  errors,
   onChange,
 }: {
   token?: string;
@@ -36,9 +35,8 @@ export function PhotosSection({
   media: AdminMediaAsset[];
   setMedia: (next: AdminMediaAsset[]) => void;
   canWrite: boolean;
-  /** built-in picture / external link live on the product draft (saved with Save) */
+  /** the built-in picture lives on the product draft (saved with Save) */
   form: GeneralForm;
-  errors: Record<string, string>;
   onChange: (patch: Partial<GeneralForm>) => void;
 }) {
   const toast = useAdminToast();
@@ -284,26 +282,6 @@ export function PhotosSection({
           onChange={(artwork_key) => onChange({ artwork_key })}
         />
       </div>
-      {form.image_url || errors.image_url ? (
-        <div className="mt-3">
-          <FormField
-            label="External picture link"
-            htmlFor="pg-image_url"
-            optional
-            hint="Used only when no photo is uploaded. Saved with Save."
-            error={errors.image_url}
-          >
-            <input
-              id="pg-image_url"
-              className={cn(adminInputClass, "font-mono text-[12px]")}
-              disabled={!canWrite}
-              value={form.image_url}
-              onChange={(e) => onChange({ image_url: e.target.value })}
-            />
-          </FormField>
-        </div>
-      ) : null}
-
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="Delete photo?"

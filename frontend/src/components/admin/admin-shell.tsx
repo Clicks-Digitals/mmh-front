@@ -33,7 +33,7 @@ export function AdminShell({
       <AdminToastProvider>
         <NavigationGuardProvider>
           <AdminBreadcrumbProvider>
-            <div className="clicks-shell flex h-svh overflow-hidden">
+            <div className="clicks-shell relative flex h-svh overflow-hidden">
               <AdminSidebar
                 open={open}
                 onClose={() => setOpen(false)}
@@ -45,7 +45,8 @@ export function AdminShell({
               <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                 <AdminTopbar name={name} role={role} menuOpen={open} onMenuOpen={() => setOpen(true)} />
                 <MaintenanceBar />
-                <main className="min-h-0 flex-1 overflow-y-auto">
+                {/* relative: keeps absolutely positioned helpers (sr-only labels, file inputs) inside the scroll area instead of stretching the page */}
+                <main className="relative min-h-0 flex-1 overflow-y-auto">
                   <div className="mx-auto w-full max-w-[1440px] px-4 py-5 md:px-6 md:py-6">{children}</div>
                 </main>
               </div>

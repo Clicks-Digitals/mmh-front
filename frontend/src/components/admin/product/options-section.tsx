@@ -1,14 +1,13 @@
 "use client";
 
 import { jodInputToFils } from "@/components/admin/lib/money";
-import { numberFromName, stockOptions, type VariantDraft } from "@/components/admin/lib/product-form";
+import { numberFromName, type VariantDraft } from "@/components/admin/lib/product-form";
 import { CountPill, EditorSection, ErrorPill, Toggle } from "@/components/admin/product/editor-ui";
 import { AdminModal } from "@/components/admin/ui/admin-modal";
-import { Badge } from "@/components/admin/ui/badge";
 import { FormField, adminInputClass } from "@/components/admin/ui/form-field";
 import type { AdminRegion } from "@/lib/api/admin";
 import { cn } from "@/lib/cn";
-import { ArrowDown, ArrowUp, ChevronDown, Pencil, Plus } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, Globe2, Pencil, Plus } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -23,34 +22,16 @@ type Props = {
   canImport: boolean;
   accountCurrency?: string;
   onChange: (key: string, patch: Partial<VariantDraft>) => void;
-  onAdd: () => string;
+  /** adds an option (optionally in a region) and returns its key */
+  onAdd: (region?: string) => string;
   onRemove: (variant: VariantDraft) => void;
-  onMove: (key: string, dir: -1 | 1) => void;
+  /** swap two options' places */
+  onSwap: (key: string, otherKey: string) => void;
 };
 
-const QUICK_FIELDS = new Set(["name_en", "price"]);
-
-function StockCell({ v, isCode }: { v: VariantDraft; isCode: boolean }) {
-  if (!v.id) return <Badge tone="neutral">New</Badge>;
-  if (!v.published) return <Badge tone="neutral">Hidden</Badge>;
-  const status = v.effective_stock_status ?? v.stock_status;
-  if (isCode) {
-    const n = v.available_codes ?? 0;
-    return (
-      <span className="flex flex-col items-start gap-0.5">
-        <Badge status={status === "IN_STOCK" ? "IN_STOCK" : status === "OUT_OF_STOCK" ? "OUT_OF_STOCK" : "PENDING"}>
-          {status === "IN_STOCK" ? "On sale" : status === "OUT_OF_STOCK" ? "Sold out" : "Unavailable"}
-        </Badge>
-        <span className="text-[11px] text-[var(--clicks-muted)]">
-          {n} code{n === 1 ? "" : "s"}
-        </span>
-      </span>
-    );
-  }
-  return (
-    <Badge status={status === "IN_STOCK" ? "IN_STOCK" : "OUT_OF_STOCK"}>{status === "IN_STOCK" ? "Available" : "Paused"}</Badge>
-  );
-}
+/** Fields edited right in the row (errors on others send staff to the dialog). */
+const ROW_FIELDS = new Set(["name_en", "price", "region", "stock_status"]);
+const NO_REGION = "";
 
 function profitText(price: string, cost: string): string {
   const p = jodInputToFils(price);
@@ -59,6 +40,17 @@ function profitText(price: string, cost: string): string {
   const diff = p - c;
   const pct = Math.round((diff / p) * 100);
   return `${diff < 0 ? "Loss" : "Profit"} per sale: ${(Math.abs(diff) / 1000).toFixed(3)} JOD (${pct}%)`;
+}
+
+/** What the "Selling" cell says under its switch. */
+function sellingNote(v: VariantDraft, isCode: boolean): { text: string; tone: "ok" | "bad" | "muted" } {
+  if (v.stock_status === "OUT_OF_STOCK") return { text: "Marked out of stock", tone: "bad" };
+  if (!isCode) return { text: "Customers can order", tone: "ok" };
+  if (!v.id) return { text: "Import codes after saving", tone: "muted" };
+  const n = v.available_codes ?? 0;
+  const effective = v.effective_stock_status ?? v.stock_status;
+  if (effective === "IN_STOCK") return { text: n ? `${n} code${n === 1 ? "" : "s"} in stock` : "In stock (supplier)", tone: "ok" };
+  return { text: "Sold out — 0 codes", tone: "bad" };
 }
 
 export function OptionsSection({
@@ -73,12 +65,20 @@ export function OptionsSection({
   onChange,
   onAdd,
   onRemove,
-  onMove,
+  onSwap,
 }: Props) {
   const [editing, setEditing] = useState<string | null>(null);
   const visible = variants.filter((v) => !v.delete);
   const current = visible.find((v) => v.key === editing) ?? null;
   const problems = visible.filter((v) => Object.keys(errors[v.key] ?? {}).length).length + (listError ? 1 : 0);
+  const regionOf = (id: string) => regions.find((r) => String(r.id) === id);
+
+  // One group per region, in the order regions first appear; options without a region last.
+  const groupIds: string[] = [];
+  for (const v of visible) if (!groupIds.includes(v.region || NO_REGION)) groupIds.push(v.region || NO_REGION);
+  groupIds.sort((a, b) => (a === NO_REGION ? 1 : b === NO_REGION ? -1 : 0));
+  const groups = groupIds.map((id) => ({ id, region: regionOf(id), items: visible.filter((v) => (v.region || NO_REGION) === id) }));
+  const grouped = groups.length > 1 || (groups[0] && groups[0].id !== NO_REGION);
 
   const input = (v: VariantDraft, key: keyof VariantDraft, extra: { mono?: boolean; inputMode?: "decimal" | "numeric" } = {}) => ({
     id: `pv-${v.key}-${String(key)}`,
@@ -90,6 +90,8 @@ export function OptionsSection({
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => onChange(v.key, { [key]: e.target.value } as Partial<VariantDraft>),
   });
 
+  const cols = "md:grid-cols-[24px_minmax(150px,1fr)_92px_144px_124px_44px_36px]";
+
   return (
     <EditorSection
       id="section-options"
@@ -97,8 +99,8 @@ export function OptionsSection({
       badge={problems ? <ErrorPill count={problems} /> : visible.length ? <CountPill>{visible.length}</CountPill> : null}
       description={
         isCodeProduct
-          ? "Each option is one thing customers can buy, e.g. “$10 card”. It sells while it has codes in stock."
-          : "Each option is one package customers can buy, e.g. “600 UC”. Pause an option to stop orders."
+          ? "Each option is one card customers can buy, e.g. “$10 card”, grouped by the region it works in."
+          : "Each option is one package customers can buy, e.g. “600 UC”, grouped by region."
       }
       action={
         !disabled ? (
@@ -117,100 +119,162 @@ export function OptionsSection({
       ) : null}
       {visible.length ? (
         <div className="border-t border-[var(--clicks-border)]">
-          <div className="hidden grid-cols-[28px_minmax(0,1fr)_140px_110px_76px_40px] items-center gap-3 bg-[#F8F9FC] px-5 py-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--clicks-muted)] md:grid">
+          <div className={cn("hidden items-center gap-3 bg-[#F8F9FC] px-5 py-2 text-[11px] font-semibold uppercase tracking-[0.04em] text-[var(--clicks-muted)] md:grid", cols)}>
             <span />
             <span>Option name</span>
             <span>Price (JOD)</span>
-            <span>Stock</span>
-            <span>On store</span>
+            <span>Region</span>
+            <span>Selling</span>
+            <span>Shown</span>
             <span />
           </div>
-          <ul className="divide-y divide-[var(--clicks-border)]">
-            {visible.map((v, idx) => {
-              const errs = errors[v.key] ?? {};
-              const hidden = Object.keys(errs).filter((k) => !QUICK_FIELDS.has(k));
-              return (
-                <li key={v.key} className={cn("px-5 py-3", Object.keys(errs).length && "bg-red-50/40")}>
-                  <div className="grid grid-cols-[28px_minmax(0,1fr)_auto] items-start gap-3 md:grid-cols-[28px_minmax(0,1fr)_140px_110px_76px_40px] md:items-center">
-                    <div className="flex flex-col items-center pt-1 md:pt-0">
-                      <button
-                        type="button"
-                        aria-label="Move up"
-                        disabled={disabled || idx === 0}
-                        onClick={() => onMove(v.key, -1)}
-                        className="rounded p-0.5 text-[var(--clicks-muted)] hover:bg-[#EEF1F6] disabled:opacity-25"
-                      >
-                        <ArrowUp className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Move down"
-                        disabled={disabled || idx === visible.length - 1}
-                        onClick={() => onMove(v.key, 1)}
-                        className="rounded p-0.5 text-[var(--clicks-muted)] hover:bg-[#EEF1F6] disabled:opacity-25"
-                      >
-                        <ArrowDown className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    <div className="min-w-0">
-                      <label htmlFor={`pv-${v.key}-name_en`} className="sr-only">
-                        Option name
-                      </label>
-                      <input {...input(v, "name_en")} placeholder={isCodeProduct ? "e.g. $10 card" : "e.g. 600 UC"} />
-                      {errs.name_en ? <p className="mt-1 text-[11px] text-[var(--clicks-error)]">{errs.name_en}</p> : null}
-                      {hidden.length ? (
-                        <button type="button" className="mt-1 text-[11px] font-semibold text-[var(--clicks-error)] underline" onClick={() => setEditing(v.key)}>
-                          {errs[hidden[0]]} — fix it
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="col-start-2 md:col-start-auto">
-                      <label htmlFor={`pv-${v.key}-price`} className="mb-1 block text-[11px] font-medium text-[var(--clicks-muted)] md:sr-only">
-                        Price (JOD)
-                      </label>
-                      <input {...input(v, "price", { inputMode: "decimal" })} placeholder="0.000" />
-                      {errs.price ? <p className="mt-1 text-[11px] text-[var(--clicks-error)]">{errs.price}</p> : null}
-                    </div>
-                    <div className="col-start-2 md:col-start-auto">
-                      <StockCell v={v} isCode={isCodeProduct} />
-                    </div>
-                    <div className="col-start-2 flex items-center gap-2 md:col-start-auto">
-                      <Toggle
-                        id={`pv-${v.key}-published`}
-                        label="Show on store"
-                        hideLabel
-                        checked={v.published}
-                        disabled={disabled}
-                        onChange={(published) => onChange(v.key, { published })}
-                      />
-                      <span className="text-[12px] text-[var(--clicks-muted)] md:sr-only">{v.published ? "Shown on store" : "Hidden"}</span>
-                    </div>
-                    <div className="col-start-3 row-start-1 md:col-start-auto md:row-start-auto">
-                      <button
-                        type="button"
-                        aria-label={`Edit ${v.name_en || "option"}`}
-                        title="All settings"
-                        onClick={() => setEditing(v.key)}
-                        className={cn(
-                          "inline-flex h-9 w-9 items-center justify-center rounded-lg border text-[var(--clicks-muted)] transition hover:text-[var(--clicks-navy)]",
-                          hidden.length ? "border-red-300 text-red-600" : "border-[var(--clicks-border)] hover:border-[var(--clicks-border-strong)]",
-                        )}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          {groups.map((group) => (
+            <div key={group.id || "none"}>
+              {grouped ? (
+                <div className="flex items-center justify-between gap-3 border-t border-[var(--clicks-border)] bg-[#F3F6FF] px-5 py-2">
+                  <p className="flex items-center gap-2 text-[12px] font-semibold text-[var(--clicks-navy)]">
+                    <Globe2 className="h-3.5 w-3.5 text-[var(--clicks-blue)]" aria-hidden />
+                    {group.region ? `${group.region.name_en} · ${group.region.currency}` : "Works everywhere (no region)"}
+                    <CountPill>{group.items.length}</CountPill>
+                  </p>
+                  {!disabled ? (
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 text-[12px] font-semibold text-[var(--clicks-blue)] hover:underline"
+                      onClick={() => onAdd(group.id)}
+                    >
+                      <Plus className="h-3.5 w-3.5" aria-hidden />
+                      Add here
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+              <ul className="divide-y divide-[var(--clicks-border)] border-t border-[var(--clicks-border)]">
+                {group.items.map((v, idx) => {
+                  const errs = errors[v.key] ?? {};
+                  const hidden = Object.keys(errs).filter((k) => !ROW_FIELDS.has(k));
+                  const note = sellingNote(v, isCodeProduct);
+                  const prev = group.items[idx - 1];
+                  const next = group.items[idx + 1];
+                  return (
+                    <li key={v.key} className={cn("px-5 py-3", Object.keys(errs).length && "bg-red-50/40", !v.published && "bg-[#FAFAFB]")}>
+                      <div className={cn("grid grid-cols-[28px_minmax(0,1fr)_auto] items-start gap-3 md:items-center", cols)}>
+                        <div className="flex flex-col items-center pt-1 md:pt-0">
+                          <button
+                            type="button"
+                            aria-label="Move up"
+                            disabled={disabled || !prev}
+                            onClick={() => prev && onSwap(v.key, prev.key)}
+                            className="rounded p-0.5 text-[var(--clicks-muted)] hover:bg-[#EEF1F6] disabled:opacity-25"
+                          >
+                            <ArrowUp className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            aria-label="Move down"
+                            disabled={disabled || !next}
+                            onClick={() => next && onSwap(v.key, next.key)}
+                            className="rounded p-0.5 text-[var(--clicks-muted)] hover:bg-[#EEF1F6] disabled:opacity-25"
+                          >
+                            <ArrowDown className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="min-w-0">
+                          <label htmlFor={`pv-${v.key}-name_en`} className="sr-only">
+                            Option name
+                          </label>
+                          <input {...input(v, "name_en")} placeholder={isCodeProduct ? "e.g. $10 card" : "e.g. 600 UC"} />
+                          {errs.name_en ? <p className="mt-1 text-[11px] text-[var(--clicks-error)]">{errs.name_en}</p> : null}
+                          {hidden.length ? (
+                            <button type="button" className="mt-1 text-[11px] font-semibold text-[var(--clicks-error)] underline" onClick={() => setEditing(v.key)}>
+                              {errs[hidden[0]]} — fix it
+                            </button>
+                          ) : null}
+                        </div>
+
+                        <div className="col-start-2 md:col-start-auto">
+                          <label htmlFor={`pv-${v.key}-price`} className="mb-1 block text-[11px] font-medium text-[var(--clicks-muted)] md:sr-only">
+                            Price (JOD)
+                          </label>
+                          <input {...input(v, "price", { inputMode: "decimal" })} placeholder="0.000" />
+                          {errs.price ? <p className="mt-1 text-[11px] text-[var(--clicks-error)]">{errs.price}</p> : null}
+                        </div>
+
+                        <div className="col-start-2 md:col-start-auto">
+                          <label htmlFor={`pv-${v.key}-region`} className="mb-1 block text-[11px] font-medium text-[var(--clicks-muted)] md:sr-only">
+                            Region
+                          </label>
+                          <select {...input(v, "region")}>
+                            <option value="">Works everywhere</option>
+                            {regions.map((r) => (
+                              <option key={String(r.id)} value={String(r.id)}>
+                                {r.name_en} ({r.currency})
+                              </option>
+                            ))}
+                          </select>
+                          {errs.region ? <p className="mt-1 text-[11px] text-[var(--clicks-error)]">{errs.region}</p> : null}
+                        </div>
+
+                        <div className="col-start-2 min-w-0 md:col-start-auto">
+                          <Toggle
+                            id={`pv-${v.key}-selling`}
+                            label="Selling (off = out of stock)"
+                            hideLabel
+                            checked={v.stock_status !== "OUT_OF_STOCK"}
+                            disabled={disabled}
+                            onChange={(on) => onChange(v.key, { stock_status: on ? "IN_STOCK" : "OUT_OF_STOCK" })}
+                          />
+                          <p
+                            className={cn(
+                              "mt-1 text-[11px] leading-4",
+                              note.tone === "ok" ? "text-emerald-700" : note.tone === "bad" ? "text-[var(--clicks-error)]" : "text-[var(--clicks-muted)]",
+                            )}
+                          >
+                            {note.text}
+                          </p>
+                        </div>
+
+                        <div className="col-start-2 flex items-center gap-2 md:col-start-auto">
+                          <Toggle
+                            id={`pv-${v.key}-published`}
+                            label="Show on store"
+                            hideLabel
+                            checked={v.published}
+                            disabled={disabled}
+                            onChange={(published) => onChange(v.key, { published })}
+                          />
+                          <span className="text-[12px] text-[var(--clicks-muted)] md:sr-only">{v.published ? "Shown on store" : "Hidden"}</span>
+                        </div>
+
+                        <div className="col-start-3 row-start-1 md:col-start-auto md:row-start-auto">
+                          <button
+                            type="button"
+                            aria-label={`More settings for ${v.name_en || "option"}`}
+                            title="More settings"
+                            onClick={() => setEditing(v.key)}
+                            className={cn(
+                              "inline-flex h-9 w-9 items-center justify-center rounded-lg border text-[var(--clicks-muted)] transition hover:text-[var(--clicks-navy)]",
+                              hidden.length ? "border-red-300 text-red-600" : "border-[var(--clicks-border)] hover:border-[var(--clicks-border-strong)]",
+                            )}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
         </div>
       ) : (
         <div className="border-t border-[var(--clicks-border)] px-5 py-8 text-center">
           <p className="text-[13px] font-semibold text-[var(--clicks-navy)]">No options yet</p>
           <p className="mt-1 text-[12px] text-[var(--clicks-muted)]">Add at least one option with a price so customers can buy this product.</p>
           {!disabled ? (
-            <button type="button" className="admin-btn admin-btn-primary mt-3 gap-1.5" onClick={() => setEditing(onAdd())}>
+            <button type="button" className="admin-btn admin-btn-primary mt-3 gap-1.5" onClick={() => onAdd()}>
               <Plus className="h-4 w-4" aria-hidden />
               Add the first option
             </button>
@@ -221,8 +285,8 @@ export function OptionsSection({
       <AdminModal
         open={Boolean(current)}
         wide
-        title={current?.name_en ? `Edit “${current.name_en}”` : "Edit option"}
-        description="Changes are kept here and saved with the product when you press Save."
+        title={current?.name_en ? `“${current.name_en}” — more settings` : "More settings"}
+        description="Name, price, region and stock are edited in the list. Changes here are saved with the product when you press Save."
         onClose={() => setEditing(null)}
       >
         {current ? (
@@ -232,10 +296,9 @@ export function OptionsSection({
             input={input}
             disabled={disabled}
             isCodeProduct={isCodeProduct}
-            regions={regions}
+            regionCurrency={regionOf(current.region)?.currency}
             canImport={canImport}
             accountCurrency={accountCurrency}
-            onChange={onChange}
             onDone={() => setEditing(null)}
             onRemove={() => {
               setEditing(null);
@@ -254,10 +317,9 @@ function OptionEditor({
   input,
   disabled,
   isCodeProduct,
-  regions,
+  regionCurrency,
   canImport,
   accountCurrency,
-  onChange,
   onDone,
   onRemove,
 }: {
@@ -266,10 +328,9 @@ function OptionEditor({
   input: (v: VariantDraft, key: keyof VariantDraft, extra?: { mono?: boolean; inputMode?: "decimal" | "numeric" }) => Record<string, unknown>;
   disabled: boolean;
   isCodeProduct: boolean;
-  regions: AdminRegion[];
+  regionCurrency?: string;
   canImport: boolean;
   accountCurrency?: string;
-  onChange: (key: string, patch: Partial<VariantDraft>) => void;
   onDone: () => void;
   onRemove: () => void;
 }) {
@@ -277,8 +338,7 @@ function OptionEditor({
   const [advanced, setAdvanced] = useState(() => advancedKeys.some((k) => errs[k]));
   const showAdvanced = advanced || advancedKeys.some((k) => errs[k]);
   const derivedFace = numberFromName(v.name_en);
-  const region = regions.find((r) => String(r.id) === v.region);
-  const derivedCurrency = (region?.currency || accountCurrency || "USD").toUpperCase();
+  const derivedCurrency = (regionCurrency || accountCurrency || "USD").toUpperCase();
   const profit = profitText(v.price, v.cost);
   const group = "rounded-lg border border-[var(--clicks-border)] p-4";
   const groupTitle = "mb-3 text-[11px] font-semibold uppercase tracking-[0.06em] text-[var(--clicks-muted)]";
@@ -286,25 +346,10 @@ function OptionEditor({
   return (
     <div className="space-y-4">
       <div className={group}>
-        <h3 className={groupTitle}>Name</h3>
+        <h3 className={groupTitle}>Arabic name & cost</h3>
         <div className="grid gap-3 sm:grid-cols-2">
-          <FormField label="English" htmlFor={`pv-${v.key}-name_en-dlg`} required error={errs.name_en}>
-            <input {...input(v, "name_en")} id={`pv-${v.key}-name_en-dlg`} placeholder={isCodeProduct ? "e.g. $10 card" : "e.g. 600 UC"} />
-          </FormField>
-          <FormField label="Arabic" htmlFor={`pv-${v.key}-name_ar`} optional error={errs.name_ar}>
+          <FormField label="Name (Arabic)" htmlFor={`pv-${v.key}-name_ar`} optional hint="Empty = the English name." error={errs.name_ar}>
             <input {...input(v, "name_ar")} dir="rtl" />
-          </FormField>
-        </div>
-      </div>
-
-      <div className={group}>
-        <h3 className={groupTitle}>Price</h3>
-        <div className="grid gap-3 sm:grid-cols-3">
-          <FormField label="Selling price (JOD)" htmlFor={`pv-${v.key}-price-dlg`} required error={errs.price}>
-            <input {...input(v, "price", { inputMode: "decimal" })} id={`pv-${v.key}-price-dlg`} placeholder="0.000" />
-          </FormField>
-          <FormField label="Was price (JOD)" htmlFor={`pv-${v.key}-compare_at`} optional hint="Shown crossed out." error={errs.compare_at}>
-            <input {...input(v, "compare_at", { inputMode: "decimal" })} />
           </FormField>
           <FormField label="Your cost (JOD)" htmlFor={`pv-${v.key}-cost`} optional hint="Never shown to customers." error={errs.cost}>
             <input {...input(v, "cost", { inputMode: "decimal" })} />
@@ -316,48 +361,14 @@ function OptionEditor({
       </div>
 
       <div className={group}>
-        <h3 className={groupTitle}>Selling</h3>
-        <div className="space-y-4">
-          <Toggle
-            id={`pv-${v.key}-published-dlg`}
-            label="Show on the store"
-            hint="Off hides this option but keeps its orders and codes."
-            checked={v.published}
-            disabled={disabled}
-            onChange={(published) => onChange(v.key, { published })}
-          />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <FormField
-              label={isCodeProduct ? "Selling" : "Availability"}
-              htmlFor={`pv-${v.key}-stock_status`}
-              hint={isCodeProduct ? "Automatic: on sale while codes are in stock." : "Top-ups have no stock — you decide."}
-              error={errs.stock_status}
-            >
-              <select {...input(v, "stock_status")}>
-                {stockOptions(isCodeProduct, v.stock_status).map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </FormField>
-            <FormField label="Region" htmlFor={`pv-${v.key}-region`} optional hint="Where it works. Locked regions show a warning." error={errs.region}>
-              <select {...input(v, "region")}>
-                <option value="">Works everywhere</option>
-                {regions.map((r) => (
-                  <option key={String(r.id)} value={String(r.id)}>
-                    {r.name_en} ({r.currency})
-                  </option>
-                ))}
-              </select>
-            </FormField>
-            <FormField label="Min. per order" htmlFor={`pv-${v.key}-min_quantity`} error={errs.min_quantity}>
-              <input {...input(v, "min_quantity", { inputMode: "numeric" })} type="number" min={1} />
-            </FormField>
-            <FormField label="Max. per order" htmlFor={`pv-${v.key}-max_quantity`} error={errs.max_quantity}>
-              <input {...input(v, "max_quantity", { inputMode: "numeric" })} type="number" min={1} />
-            </FormField>
-          </div>
+        <h3 className={groupTitle}>How many per order</h3>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <FormField label="Minimum" htmlFor={`pv-${v.key}-min_quantity`} error={errs.min_quantity}>
+            <input {...input(v, "min_quantity", { inputMode: "numeric" })} type="number" min={1} />
+          </FormField>
+          <FormField label="Maximum" htmlFor={`pv-${v.key}-max_quantity`} error={errs.max_quantity}>
+            <input {...input(v, "max_quantity", { inputMode: "numeric" })} type="number" min={1} />
+          </FormField>
         </div>
       </div>
 
