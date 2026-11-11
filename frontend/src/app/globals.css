@@ -507,3 +507,10 @@ body:has(.clicks-shell) {
   box-shadow: 0 0 0 1000px #ffffff inset;
   transition: background-color 9999s ease-out 0s;
 }
+
+/* Side menu slides in from the reading-start edge. */
+@keyframes mmh-drawer-in-ltr { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes mmh-drawer-in-rtl { from { transform: translateX(100%); } to { transform: translateX(0); } }
+.mmh-drawer-in { animation: mmh-drawer-in-ltr 0.24s cubic-bezier(0.22, 1, 0.36, 1); }
+[dir="rtl"] .mmh-drawer-in { animation-name: mmh-drawer-in-rtl; }
+@media (prefers-reduced-motion: reduce) { .mmh-drawer-in { animation: none; } }

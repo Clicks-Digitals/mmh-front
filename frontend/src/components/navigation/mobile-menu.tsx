@@ -2,20 +2,17 @@
 
 import { LanguageSwitcher } from "@/components/navigation/language-switcher";
 import { ICON_HIT } from "@/components/ui/control";
-import { SITE } from "@/config/site";
-import { useCart } from "@/context/cart-context";
 import { useLanguage } from "@/context/language-context";
 import { useUi } from "@/context/ui-context";
 import { CATEGORIES } from "@/data/categories";
 import { useEscape, useScrollLock } from "@/hooks/use-overlay";
 import { getSnapshotCategories, getSnapshotMenuCategories } from "@/lib/catalog-snapshot";
-import { buildMenu } from "@/lib/nav-menu";
+import { buildMenu, platformTiles } from "@/lib/nav-menu";
 import { catalog } from "@/data/products";
 import { hrefHasProducts } from "@/lib/listing";
-import { formatJod } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import type { Category } from "@/types";
-import { ChevronLeft, ChevronRight, Heart, PackageSearch, Search, ShoppingBag, User, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Heart, PackageSearch, Search, ShoppingBag, User, X } from "lucide-react";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -63,22 +60,46 @@ export function MobileMenu() {
   return mobileNavOpen ? <MobileMenuPanel /> : null;
 }
 
+type MenuRow = { key: string; label: string; href: string; children: Array<{ key: string; label: string; href: string }> };
+
+/**
+ * Top-level rows with their sub-items. A category without sub-categories lists the brands
+ * (platforms) it sells, e.g. Gift cards → PlayStation, Steam, Apple…
+ */
+function buildMenuRows(locale: string): MenuRow[] {
+  const flat = buildMenuCategories();
+  const products = catalog();
+  const snapshot = getSnapshotCategories();
+  const label = (en: string, ar?: string) => (locale === "ar" ? ar || en : en);
+  return flat
+    .filter((category) => !category.parent)
+    .map((category) => {
+      let children = flat
+        .filter((child) => child.parent === category.slug)
+        .map((child) => ({ key: child.slug, label: label(child.name, child.nameAr), href: child.href }));
+      if (!children.length) {
+        const brands = platformTiles(category.slug, products, snapshot).filter((tile) => tile.href !== category.href);
+        if (brands.length > 1) {
+          children = brands.map((tile) => ({ key: tile.href, label: label(tile.label ?? "", tile.labelAr), href: tile.href }));
+        }
+      }
+      return { key: category.slug, label: label(category.name, category.nameAr), href: category.href, children };
+    });
+}
+
 function MobileMenuPanel() {
-  const { mobileNavOpen, setMobileNavOpen, setSearchOpen, setCartOpen } = useUi();
+  const { mobileNavOpen, setMobileNavOpen, setSearchOpen } = useUi();
   const { t, locale } = useLanguage();
-  const { itemCount, total, hydrated } = useCart();
   const { data: session, status } = useSession();
   const signedIn = status === "authenticated" && session?.user?.kind === "CUSTOMER";
   const pathname = usePathname();
-  const [stack, setStack] = useState<string[]>([]);
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const categories = useMemo(() => buildMenuCategories(), []);
-  const currentParent = stack.at(-1);
-  const currentCategory = categories.find((category) => category.slug === currentParent);
-  const visibleCategories = useMemo(
-    () => categories.filter((category) => (currentParent ? category.parent === currentParent : !category.parent)),
-    [categories, currentParent],
+  const rows = useMemo(() => buildMenuRows(locale), [locale]);
+  const active = (href: string) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`));
+  // The row holding the current page starts open.
+  const [open, setOpen] = useState<string | null>(
+    () => rows.find((row) => row.children.some((child) => active(child.href)))?.key ?? null,
   );
 
   useScrollLock(mobileNavOpen);
@@ -109,41 +130,21 @@ function MobileMenuPanel() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [mobileNavOpen]);
 
-  const close = () => {
-    setMobileNavOpen(false);
-    setStack([]);
-  };
-  const active = (href: string) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`));
-  const labelOf = (category: Category) => (locale === "ar" ? category.nameAr : category.name);
+  const close = () => setMobileNavOpen(false);
+  const rowClass = "flex min-h-[54px] w-full items-center justify-between gap-3 px-5 text-start text-[15px] font-semibold text-white transition hover:bg-white/5";
 
   return (
     <div className="fixed inset-0 z-[60]">
-      <button type="button" className="absolute inset-0 bg-overlay/80 backdrop-blur-[2px]" aria-label={t("nav.close")} onClick={close} />
+      <button type="button" className="absolute inset-0 bg-overlay/80 backdrop-blur-[3px]" aria-label={t("nav.close")} onClick={close} />
       <aside
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label={t("nav.menu")}
-        className="absolute inset-y-0 start-0 flex h-full w-[min(88vw,360px)] flex-col bg-deep pt-[env(safe-area-inset-top)] shadow-2xl"
+        aria-label={t("nav.mainMenu")}
+        className="mmh-drawer-in absolute inset-y-0 start-0 flex h-full w-[min(90vw,420px)] flex-col bg-deep pt-[env(safe-area-inset-top)] shadow-2xl"
       >
-        <div className="flex h-14 items-center justify-between border-b border-white/10 px-4">
-          {currentParent ? (
-            <button
-              type="button"
-              className={cn(ICON_HIT, "h-10 w-10 text-white hover:bg-white/10")}
-              onClick={() => setStack((current) => current.slice(0, -1))}
-              aria-label={t("common.back")}
-            >
-              <ChevronLeft className="h-5 w-5 rtl-flip" />
-            </button>
-          ) : (
-            <p className="text-sm font-semibold text-white">{t("nav.mainMenu")}</p>
-          )}
-          {currentCategory ? (
-            <p className="min-w-0 flex-1 truncate px-3 text-center text-sm font-semibold text-white">
-              {labelOf(currentCategory)}
-            </p>
-          ) : null}
+        <div className="flex h-16 shrink-0 items-center justify-between border-b border-white/10 ps-5 pe-3">
+          <p className="text-[15px] font-semibold text-white">{t("nav.mainMenu")}</p>
           <button
             ref={closeRef}
             type="button"
@@ -151,128 +152,116 @@ function MobileMenuPanel() {
             onClick={close}
             aria-label={t("nav.close")}
           >
-            <X className="h-5 w-5" />
+            <X className="h-6 w-6" />
           </button>
         </div>
 
-        <nav className="flex-1 overflow-y-auto" aria-label={t("nav.menu")}>
-          <button
-            type="button"
-            className="flex h-12 w-full items-center gap-3 border-b border-white/10 px-4 text-start text-sm text-white/65 transition hover:bg-white/5 hover:text-white"
-            onClick={() => {
-              close();
-              setSearchOpen(true);
-            }}
-          >
-            <Search className="h-4 w-4" />
-            {t("common.searchPlaceholder")}
-          </button>
-
-          {currentParent ? (
-            <Link
-              href={currentCategory?.href ?? "/shop"}
-              onClick={close}
-              className="flex min-h-12 items-center justify-between border-b border-white/10 px-4 text-sm font-semibold text-gold"
+        <nav className="flex-1 overflow-y-auto overscroll-contain" aria-label={t("nav.menu")}>
+          <div className="px-4 py-3">
+            <button
+              type="button"
+              className="flex h-11 w-full items-center gap-3 rounded-xl bg-white/6 px-3.5 text-start text-[13px] text-white/60 transition hover:bg-white/10 hover:text-white"
+              onClick={() => {
+                close();
+                setSearchOpen(true);
+              }}
             >
-              <span>{t("nav.viewAll")}</span>
-              <ChevronRight className="h-4 w-4 rtl-flip" />
-            </Link>
-          ) : (
-            <Link
-              href="/"
-              onClick={close}
-              className={cn(
-                "flex min-h-12 items-center border-b border-white/10 px-4 text-sm font-medium text-white",
-                active("/") && "bg-white/8 text-gold",
-              )}
-            >
-              {t("common.home")}
-            </Link>
-          )}
+              <Search className="h-4 w-4 shrink-0" />
+              <span className="truncate">{t("common.searchPlaceholder")}</span>
+            </button>
+          </div>
 
-          <ul>
-            {visibleCategories.map((category) => {
-              const children = categories.filter((item) => item.parent === category.slug);
-              const hasChildren = children.length > 0;
-              const name = labelOf(category);
-
-              if (hasChildren) {
+          <ul className="border-t border-white/10">
+            <li className="border-b border-white/10">
+              <Link href="/" onClick={close} className={cn(rowClass, active("/") && pathname === "/" && "text-gold")}>
+                {t("common.home")}
+              </Link>
+            </li>
+            {rows.map((row) => {
+              const expanded = open === row.key;
+              if (!row.children.length) {
                 return (
-                  <li key={category.slug} className="border-b border-white/10">
-                    <button
-                      type="button"
-                      className="flex min-h-12 w-full items-center justify-between gap-3 px-4 text-start text-sm font-medium text-white transition hover:bg-white/5"
-                      onClick={() => setStack((current) => [...current, category.slug])}
-                    >
-                      <span className="min-w-0 truncate">{name}</span>
-                      <ChevronRight className="h-4 w-4 shrink-0 text-white/80 rtl-flip" aria-hidden />
-                    </button>
+                  <li key={row.key} className="border-b border-white/10">
+                    <Link href={row.href} onClick={close} className={cn(rowClass, active(row.href) && "text-gold")}>
+                      <span className="min-w-0 truncate">{row.label}</span>
+                    </Link>
                   </li>
                 );
               }
-
               return (
-                <li key={category.slug} className="border-b border-white/10">
-                  <Link
-                    href={category.href}
-                    onClick={close}
-                    className={cn(
-                      "flex min-h-12 items-center px-4 text-sm font-medium text-white transition hover:bg-white/5",
-                      active(category.href) && "bg-white/8 text-gold",
-                    )}
+                <li key={row.key} className="border-b border-white/10">
+                  <button
+                    type="button"
+                    className={cn(rowClass, expanded && "bg-white/[0.04]")}
+                    aria-expanded={expanded}
+                    onClick={() => setOpen(expanded ? null : row.key)}
                   >
-                    {name}
-                  </Link>
+                    <span className="min-w-0 truncate">{row.label}</span>
+                    <ChevronDown className={cn("h-5 w-5 shrink-0 text-white/60 transition-transform", expanded && "rotate-180 text-gold")} aria-hidden />
+                  </button>
+                  {expanded ? (
+                    <ul className="bg-black/15 pb-2">
+                      <li>
+                        <Link
+                          href={row.href}
+                          onClick={close}
+                          className="flex min-h-11 items-center justify-between px-5 ps-8 text-[14px] font-semibold text-gold hover:bg-white/5"
+                        >
+                          {t("nav.viewAll")}
+                          <ChevronRight className="h-4 w-4 rtl-flip" aria-hidden />
+                        </Link>
+                      </li>
+                      {row.children.map((child) => (
+                        <li key={child.key}>
+                          <Link
+                            href={child.href}
+                            onClick={close}
+                            className={cn(
+                              "flex min-h-11 items-center px-5 ps-8 text-[14px] text-white/80 hover:bg-white/5 hover:text-white",
+                              active(child.href) && "font-semibold text-gold",
+                            )}
+                          >
+                            {child.label}
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </li>
               );
             })}
           </ul>
-        </nav>
+          {/* ST-02: account, orders and wishlist are reachable on mobile. */}
+          <ul className="grid grid-cols-2 gap-2 px-4 pt-4 text-sm">
+            {[
+              { href: signedIn ? "/account" : "/login", label: t(signedIn ? "nav.account" : "account.signIn"), icon: User },
+              { href: signedIn ? "/account/orders" : "/order-lookup", label: t(signedIn ? "account.orders" : "footer.orderLookup"), icon: signedIn ? ShoppingBag : PackageSearch },
+              { href: "/wishlist", label: t("nav.wishlist"), icon: Heart },
+              ...(signedIn ? [{ href: "/order-lookup", label: t("footer.orderLookup"), icon: PackageSearch }] : [{ href: "/register", label: t("account.register"), icon: User }]),
+            ].map(({ href, label, icon: Icon }) => (
+              <li key={href}>
+                <Link
+                  href={href}
+                  onClick={close}
+                  className={cn(
+                    "flex min-h-11 items-center gap-2 rounded-xl bg-white/5 px-3 font-medium text-white hover:bg-white/10",
+                    active(href) && "text-gold",
+                  )}
+                >
+                  <Icon className="h-4 w-4 shrink-0" aria-hidden />
+                  <span className="truncate">{label}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
 
-        {/* ST-02: account, orders and wishlist are reachable on mobile. */}
-        <ul className="grid grid-cols-2 gap-2 border-t border-white/10 px-4 pt-3 text-sm">
-          {[
-            { href: signedIn ? "/account" : "/login", label: t(signedIn ? "nav.account" : "account.signIn"), icon: User },
-            { href: signedIn ? "/account/orders" : "/order-lookup", label: t(signedIn ? "account.orders" : "footer.orderLookup"), icon: signedIn ? ShoppingBag : PackageSearch },
-            { href: "/wishlist", label: t("nav.wishlist"), icon: Heart },
-            ...(signedIn ? [{ href: "/order-lookup", label: t("footer.orderLookup"), icon: PackageSearch }] : [{ href: "/register", label: t("account.register"), icon: User }]),
-          ].map(({ href, label, icon: Icon }) => (
-            <li key={href}>
-              <Link
-                href={href}
-                onClick={close}
-                className={cn(
-                  "flex min-h-11 items-center gap-2 rounded-xl bg-white/5 px-3 font-medium text-white hover:bg-white/10",
-                  active(href) && "text-gold",
-                )}
-              >
-                <Icon className="h-4 w-4 shrink-0" aria-hidden />
-                <span className="truncate">{label}</span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-
-        <div className="border-t border-white/10 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <LanguageSwitcher />
-            <span className="rounded-lg bg-white/8 px-3 py-2 text-xs font-semibold text-white/70">{SITE.currency}</span>
+          <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div className="flex items-center justify-between gap-3">
+              <LanguageSwitcher />
+              <span className="rounded-lg bg-white/8 px-3 py-2 text-xs font-semibold text-white/70">{t("nav.currencyLabel")}</span>
+            </div>
           </div>
-          <button
-            type="button"
-            className="flex min-h-12 w-full items-center justify-between rounded-xl bg-brand px-4 text-sm font-semibold text-white"
-            onClick={() => {
-              close();
-              setCartOpen(true);
-            }}
-          >
-            <span>
-              {t("nav.cart")}
-              {hydrated && itemCount ? ` (${itemCount})` : ""}
-            </span>
-            <span>{hydrated ? formatJod(total, locale) : SITE.currency}</span>
-          </button>
-        </div>
+        </nav>
       </aside>
     </div>
   );
