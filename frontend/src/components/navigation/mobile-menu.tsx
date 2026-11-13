@@ -24,7 +24,7 @@ function buildMenuCategories(): Category[] {
   const snapshot = getSnapshotCategories();
   const products = catalog();
   // D20: the admin-managed menu wins when any category is flagged "show in menu".
-  const menu = buildMenu(getSnapshotMenuCategories(), snapshot, products);
+  const menu = buildMenu(getSnapshotMenuCategories(), snapshot, products, { includeEmpty: true });
   if (menu.length) {
     const flat: Category[] = [];
     for (const entry of menu) {
@@ -70,6 +70,8 @@ function buildMenuRows(locale: string): MenuRow[] {
   const flat = buildMenuCategories();
   const products = catalog();
   const snapshot = getSnapshotCategories();
+  // Staff-built menu (D20): show every published sub-category, even before it has products.
+  const adminMenu = getSnapshotMenuCategories().some((category) => category.showInMenu !== false);
   const pool = [...snapshot, ...flat.filter((c) => !snapshot.some((s) => s.slug === c.slug))];
   const label = (en: string, ar?: string) => (locale === "ar" ? ar || en : en);
   const bySort = (a: Category, b: Category) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name);
@@ -79,7 +81,7 @@ function buildMenuRows(locale: string): MenuRow[] {
     if (depth >= MAX_DEPTH) return [];
     const source = fromMenu.length ? fromMenu : pool.filter((c) => c.parent === slug).sort(bySort);
     return source
-      .filter((c) => !seen.has(`${slug}>${c.slug}`) && hrefHasProducts(c.href, products, snapshot))
+      .filter((c) => !seen.has(`${slug}>${c.slug}`) && (adminMenu || hrefHasProducts(c.href, products, snapshot)))
       .map((c) => {
         seen.add(`${slug}>${c.slug}`);
         return { key: `${slug}>${c.slug}`, label: label(c.name, c.nameAr), href: c.href, children: childrenOf(c.slug, depth + 1, []) };

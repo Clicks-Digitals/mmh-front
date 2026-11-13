@@ -92,14 +92,21 @@ function entryOf(category: Category, children: MenuEntry[] = []): MenuEntry {
  * (API order: sort_order, name). Top level = menu categories without a menu parent; children are
  * their published sub-categories. Entries that lead to no products are dropped (unless a child
  * has products). An empty result means "use the built-in navigation".
+ * `includeEmpty` (side menu): keep categories staff created even before they have products.
  */
-export function buildMenu(menuCategories: Category[], allCategories: Category[], products: Product[]): MenuEntry[] {
+export function buildMenu(
+  menuCategories: Category[],
+  allCategories: Category[],
+  products: Product[],
+  { includeEmpty = false }: { includeEmpty?: boolean } = {},
+): MenuEntry[] {
   const menu = menuCategories.filter((category) => category.showInMenu !== false);
   const menuSlugs = new Set(menu.map((category) => category.slug));
   const pool = new Map<string, Category>();
   for (const category of [...allCategories, ...menu]) pool.set(category.slug, category);
   const categories = [...pool.values()];
   const hasProducts = (category: Category) =>
+    includeEmpty ||
     products.length === 0 || hrefHasProducts(category.href || `/category/${category.slug}`, products, categories);
   const seen = new Set<string>();
   const top = menu.filter((category) => !category.parent || !menuSlugs.has(category.parent)).sort(bySort);
