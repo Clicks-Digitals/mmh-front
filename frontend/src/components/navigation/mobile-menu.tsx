@@ -11,10 +11,8 @@ import { buildMenu, platformTiles } from "@/lib/nav-menu";
 import { catalog } from "@/data/products";
 import { hrefHasProducts } from "@/lib/listing";
 import { cn } from "@/lib/cn";
-import { whatsappHref, type SiteContact } from "@/lib/site-contact";
-import type { FooterPageLink } from "@/components/layout/footer";
 import type { Category } from "@/types";
-import { ChevronDown, ChevronRight, Heart, Search, ShoppingBag, User, UserPlus, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Heart, PackageSearch, ShoppingBag, User, UserPlus, X } from "lucide-react";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -102,13 +100,13 @@ function buildMenuRows(locale: string): MenuRow[] {
     });
 }
 
-export function MobileMenu({ contact, pages = [] }: { contact?: SiteContact; pages?: FooterPageLink[] }) {
+export function MobileMenu() {
   const { mobileNavOpen } = useUi();
-  return mobileNavOpen ? <MobileMenuPanel contact={contact} pages={pages} /> : null;
+  return mobileNavOpen ? <MobileMenuPanel /> : null;
 }
 
-function MobileMenuPanel({ contact, pages }: { contact?: SiteContact; pages: FooterPageLink[] }) {
-  const { mobileNavOpen, setMobileNavOpen, setSearchOpen } = useUi();
+function MobileMenuPanel() {
+  const { mobileNavOpen, setMobileNavOpen } = useUi();
   const { t, locale } = useLanguage();
   const { data: session, status } = useSession();
   const signedIn = status === "authenticated" && session?.user?.kind === "CUSTOMER";
@@ -117,7 +115,7 @@ function MobileMenuPanel({ contact, pages }: { contact?: SiteContact; pages: Foo
   const closeRef = useRef<HTMLButtonElement>(null);
   const active = (href: string) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`));
 
-  const { shortcuts, categories, footer } = useMemo(() => {
+  const { shortcuts, categories } = useMemo(() => {
     const products = catalog();
     const snapshot = getSnapshotCategories();
     const categoryRows = buildMenuRows(locale);
@@ -127,37 +125,11 @@ function MobileMenuPanel({ contact, pages }: { contact?: SiteContact; pages: Foo
       { key: "deals", label: t("nav.deals"), href: "/deals", children: [] },
     ].filter((row) => !linked.has(row.href) && hrefHasProducts(row.href, products, snapshot));
 
-    const pageTitle = (page: FooterPageLink) => (locale === "ar" ? page.titleAr || page.title : page.title);
-    const fixed = [
-      { href: "/faq", label: t("footer.faq") },
-      { href: "/digital-product-policy", label: t("footer.digitalPolicy") },
-      { href: "/terms", label: t("footer.terms") },
-      { href: "/privacy", label: t("footer.privacy") },
-      { href: "/about", label: t("footer.about") },
-    ];
-    const useful = [...fixed, ...pages.map((page) => ({ href: page.href, label: pageTitle(page) }))]
-      .filter((link, i, all) => all.findIndex((other) => other.href === link.href) === i)
-      .map((link) => ({ key: `useful>${link.href}`, label: link.label, href: link.href, children: [] }));
-
-    const whatsapp = whatsappHref(contact?.whatsapp_number ?? "");
-    const care: MenuRow[] = [
-      { key: "care>contact", label: t("footer.contact"), href: "/contact", children: [] },
-      { key: "care>lookup", label: t("footer.orderLookup"), href: "/order-lookup", children: [] },
-      ...(whatsapp ? [{ key: "care>wa", label: "WhatsApp", href: whatsapp, external: true, children: [] }] : []),
-      ...(contact?.telegram_url ? [{ key: "care>tg", label: "Telegram", href: contact.telegram_url, external: true, children: [] }] : []),
-      ...(contact?.support_email
-        ? [{ key: "care>mail", label: contact.support_email, href: `mailto:${contact.support_email}`, external: true, children: [] }]
-        : []),
-    ];
     return {
       shortcuts: shortcutRows,
       categories: categoryRows,
-      footer: [
-        { key: "useful", label: t("nav.usefulLinks"), href: "", children: useful },
-        { key: "care", label: t("nav.customerService"), href: "", children: care },
-      ] as MenuRow[],
     };
-  }, [locale, t, pages, contact]);
+  }, [locale, t]);
 
   // Rows on the way to the current page start open.
   const [open, setOpen] = useState<Set<string>>(() => {
@@ -285,20 +257,6 @@ function MobileMenuPanel({ contact, pages }: { contact?: SiteContact; pages: Foo
         </div>
 
         <nav className="flex-1 overflow-y-auto overscroll-contain" aria-label={t("nav.menu")}>
-          <div className="px-4 py-3">
-            <button
-              type="button"
-              className="flex h-11 w-full items-center gap-3 rounded-xl bg-white/6 px-3.5 text-start text-[13px] text-white/60 transition hover:bg-white/10 hover:text-white"
-              onClick={() => {
-                close();
-                setSearchOpen(true);
-              }}
-            >
-              <Search className="h-4 w-4 shrink-0" />
-              <span className="truncate">{t("common.searchPlaceholder")}</span>
-            </button>
-          </div>
-
           <ul className="border-t border-white/10">
             <li className="border-b border-white/10">
               <Link href="/" onClick={close} className={cn("flex min-h-[54px] items-center px-5 text-[15px] font-semibold text-white hover:bg-white/5", pathname === "/" && "text-gold")}>
@@ -309,12 +267,9 @@ function MobileMenuPanel({ contact, pages }: { contact?: SiteContact; pages: Foo
             {categories.map((row) => renderRow(row, 0))}
           </ul>
 
-          <ul className="mt-4 border-t border-white/10">{footer.map((row) => renderRow(row, 0))}</ul>
-
           {/* ST-02: account, orders and wishlist are reachable on mobile. */}
           <ul className="grid grid-cols-2 gap-2 px-4 pt-4 text-sm">
             {[
-              // "Track an order" lives under Customer service.
               ...(signedIn
                 ? [
                     { href: "/account", label: t("nav.account"), icon: User },
@@ -325,6 +280,7 @@ function MobileMenuPanel({ contact, pages }: { contact?: SiteContact; pages: Foo
                     { href: "/register", label: t("account.register"), icon: UserPlus },
                   ]),
               { href: "/wishlist", label: t("nav.wishlist"), icon: Heart },
+              { href: "/order-lookup", label: t("footer.orderLookup"), icon: PackageSearch },
             ].map(({ href, label, icon: Icon }) => (
               <li key={href}>
                 <Link

@@ -64,7 +64,7 @@ export default async function StorefrontLayout({ children }: { children: React.R
             <Footer contact={settings.contact} storeName={settings.storeName} pages={footerPages} />
             <FloatingContactButtons contact={settings.contact} />
             <CartDrawer />
-            <MobileMenu contact={settings.contact} pages={footerPages} />
+            <MobileMenu />
             <SearchOverlay />
             <QuickView />
             <ToastViewport />
