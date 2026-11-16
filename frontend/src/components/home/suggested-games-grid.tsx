@@ -8,7 +8,7 @@ import { hrefHasProducts } from "@/lib/listing";
 import type { StoreHomeTile } from "@/types";
 import Link from "next/link";
 
-/** "MMH suggests" grid — tiles from Admin → Content → Home tiles (only those leading to products). */
+/** "MMH suggests" glow circles — tiles from Admin → Content → Home tiles (only those leading to products). */
 export function SuggestedGamesGrid({ tiles }: { tiles: StoreHomeTile[] }) {
   const { t, locale } = useLanguage();
   const products = liveCatalog();
@@ -18,23 +18,23 @@ export function SuggestedGamesGrid({ tiles }: { tiles: StoreHomeTile[] }) {
   return (
     <section className="container-mmh py-6 sm:py-8">
       <h2 className="mb-4 text-center text-xl font-bold tracking-tight sm:mb-6 sm:text-2xl">{t("home.suggest")}</h2>
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 lg:gap-4">
+      <div className="mx-auto grid max-w-5xl grid-cols-3 gap-x-3 gap-y-5 sm:grid-cols-4 sm:gap-x-5 sm:gap-y-7 lg:grid-cols-6">
         {visible.map((tile) => (
           <Link
             key={tile.id}
             href={tile.href}
-            className="group relative aspect-[4/5] overflow-hidden rounded-2xl border border-line bg-[#17182b] transition hover:border-gold/40"
+            className="group flex flex-col items-center gap-2.5 rounded-2xl outline-none transition-transform duration-300 hover:-translate-y-1.5 focus-visible:ring-2 focus-visible:ring-gold motion-reduce:transition-none motion-reduce:hover:translate-y-0"
           >
-            <CategoryTileImage
-              entity={tile}
-              alt=""
-              className="absolute inset-0 h-full w-full transition duration-300 group-hover:scale-[1.04]"
-            />
-            <div className="absolute inset-x-0 bottom-0 bg-[#17182b]/88 px-2.5 py-2.5 backdrop-blur-sm sm:px-3 sm:py-3">
-              <p className="line-clamp-2 text-center text-xs font-semibold text-white sm:text-sm">
-                {locale === "ar" ? tile.titleAr : tile.title}
-              </p>
-            </div>
+            <span className="block aspect-square w-full max-w-[9.5rem] rounded-full bg-[conic-gradient(from_210deg,#f7c037,#8b5cf6,#f7c037)] p-[3px] shadow-[0_10px_24px_rgba(0,0,0,0.4)] transition-shadow duration-300 group-hover:shadow-[0_0_0_2px_rgba(247,192,55,0.5),0_0_28px_rgba(139,92,246,0.6),0_14px_30px_rgba(0,0,0,0.45)]">
+              <CategoryTileImage
+                entity={tile}
+                alt=""
+                className="h-full w-full rounded-full border-[3px] border-deep [&_img]:duration-500 [&_img]:group-hover:scale-110"
+              />
+            </span>
+            <span className="line-clamp-2 text-center text-xs font-bold leading-snug text-white transition-colors group-hover:text-gold sm:text-sm">
+              {locale === "ar" ? tile.titleAr : tile.title}
+            </span>
           </Link>
         ))}
       </div>
