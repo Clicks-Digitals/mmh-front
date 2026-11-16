@@ -1,5 +1,6 @@
 "use client";
 
+import { currencyName } from "@/lib/currency";
 import { ConfirmDialog } from "@/components/admin/ui/confirm-dialog";
 import { EntityImageField } from "@/components/admin/ui/entity-image-field";
 import { ErrorState } from "@/components/admin/ui/error-state";
@@ -69,10 +70,12 @@ const CONTACT_FIELDS = [
 ] as const;
 
 type ContactKey = (typeof CONTACT_FIELDS)[number]["name"];
+type CurrencyRow = { code: string; rate: string; enabled: boolean };
 type Form = Record<ContactKey, string> & {
   store_name: string;
   low_stock_threshold: string;
   maintenance_mode: boolean;
+  currencies: CurrencyRow[];
 };
 
 function toForm(s: SiteSettings): Form {
@@ -80,6 +83,7 @@ function toForm(s: SiteSettings): Form {
     store_name: s.store_name ?? "",
     low_stock_threshold: String(s.low_stock_threshold ?? 5),
     maintenance_mode: Boolean(s.maintenance_mode),
+    currencies: (s.currencies ?? []).map((c) => ({ code: c.code, rate: String(c.rate), enabled: c.enabled })),
     ...(Object.fromEntries(CONTACT_FIELDS.map((f) => [f.name, s[f.name] ?? ""])) as Record<ContactKey, string>),
   };
 }
@@ -92,7 +96,11 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
   const [confirmMaintenance, setConfirmMaintenance] = useState(false);
 
   function check(): boolean {
-    const local = validateSettingsForm(form);
+    const { currencies: _currencies, ...fields } = form;
+    void _currencies;
+    const local = validateSettingsForm(fields);
+    const badRate = form.currencies.find((c) => c.code !== "JOD" && !(Number(c.rate) > 0));
+    if (badRate) local.currencies = `${badRate.code}: enter a rate above 0 (how many ${badRate.code} make 1 JOD).`;
     setErrors(local);
     return Object.keys(local).length === 0;
   }
@@ -108,6 +116,9 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
         ...Object.fromEntries(CONTACT_FIELDS.map((f) => [f.name, form[f.name].trim()])),
         low_stock_threshold: Number(form.low_stock_threshold || 0),
         maintenance_mode: form.maintenance_mode,
+        currency_rates: Object.fromEntries(
+          form.currencies.filter((c) => c.code !== "JOD").map((c) => [c.code, { rate: Number(c.rate), enabled: c.enabled }]),
+        ),
       });
       onSaved(next);
       setForm(toForm(next));
@@ -140,6 +151,7 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
         labels={Object.fromEntries([
           ["store_name", "Store name"],
           ["low_stock_threshold", "Low stock threshold"],
+          ["currencies", "Currencies"],
           ...CONTACT_FIELDS.map((f) => [f.name, f.label]),
         ])}
         idFor={(key) => key}
@@ -188,6 +200,45 @@ function SettingsForm({ settings, token, onSaved }: { settings: SiteSettings; to
           />
         </FormField>
       ))}
+      <div className="border-t border-[var(--clicks-border)] pt-4" id="currencies">
+        <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Currencies</h2>
+        <p className="mt-1 text-xs text-[var(--clicks-muted)]">
+          Shoppers can show prices in these currencies. Prices are always charged in JOD — the converted amount is a guide. The
+          rate is how many units make 1 JOD (e.g. 1 JOD = 5.289 SAR).
+        </p>
+        {errors.currencies ? <p className="mt-2 text-[11px] text-[var(--clicks-error)]">{errors.currencies}</p> : null}
+        <div className="mt-3 divide-y divide-[var(--clicks-border)] rounded-lg border border-[var(--clicks-border)]">
+          {form.currencies.map((c, i) => (
+            <div key={c.code} className="grid grid-cols-[1fr_130px_90px] items-center gap-3 px-3 py-2">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={c.enabled}
+                  disabled={c.code === "JOD"}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, currencies: f.currencies.map((x, j) => (j === i ? { ...x, enabled: e.target.checked } : x)) }))
+                  }
+                />
+                <span className="font-semibold text-[var(--clicks-navy)]">{c.code}</span>
+                <span className="truncate text-[12px] text-[var(--clicks-muted)]">{currencyName(c.code, "en")}</span>
+              </label>
+              <input
+                aria-label={`${c.code} per 1 JOD`}
+                className={adminInputClass}
+                inputMode="decimal"
+                disabled={c.code === "JOD"}
+                value={c.code === "JOD" ? "1" : c.rate}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, currencies: f.currencies.map((x, j) => (j === i ? { ...x, rate: e.target.value } : x)) }))
+                }
+              />
+              <span className="text-end text-[11px] tabular-nums text-[var(--clicks-muted)]">
+                {Number(c.rate) > 0 ? `10 JOD = ${(10 * Number(c.rate)).toLocaleString("en-US", { maximumFractionDigits: 2 })}` : "—"}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
       <div className="border-t border-[var(--clicks-border)] pt-4">
         <h2 className="text-sm font-semibold text-[var(--clicks-navy)]">Operations</h2>
       </div>

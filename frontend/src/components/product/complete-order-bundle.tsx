@@ -7,7 +7,7 @@ import { useCart } from "@/context/cart-context";
 import { useLanguage } from "@/context/language-context";
 import { useUi } from "@/context/ui-context";
 import { defaultRegionId, denominationsForRegion } from "@/lib/digital-options";
-import { formatJod } from "@/lib/format";
+import { useCurrency } from "@/context/currency-context";
 import { cn } from "@/lib/cn";
 import type { CartDigitalMeta, DigitalDenomination, Product } from "@/types";
 import Link from "next/link";
@@ -48,6 +48,7 @@ export function CompleteOrderBundle({
   mainQuantity: number;
 }) {
   const { t, locale } = useLanguage();
+  const { format: formatPrice } = useCurrency();
   const { addItem } = useCart();
   const { setCartOpen } = useUi();
 
@@ -157,7 +158,7 @@ export function CompleteOrderBundle({
 
       <div className="p-4 sm:p-5">
         <Button variant="gold" className="w-full" disabled={!canBuy} onClick={buyTogether}>
-          {canBuy ? `${t("product.bundleTotal")} · ${formatJod(total, locale)}` : t("product.bundleNone")}
+          {canBuy ? `${t("product.bundleTotal")} · ${formatPrice(total)}` : t("product.bundleNone")}
         </Button>
       </div>
     </section>

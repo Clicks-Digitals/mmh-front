@@ -12,13 +12,15 @@ import { FocusMode } from "@/components/ui/focus-mode";
 import { PageCurtain } from "@/components/layout/page-curtain";
 import { Providers } from "@/context/providers";
 import { BrandAssetsProvider } from "@/context/brand-assets-context";
+import { CurrencyProvider } from "@/context/currency-context";
+import { CURRENCY_COOKIE } from "@/lib/currency";
 import { CatalogBoot } from "@/components/storefront/catalog-boot";
 import { isMaintenanceExempt, PATHNAME_HEADER } from "@/lib/maintenance";
 import { resolveMenuCategories, resolveStorefrontCategories, resolveStorefrontProducts } from "@/server/catalog/resolve";
 import { loadFooterPages } from "@/server/legal-page";
 import { getServerLocale, serverT } from "@/server/locale";
 import { loadStoreSettings } from "@/server/site-contact";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +42,7 @@ export default async function StorefrontLayout({ children }: { children: React.R
     );
   }
 
+  const currencyCode = (await cookies()).get(CURRENCY_COOKIE)?.value;
   const [products, categories, menuCategories, footerPages] = await Promise.all([
     resolveStorefrontProducts().catch(() => []),
     resolveStorefrontCategories().catch(() => []),
@@ -50,6 +53,7 @@ export default async function StorefrontLayout({ children }: { children: React.R
     <div className="flex min-h-full flex-col bg-deep text-fg">
       <Providers locale={locale}>
         <BrandAssetsProvider value={{ logoUrl: settings.logoUrl, heroUrl: settings.heroUrl }}>
+          <CurrencyProvider currencies={settings.currencies} initialCode={currencyCode}>
           <CatalogBoot products={products} categories={categories} menuCategories={menuCategories}>
             <FocusMode />
             <PageCurtain />
@@ -69,6 +73,7 @@ export default async function StorefrontLayout({ children }: { children: React.R
             <QuickView />
             <ToastViewport />
           </CatalogBoot>
+          </CurrencyProvider>
         </BrandAssetsProvider>
       </Providers>
     </div>

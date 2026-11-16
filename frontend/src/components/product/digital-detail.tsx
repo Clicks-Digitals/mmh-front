@@ -22,7 +22,8 @@ import { useUi } from "@/context/ui-context";
 import { useWishlist } from "@/context/wishlist-context";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { getSnapshotCategories } from "@/lib/catalog-snapshot";
-import { discountPercent, formatJod } from "@/lib/format";
+import { discountPercent } from "@/lib/format";
+import { useCurrency } from "@/context/currency-context";
 import { defaultRegionId, denominationSellable, denominationsForRegion, matchDenominationId } from "@/lib/digital-options";
 import { clampQuantity, lowStockCount, quantityLimits } from "@/lib/quantity";
 import { STORAGE_KEYS } from "@/lib/storage";
@@ -31,12 +32,23 @@ import type { CartDigitalMeta, Product } from "@/types";
 import { ArrowUp, Heart } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { choiceClass, ICON_HIT } from "@/components/ui/control";
+import { FOCUS_RING, ICON_HIT } from "@/components/ui/control";
 import { cn } from "@/lib/cn";
 
 const EMPTY_RECENT_IDS: string[] = [];
 
 type PanelTab = "options" | "details" | "reviews";
+
+const CURRENCY_SIGN: Record<string, string> = { USD: "$", EUR: "€", GBP: "£" };
+
+/** Short face value for a compact tile, e.g. "$10" or "600 UC"; "" when the option has none. */
+function faceValueText(item: { value: number; currency: string }): string {
+  if (!item.value || !Number.isFinite(item.value)) return "";
+  const amount = Number.isInteger(item.value) ? String(item.value) : item.value.toFixed(2);
+  const currency = (item.currency || "").toUpperCase();
+  const sign = CURRENCY_SIGN[currency];
+  return sign ? `${sign}${amount}` : currency ? `${amount} ${currency}` : amount;
+}
 
 export function DigitalProductDetail({ product }: { product: Product }) {
   const options = product.digitalOptions;
@@ -44,6 +56,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
   const multiRegion = options.regions.length > 1;
   const regionLocked = options.regions.some((item) => item.locked);
   const { t, locale } = useLanguage();
+  const { format: formatPrice } = useCurrency();
   const { addItem } = useCart();
   const { push } = useToast();
   const { toggle, has } = useWishlist();
@@ -385,10 +398,10 @@ export function DigitalProductDetail({ product }: { product: Product }) {
                               type="button"
                               aria-pressed={selected}
                               onClick={() => selectRegion(item.id)}
-                              className={choiceClass(selected, "min-h-11 px-3.5 py-2")}
+                              className={cn("mmh-chip inline-flex h-9 items-center gap-1.5 px-3 text-[13px] font-semibold text-fg", FOCUS_RING)}
                             >
                               {locale === "ar" ? item.nameAr : item.name}
-                              {item.currency ? ` · ${item.currency}` : ""}
+                              {item.currency ? <span className="text-[11px] font-medium text-muted">{item.currency}</span> : null}
                             </button>
                           );
                         })}
@@ -400,22 +413,28 @@ export function DigitalProductDetail({ product }: { product: Product }) {
                   {hasAmountChoices ? (
                     <div>
                       <p className="mb-2.5 text-sm font-medium">{isTopup ? t("product.package") : t("product.stepAmount")}</p>
-                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                         {visibleDenoms.map((item) => {
                           const selected = denominationId === item.id;
                           const out = !denominationSellable(item);
+                          const label = locale === "ar" ? item.labelAr : item.label;
+                          const face = faceValueText(item);
                           return (
                             <button
                               key={item.id}
                               type="button"
                               disabled={out}
                               aria-pressed={selected}
+                              aria-label={`${label} — ${out ? t("product.outOfStock") : formatPrice(item.priceJod)}`}
+                              title={label}
                               onClick={() => setDenominationId(item.id)}
-                              className={choiceClass(selected, "flex min-h-[4.5rem] flex-col justify-center px-3 py-3 text-start disabled:opacity-40")}
+                              className={cn("mmh-chip flex min-h-[3.6rem] flex-col items-center justify-center px-2 py-2 text-center", FOCUS_RING)}
                             >
-                              <span className="text-base font-semibold">{locale === "ar" ? item.labelAr : item.label}</span>
-                              <span className="mt-1 text-xs text-muted">
-                                {out ? t("product.outOfStock") : formatJod(item.priceJod, locale)}
+                              <span className={cn("text-[15px] font-bold leading-tight tabular-nums text-fg", !face && "line-clamp-2 text-[12px] font-semibold")} dir="ltr">
+                                {face || label}
+                              </span>
+                              <span className={cn("mt-0.5 text-[11px] leading-tight", out ? "text-danger" : selected ? "text-gold" : "text-muted")}>
+                                {out ? t("product.outOfStock") : formatPrice(item.priceJod)}
                               </span>
                             </button>
                           );

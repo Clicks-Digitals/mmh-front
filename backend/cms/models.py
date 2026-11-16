@@ -105,6 +105,8 @@ class SiteSettings(models.Model):
     youtube_url = models.URLField(blank=True)
     low_stock_threshold = models.IntegerField(default=5)
     maintenance_mode = models.BooleanField(default=False)
+    # Storefront display currencies {code: {rate, enabled}}; see cms/currencies.py for defaults.
+    currency_rates = models.JSONField(default=dict, blank=True)
     # Uploaded brand pictures (MEDIA_URL paths); empty -> the store's bundled defaults.
     logo_image = models.CharField(max_length=512, blank=True, default="")
     hero_image = models.CharField(max_length=512, blank=True, default="")

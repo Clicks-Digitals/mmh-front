@@ -401,7 +401,7 @@ export function PromoteCard({
 }) {
   const { input } = bind(form, errors, disabled, onChange);
   const unsupported = form.badges.filter((b) => !isSupportedBadge(b));
-  const active = [form.trending, form.bestseller, form.featured].filter(Boolean).length;
+  const active = [form.trending, form.bestseller, form.featured, form.show_in_navbar].filter(Boolean).length;
   const problems = ["badges", "tags"].filter((k) => errors[k]).length;
   return (
     <EditorSection
@@ -410,13 +410,21 @@ export function PromoteCard({
       collapsible
       defaultOpen={active > 0 || form.badges.length > 0}
       forceOpen={problems > 0}
-      description="Trending, bestseller, featured, badges and search words."
+      description="Trending, bestseller, featured, navbar link, badges and search words."
       badge={problems ? <ErrorPill count={problems} /> : active ? <CountPill>{active} on</CountPill> : null}
     >
       <div className="space-y-3.5">
         <Toggle id="pg-trending" label="Trending" hint="Home page “Trending now” row." checked={form.trending} disabled={disabled} onChange={(trending) => onChange({ trending })} />
         <Toggle id="pg-bestseller" label="Bestseller" hint="Listed on the Best Sellers page." checked={form.bestseller} disabled={disabled} onChange={(bestseller) => onChange({ bestseller })} />
         <Toggle id="pg-featured" label="Featured" hint="Shown first in the shop and in the menu." checked={form.featured} disabled={disabled} onChange={(featured) => onChange({ featured })} />
+        <Toggle
+          id="pg-show_in_navbar"
+          label="Show in the navbar"
+          hint="Adds a link to this product in the store's top bar."
+          checked={form.show_in_navbar}
+          disabled={disabled}
+          onChange={(show_in_navbar) => onChange({ show_in_navbar })}
+        />
         <Toggle
           id="pg-refundable"
           label="Refundable"

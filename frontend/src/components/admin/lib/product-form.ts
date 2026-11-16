@@ -106,6 +106,7 @@ export type GeneralForm = {
   featured: boolean;
   bestseller: boolean;
   trending: boolean;
+  show_in_navbar: boolean;
   refundable: boolean;
   sort_order: string;
   badges: string[];
@@ -146,6 +147,7 @@ export const GENERAL_FIELDS = new Set<string>([
   "featured",
   "bestseller",
   "trending",
+  "show_in_navbar",
   "refundable",
   "sort_order",
   "badges",
@@ -195,6 +197,7 @@ export function productToGeneralForm(p: AdminProduct): GeneralForm {
     featured: Boolean(p.featured),
     bestseller: Boolean(p.bestseller),
     trending: Boolean(p.trending),
+    show_in_navbar: Boolean(p.show_in_navbar),
     refundable: Boolean(p.refundable),
     sort_order: String(p.sort_order ?? 0),
     badges: [...(p.badges ?? [])],
@@ -256,6 +259,7 @@ export function generalFormToPayload(form: GeneralForm, original?: GeneralForm) 
     featured: form.featured,
     bestseller: form.bestseller,
     trending: form.trending,
+    show_in_navbar: form.show_in_navbar,
     refundable: form.refundable,
     sort_order: Number(form.sort_order.trim() || 0),
     badges: form.badges.map((b) => b.trim()).filter(Boolean),

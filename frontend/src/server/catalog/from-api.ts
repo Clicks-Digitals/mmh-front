@@ -15,6 +15,7 @@ type ApiProduct = {
   featured: boolean;
   bestseller: boolean;
   trending: boolean;
+  show_in_navbar?: boolean;
   rating: string | number;
   review_count: number;
   badges: string[];
@@ -97,6 +98,7 @@ type ApiCategory = {
   image_url?: string;
   sort_order?: number;
   show_in_menu?: boolean;
+  show_in_navbar?: boolean;
   name_en: string;
   name_ar: string;
   description_en: string;
@@ -235,6 +237,7 @@ export function mapApiProduct(row: ApiProduct): Product {
     featured: row.featured,
     bestseller: row.bestseller,
     trending: row.trending,
+    showInNavbar: Boolean(row.show_in_navbar),
     createdAt: row.created_at ?? new Date(0).toISOString(),
     tags: row.tags || [],
     platform: row.platform_slug || platform?.slug || row.brand.toLowerCase(),
@@ -294,6 +297,7 @@ export function mapApiCategory(row: ApiCategory): Category {
     artworkKey: row.artwork_key || "",
     ...(row.image_url ? { imageUrl: resolveMediaUrl(row.image_url) } : {}),
     showInMenu: Boolean(row.show_in_menu),
+    showInNavbar: Boolean(row.show_in_navbar),
     sortOrder: Number(row.sort_order) || 0,
     ...(row.parent ? { parent: row.parent } : {}),
   };

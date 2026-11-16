@@ -102,7 +102,7 @@ export function QuickPayModal({
                 {` · ×${payload.quantity}`}
               </p>
             </div>
-            <Price amount={total} locale={locale} />
+            <Price charge amount={total} locale={locale} />
           </div>
           {fieldServerError("variant_id") || fieldServerError("quantity") || fieldServerError("product_id") ? (
             <p className="mt-2 text-xs text-danger">

@@ -68,6 +68,8 @@ class Category(models.Model):
     # D20: storefront header / mega menu / mobile menu / home tiles list published categories
     # with show_in_menu, ordered by sort_order then name.
     show_in_menu = models.BooleanField(default=False)
+    # Shown as a link in the storefront's navbar row (with products flagged the same way).
+    show_in_navbar = models.BooleanField(default=False)
     name_en = models.CharField(max_length=160)
     name_ar = models.CharField(max_length=160, blank=True)
     description_en = models.TextField(blank=True)
@@ -129,6 +131,8 @@ class Product(models.Model):
     featured = models.BooleanField(default=False)
     bestseller = models.BooleanField(default=False)
     trending = models.BooleanField(default=False)
+    # Shown as a link in the storefront's navbar row.
+    show_in_navbar = models.BooleanField(default=False)
     refundable = models.BooleanField(default=False)
     region_warning_en = models.TextField(blank=True)
     region_warning_ar = models.TextField(blank=True)

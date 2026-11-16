@@ -5,14 +5,14 @@ import { FOCUS_RING, ICON_HIT } from "@/components/ui/control";
 import { useLanguage } from "@/context/language-context";
 import { useEscape, useScrollLock } from "@/hooks/use-overlay";
 import { cn } from "@/lib/cn";
-import { X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { catalog as liveCatalog } from "@/data/products";
 import { getSnapshotCategories, getSnapshotMenuCategories } from "@/lib/catalog-snapshot";
 import { hrefHasProducts } from "@/lib/listing";
 import type { ArtworkSource } from "@/lib/builtin-artwork";
 import { buildMenu, type MenuEntry } from "@/lib/nav-menu";
 import Link from "next/link";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const hasProducts = (href: string) => hrefHasProducts(href, liveCatalog(), getSnapshotCategories());
 
@@ -49,12 +49,40 @@ export function CategorySwiperSection() {
   useScrollLock(Boolean(active));
   useEscape(Boolean(active), close);
 
-  const loop = useMemo(() => {
-    const available = homeTiles(t, locale).filter((item) => item.children.some((child) => hasProducts(child.href)));
-    return [...available, ...available];
-  }, [t, locale]);
+  const items = useMemo(
+    () => homeTiles(t, locale).filter((item) => item.children.some((child) => hasProducts(child.href))),
+    [t, locale],
+  );
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [paused, setPaused] = useState(false);
+  const rtl = locale === "ar";
 
-  if (!loop.length) return null;
+  /** Slide by about one screen; wraps to the start at the end. `dir` 1 = forward in reading order. */
+  const slide = useCallback(
+    (dir: 1 | -1) => {
+      const track = trackRef.current;
+      if (!track) return;
+      const max = track.scrollWidth - track.clientWidth;
+      if (max <= 0) return;
+      const sign = rtl ? -1 : 1; // RTL scrollLeft runs from 0 to -max
+      const position = Math.abs(track.scrollLeft);
+      const step = Math.max(track.clientWidth * 0.8, 160);
+      let next = position + dir * step;
+      if (dir === 1 && position >= max - 4) next = 0;
+      else if (dir === -1 && position <= 4) next = max;
+      track.scrollTo({ left: sign * Math.min(Math.max(next, 0), max), behavior: "smooth" });
+    },
+    [rtl],
+  );
+
+  // Moves on its own; stops while hovered, focused or a category is open.
+  useEffect(() => {
+    if (paused || active || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const id = window.setInterval(() => slide(1), 3500);
+    return () => window.clearInterval(id);
+  }, [paused, active, slide]);
+
+  if (!items.length) return null;
 
   return (
     <section className="py-6 sm:py-8" aria-label={t("home.categoriesTitle")}>
@@ -63,34 +91,67 @@ export function CategorySwiperSection() {
         <p className="mx-auto mt-2 max-w-xl text-center text-sm text-muted">{t("home.categoriesSubtitle")}</p>
       </div>
 
-      <div className="relative overflow-hidden [mask-image:linear-gradient(90deg,transparent,black_5%,black_95%,transparent)]">
+      <div
+        className="group/slider relative"
+        onMouseEnter={() => setPaused(true)}
+        onMouseLeave={() => setPaused(false)}
+        onFocus={() => setPaused(true)}
+        onBlur={() => setPaused(false)}
+        onTouchStart={() => setPaused(true)}
+      >
         <div
-          className={cn(
-            "category-marquee flex w-max gap-5 pe-5 sm:gap-7 sm:pe-7 lg:gap-8 lg:pe-8",
-            active && "category-marquee-paused",
-          )}
+          ref={trackRef}
+          className="flex snap-x snap-mandatory gap-5 overflow-x-auto scroll-smooth px-[6vw] pb-3 pt-2 [scrollbar-width:none] sm:gap-7 lg:gap-8 [&::-webkit-scrollbar]:hidden"
         >
-          {loop.map((item, index) => (
+          {items.map((item) => (
             <button
-              key={`${item.id}-${index}`}
+              key={item.id}
               type="button"
               onClick={() => setActive(item)}
               className={cn(
-                "group flex w-[min(42vw,11.5rem)] shrink-0 flex-col items-center gap-3 rounded-2xl sm:w-[min(28vw,14.5rem)] lg:w-[min(22vw,17rem)]",
+                "group flex w-[min(38vw,10.5rem)] shrink-0 snap-center flex-col items-center gap-3 rounded-2xl transition-transform duration-300 ease-out hover:-translate-y-1.5 sm:w-[min(26vw,13rem)] lg:w-[min(18vw,15rem)]",
                 FOCUS_RING,
               )}
             >
-              <span className="relative aspect-square w-full rounded-full bg-[radial-gradient(circle_at_35%_30%,#3a3b63,#17182b_70%)] p-[3px] shadow-[0_0_0_1px_rgba(247,192,55,0.35),0_12px_28px_rgba(0,0,0,0.35)] transition group-hover:shadow-[0_0_0_2px_rgba(247,192,55,0.55),0_16px_36px_rgba(0,0,0,0.4)] sm:p-[4px]">
+              <span className="relative aspect-square w-full rounded-full bg-[radial-gradient(circle_at_35%_30%,#3a3b63,#17182b_70%)] p-[3px] shadow-[0_0_0_1px_rgba(247,192,55,0.35),0_12px_28px_rgba(0,0,0,0.35)] transition-[box-shadow] duration-300 group-hover:shadow-[0_0_0_2px_rgba(247,192,55,0.8),0_0_28px_rgba(139,92,246,0.55),0_18px_40px_rgba(0,0,0,0.45)] sm:p-[4px]">
                 <span className="relative block h-full w-full overflow-hidden rounded-full border border-brand/40 bg-[#17182b]">
-                  <CategoryTileImage entity={item.picture} alt="" className="h-full w-full" />
+                  <span className="block h-full w-full transition-transform duration-500 ease-out group-hover:scale-110">
+                    <CategoryTileImage entity={item.picture} alt="" className="h-full w-full" />
+                  </span>
                 </span>
               </span>
-              <span className="line-clamp-2 min-h-8 text-center text-sm font-semibold leading-4 text-fg sm:min-h-10 sm:text-base sm:leading-5 lg:text-lg">
+              <span className="line-clamp-2 min-h-8 text-center text-sm font-semibold leading-4 text-fg transition-colors group-hover:text-gold sm:min-h-10 sm:text-base sm:leading-5 lg:text-lg">
                 {item.label}
               </span>
             </button>
           ))}
         </div>
+        {items.length > 1 ? (
+          <>
+            <button
+              type="button"
+              aria-label={t("slider.previous")}
+              onClick={() => slide(-1)}
+              className={cn(
+                ICON_HIT,
+                "absolute start-2 top-[40%] z-10 h-11 w-11 -translate-y-1/2 rounded-full border border-white/15 bg-deep/80 text-white shadow-lg backdrop-blur transition hover:border-gold/60 hover:text-gold sm:start-4",
+              )}
+            >
+              <ChevronLeft className="h-5 w-5 rtl-flip" />
+            </button>
+            <button
+              type="button"
+              aria-label={t("slider.next")}
+              onClick={() => slide(1)}
+              className={cn(
+                ICON_HIT,
+                "absolute end-2 top-[40%] z-10 h-11 w-11 -translate-y-1/2 rounded-full border border-white/15 bg-deep/80 text-white shadow-lg backdrop-blur transition hover:border-gold/60 hover:text-gold sm:end-4",
+              )}
+            >
+              <ChevronRight className="h-5 w-5 rtl-flip" />
+            </button>
+          </>
+        ) : null}
       </div>
 
       {active ? (

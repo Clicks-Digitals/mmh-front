@@ -872,6 +872,17 @@ class AdminSupplierMappingDetailView(APIView):
         return Response(status=204)
 
 
+def _category_with_descendants(value: str) -> set[int]:
+    """Ids of the category given by id or slug plus all of its sub-categories."""
+    root = Category.objects.filter(Q(slug=value) | Q(pk=int(value)) if value.isdigit() else Q(slug=value)).values_list("pk", flat=True)
+    ids = set(root)
+    frontier = set(ids)
+    while frontier:
+        frontier = set(Category.objects.filter(parent_id__in=frontier).exclude(pk__in=ids).values_list("pk", flat=True))
+        ids |= frontier
+    return ids
+
+
 class AdminVariantViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, viewsets.ModelViewSet):
     audit_prefix = "catalog.variant"
     protected_detail = "This variant has order or code history and cannot be deleted. Unpublish it instead."
@@ -899,6 +910,15 @@ class AdminVariantViewSet(AuditedModelViewSetMixin, ProtectedDestroyMixin, views
         if str(self.request.query_params.get("exclude_archived") or "").lower() in {"1", "true", "yes"}:
             # Pickers (e.g. the 1Epin link dialog) never offer archived products.
             qs = qs.exclude(product__status=PublishStatus.ARCHIVED)
+        category = (self.request.query_params.get("category") or "").strip()
+        if category:
+            # A category and everything under it (Inventory filter).
+            qs = qs.filter(product__category_id__in=_category_with_descendants(category))
+        region = (self.request.query_params.get("region") or "").strip()
+        if region == "none":
+            qs = qs.filter(region__isnull=True)
+        elif region:
+            qs = qs.filter(Q(region__slug=region) | Q(region_id=int(region)) if region.isdigit() else Q(region__slug=region))
         return qs
 
     def get_serializer_context(self):

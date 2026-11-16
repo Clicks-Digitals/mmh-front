@@ -1,5 +1,6 @@
 "use client";
 
+import { ChargedNote } from "@/components/ui/charged-note";
 import { CouponBox } from "@/components/cart/coupon-box";
 import { UsdEstimate } from "@/components/checkout/payment-step";
 import { ProductCover } from "@/components/product/product-artwork";
@@ -201,6 +202,7 @@ export function CartPageView() {
             <dd>{freeOrder ? <span className="text-success">{t("order.free")}</span> : <Price amount={total} locale={locale} />}</dd>
           </div>
         </dl>
+        {freeOrder ? null : <ChargedNote amountJod={total} className="mt-2" />}
         {freeOrder ? null : <UsdEstimate totalFils={totalFils} className="mt-2 text-xs text-muted" />}
         <CouponBox />
         <Button className="mt-5 w-full" href={blocked ? undefined : "/checkout"} disabled={blocked}>

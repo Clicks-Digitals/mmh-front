@@ -1,18 +1,22 @@
 "use client";
 
 import { FOCUS_RING, ICON_HIT } from "@/components/ui/control";
+import { CurrencySelect } from "@/components/navigation/currency-select";
 import { Logo } from "@/components/ui/logo";
 import { useCart } from "@/context/cart-context";
 import { useLanguage } from "@/context/language-context";
 import { useUi } from "@/context/ui-context";
 import { cn } from "@/lib/cn";
 import { Globe, Menu, Search, ShoppingCart, User } from "lucide-react";
+import { catalog } from "@/data/products";
+import { getSnapshotCategories } from "@/lib/catalog-snapshot";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 
 /**
  * Store header: menu + search on the start side, the logo in the middle, and language,
- * currency, account and cart on the end side. All navigation lives in the side menu.
+ * currency, account and cart on the end side. Below it, the links staff put in the navbar.
  */
 export function Header() {
   const { t, locale, setLocale } = useLanguage();
@@ -67,7 +71,7 @@ export function Header() {
             <Globe className="h-4 w-4 text-muted" aria-hidden />
             <span lang={locale === "ar" ? "en" : "ar"}>{locale === "ar" ? "English" : "العربية"}</span>
           </button>
-          <span className="hidden h-10 items-center px-2 text-[13px] font-medium text-muted lg:inline-flex">{t("nav.currencyLabel")}</span>
+          <CurrencySelect className="hidden lg:inline-flex" />
           <Link href="/account" className={iconButton} aria-label={t("nav.account")}>
             <User className="h-5 w-5" />
           </Link>
@@ -81,6 +85,49 @@ export function Header() {
           </button>
         </div>
       </div>
+      <NavbarLinks />
     </header>
+  );
+}
+
+/** Categories, then products, that staff switched "Show in the navbar" on for. Hidden when none. */
+function NavbarLinks() {
+  const { locale } = useLanguage();
+  const pathname = usePathname();
+  const links = useMemo(() => {
+    const categories = getSnapshotCategories()
+      .filter((category) => category.showInNavbar)
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name))
+      .map((category) => ({ href: category.href, label: locale === "ar" ? category.nameAr || category.name : category.name }));
+    const products = catalog()
+      .filter((product) => product.showInNavbar)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((product) => ({ href: `/product/${product.slug}`, label: locale === "ar" ? product.nameAr || product.name : product.name }));
+    return [...categories, ...products].filter((link, i, all) => all.findIndex((other) => other.href === link.href) === i);
+  }, [locale]);
+
+  if (!links.length) return null;
+  return (
+    <nav aria-label="Featured" className="border-t border-line/60">
+      <ul className="container-mmh flex h-11 items-center gap-1 overflow-x-auto [scrollbar-width:none] sm:justify-center [&::-webkit-scrollbar]:hidden">
+        {links.map((link) => {
+          const active = pathname === link.href || pathname.startsWith(`${link.href}/`);
+          return (
+            <li key={link.href} className="shrink-0">
+              <Link
+                href={link.href}
+                className={cn(
+                  "inline-flex h-8 items-center rounded-lg px-3 text-[13px] font-medium transition-colors",
+                  FOCUS_RING,
+                  active ? "bg-white/10 text-gold" : "text-fg/80 hover:bg-white/8 hover:text-fg",
+                )}
+              >
+                {link.label}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }

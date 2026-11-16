@@ -1,5 +1,6 @@
 "use client";
 
+import { ChargedNote } from "@/components/ui/charged-note";
 import { ProductCover } from "@/components/product/product-artwork";
 import { UsdEstimate } from "@/components/checkout/payment-step";
 import { Button } from "@/components/ui/button";
@@ -117,6 +118,7 @@ export function CartDrawer() {
                 {freeOrder ? <span className="text-success">{t("order.free")}</span> : <Price amount={total} locale={locale} />}
               </div>
             ) : null}
+            {freeOrder ? null : <ChargedNote amountJod={total} className="mb-1" />}
             {freeOrder ? null : <UsdEstimate totalFils={totalFils} className="mb-3 text-xs text-muted" />}
             <Button className="w-full" href="/checkout" onClick={() => setCartOpen(false)}>
               {t("cart.checkout")}

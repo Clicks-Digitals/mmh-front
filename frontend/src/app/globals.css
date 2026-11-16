@@ -514,3 +514,25 @@ body:has(.clicks-shell) {
 .mmh-drawer-in { animation: mmh-drawer-in-ltr 0.24s cubic-bezier(0.22, 1, 0.36, 1); }
 [dir="rtl"] .mmh-drawer-in { animation-name: mmh-drawer-in-rtl; }
 @media (prefers-reduced-motion: reduce) { .mmh-drawer-in { animation: none; } }
+
+/* Neon option chips (product page region + amount pickers). */
+.mmh-chip {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.15s ease, background 0.18s ease;
+}
+.mmh-chip:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--secondary-hover) 75%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--secondary-hover) 35%, transparent), 0 0 16px -3px var(--secondary-hover);
+  transform: translateY(-1px);
+}
+.mmh-chip[aria-pressed="true"] {
+  border-color: var(--primary);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--primary) 16%, transparent), color-mix(in srgb, var(--secondary) 14%, transparent));
+  box-shadow: 0 0 0 1px var(--primary), 0 0 20px -4px color-mix(in srgb, var(--primary) 85%, transparent),
+    inset 0 0 14px -6px var(--primary);
+}
+.mmh-chip:disabled { cursor: not-allowed; opacity: 0.38; }
+@media (prefers-reduced-motion: reduce) { .mmh-chip, .mmh-chip:hover:not(:disabled) { transform: none; transition: none; } }

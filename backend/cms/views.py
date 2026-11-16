@@ -14,6 +14,7 @@ from accounts.validators import normalize_whatsapp
 from audit.services import AuditedModelViewSetMixin, record_audit
 from catalog.serializers import media_absolute_url
 from catalog.services.entity_images import entity_image_response
+from cms.currencies import clean_currency_rates, effective_currencies
 from cms.models import Banner, ContentPage, FAQ, HomeTile, SiteSettings
 
 BANNER_PUBLIC_FIELDS = (
@@ -219,6 +220,10 @@ ContentPageSerializer = AdminContentPageSerializer
 class SiteSettingsSerializer(serializers.ModelSerializer):
     logo_image_url = serializers.SerializerMethodField()
     hero_image_url = serializers.SerializerMethodField()
+    currencies = serializers.SerializerMethodField()
+
+    def get_currencies(self, obj) -> list[dict]:
+        return effective_currencies(obj.currency_rates)
 
     def get_logo_image_url(self, obj) -> str:
         return media_absolute_url(self.context.get("request"), obj.logo_image)
@@ -241,6 +246,8 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
             "youtube_url",
             "low_stock_threshold",
             "maintenance_mode",
+            "currency_rates",
+            "currencies",
             "logo_image",
             "logo_image_url",
             "hero_image",
@@ -253,6 +260,12 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
     def validate_whatsapp_number(self, value):
         try:
             return normalize_whatsapp(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_currency_rates(self, value):
+        try:
+            return clean_currency_rates(value)
         except ValueError as exc:
             raise serializers.ValidationError(str(exc)) from exc
 
@@ -287,7 +300,9 @@ class PublicSiteSettingsView(APIView):
 
     def get(self, request):
         data = SiteSettingsSerializer(SiteSettings.load(), context={"request": request}).data
-        return Response({key: data[key] for key in PUBLIC_SETTINGS_FIELDS})
+        body = {key: data[key] for key in PUBLIC_SETTINGS_FIELDS}
+        body["currencies"] = [c for c in data["currencies"] if c["enabled"]]
+        return Response(body)
 
 
 def active_banners_queryset(now=None):

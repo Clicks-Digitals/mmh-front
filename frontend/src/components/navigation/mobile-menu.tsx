@@ -1,5 +1,6 @@
 "use client";
 
+import { CurrencySelect } from "@/components/navigation/currency-select";
 import { LanguageSwitcher } from "@/components/navigation/language-switcher";
 import { ICON_HIT } from "@/components/ui/control";
 import { useLanguage } from "@/context/language-context";
@@ -12,7 +13,7 @@ import { catalog } from "@/data/products";
 import { hrefHasProducts } from "@/lib/listing";
 import { cn } from "@/lib/cn";
 import type { Category } from "@/types";
-import { ChevronDown, ChevronRight, Heart, PackageSearch, ShoppingBag, User, UserPlus, X } from "lucide-react";
+import { ChevronDown, Heart, PackageSearch, ShoppingBag, User, UserPlus, X } from "lucide-react";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -214,18 +215,6 @@ function MobileMenuPanel() {
         </button>
         {expanded ? (
           <ul className={cn(depth === 0 && "bg-black/15 pb-2")}>
-            {row.href ? (
-              <li>
-                <Link
-                  href={row.href}
-                  onClick={close}
-                  className={cn("flex min-h-10 items-center justify-between pe-5 text-[13px] font-semibold text-gold hover:bg-white/5", depth === 0 ? "ps-9" : "ps-12")}
-                >
-                  {t("nav.viewAll")}
-                  <ChevronRight className="h-4 w-4 rtl-flip" aria-hidden />
-                </Link>
-              </li>
-            ) : null}
             {row.children.map((child) => renderRow(child, depth + 1))}
           </ul>
         ) : null}
@@ -301,7 +290,7 @@ function MobileMenuPanel() {
           <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
             <div className="flex items-center justify-between gap-3">
               <LanguageSwitcher />
-              <span className="rounded-lg bg-white/8 px-3 py-2 text-xs font-semibold text-white/70">{t("nav.currencyLabel")}</span>
+              <CurrencySelect tone="menu" />
             </div>
           </div>
         </nav>

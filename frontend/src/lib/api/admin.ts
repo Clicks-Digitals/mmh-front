@@ -74,6 +74,7 @@ export type AdminProduct = {
   featured?: boolean;
   bestseller?: boolean;
   trending?: boolean;
+  show_in_navbar?: boolean;
   rating?: number | null;
   review_count?: number;
   badges?: string[];
@@ -200,6 +201,7 @@ export type ProductWritePayload = Record<string, unknown> & {
   featured?: boolean;
   bestseller?: boolean;
   trending?: boolean;
+  show_in_navbar?: boolean;
   source?: string;
   account_currency?: string;
   variants?: Array<Record<string, unknown>>;
@@ -263,6 +265,7 @@ export type AdminCategory = {
   products_count?: number;
   /** D20: shown in the store's top menu */
   show_in_menu?: boolean;
+  show_in_navbar?: boolean;
   children?: Array<{ id: number | string; slug: string; name_en: string }>;
 };
 
@@ -671,6 +674,9 @@ export type AuditLog = {
 };
 
 export type SiteSettings = {
+  /** Every supported display currency: rate = units per 1 JOD. */
+  currencies?: Array<{ code: string; rate: number; enabled: boolean }>;
+  currency_rates?: Record<string, { rate: number; enabled: boolean }>;
   store_name: string;
   support_email?: string;
   support_phone?: string;

@@ -27,6 +27,7 @@ export type ApiCmsPage = {
 export type ApiSiteSettings = {
   store_name?: string;
   maintenance_mode?: boolean;
+  currencies?: Array<{ code: string; rate: number; enabled?: boolean }>;
   support_email?: string;
   support_phone?: string;
   business_hours?: string;

@@ -135,6 +135,8 @@ export interface Product {
   featured?: boolean;
   trending?: boolean;
   bestseller?: boolean;
+  /** Linked from the navbar row (Admin → product → Promotion). */
+  showInNavbar?: boolean;
   createdAt: string;
   tags: string[];
   platform: string;
@@ -154,6 +156,8 @@ export interface Category {
   imageUrl?: string;
   /** D20: shown in the header / mega menu / mobile menu / home tiles. */
   showInMenu?: boolean;
+  /** Linked from the navbar row (Admin → Categories). */
+  showInNavbar?: boolean;
   sortOrder?: number;
 }
 

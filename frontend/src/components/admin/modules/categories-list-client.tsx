@@ -43,6 +43,7 @@ const emptyForm = {
   sort_order: "0",
   status: "PUBLISHED",
   show_in_menu: false as boolean,
+  show_in_navbar: false as boolean,
 };
 
 const STATUS_LABEL: Record<string, string> = { PUBLISHED: "Published", DRAFT: "Draft", ARCHIVED: "Archived" };
@@ -123,6 +124,7 @@ export function CategoriesListClient() {
       sort_order: String(row.sort_order ?? 0),
       status: row.status,
       show_in_menu: Boolean(row.show_in_menu),
+      show_in_navbar: Boolean(row.show_in_navbar),
     });
     setSlugTouched(true);
     setErrors({});
@@ -152,6 +154,7 @@ export function CategoriesListClient() {
         sort_order: Number(form.sort_order) || 0,
         status: form.status,
         show_in_menu: form.show_in_menu,
+        show_in_navbar: form.show_in_navbar,
       };
       if (editing) {
         await updateCategory(token, editing.id, body);
@@ -198,7 +201,7 @@ export function CategoriesListClient() {
     <div>
       <PageHeader
         title="Categories"
-        description="Groups of products on the store. Only published categories (and their products) are visible. Tick “Show in the store's top menu” for the categories that should appear in the header menu; lower sort numbers come first."
+        description="Groups of products on the store. Only published categories (and their products) are visible. Tick “Show in the side menu” or “Show in the navbar” to list a category there; lower sort numbers come first."
         actions={
           canWrite ? (
             <button type="button" onClick={openCreate} className="admin-btn admin-btn-primary">
@@ -220,7 +223,7 @@ export function CategoriesListClient() {
             onChange: (v) => set({ menu: v }),
             options: [
               { value: "", label: "In menu or not" },
-              { value: "true", label: "In the top menu" },
+              { value: "true", label: "In the side menu" },
               { value: "false", label: "Not in the menu" },
             ],
           },
@@ -258,8 +261,16 @@ export function CategoriesListClient() {
           },
           {
             key: "menu",
-            header: "Top menu",
-            render: (r) => (r.show_in_menu ? <Badge tone="success">In menu</Badge> : <span className="text-[var(--clicks-muted)]">—</span>),
+            header: "Shown in",
+            render: (r) =>
+              r.show_in_menu || r.show_in_navbar ? (
+                <span className="flex flex-wrap gap-1">
+                  {r.show_in_menu ? <Badge tone="success">Side menu</Badge> : null}
+                  {r.show_in_navbar ? <Badge tone="info">Navbar</Badge> : null}
+                </span>
+              ) : (
+                <span className="text-[var(--clicks-muted)]">—</span>
+              ),
           },
           {
             key: "products",
@@ -431,9 +442,23 @@ export function CategoriesListClient() {
               onChange={(e) => setForm((f) => ({ ...f, show_in_menu: e.target.checked }))}
             />
             <span>
-              <span className="font-medium">Show in the store&apos;s top menu</span>
+              <span className="font-medium">Show in the side menu</span>
               <span className="block text-[11px] text-[var(--clicks-muted)]">
-                Adds the category to the header menu, the mobile menu and the home page category tiles (only while it is published and has products).
+                Adds the category to the store&apos;s side menu (its sub-categories open under it) and to the home page category tiles.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={form.show_in_navbar}
+              onChange={(e) => setForm((f) => ({ ...f, show_in_navbar: e.target.checked }))}
+            />
+            <span>
+              <span className="font-medium">Show in the navbar</span>
+              <span className="block text-[11px] text-[var(--clicks-muted)]">
+                Adds a link to this category in the row under the store&apos;s top bar.
               </span>
             </span>
           </label>

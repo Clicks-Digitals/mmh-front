@@ -331,7 +331,7 @@ export function CheckoutView() {
                 <span>
                   {locale === "ar" ? product.nameAr : product.name} × {item.quantity}
                 </span>
-                <Price amount={linePrice(item, product)} locale={locale} size="sm" />
+                <Price charge amount={linePrice(item, product)} locale={locale} size="sm" />
               </li>
             ) : null,
           )}
@@ -340,7 +340,7 @@ export function CheckoutView() {
           <div className="flex justify-between">
             <dt className="text-muted">{t("checkout.subtotal")}</dt>
             <dd>
-              <Price amount={subtotal} locale={locale} size="sm" />
+              <Price charge amount={subtotal} locale={locale} size="sm" />
             </dd>
           </div>
           {discountFils > 0 ? (
@@ -353,7 +353,7 @@ export function CheckoutView() {
           ) : null}
           <div className="flex justify-between border-t border-line pt-3 font-semibold">
             <dt>{t("checkout.total")}</dt>
-            <dd>{freeOrder ? <span className="text-success">{t("order.free")}</span> : <Price amount={total} locale={locale} />}</dd>
+            <dd>{freeOrder ? <span className="text-success">{t("order.free")}</span> : <Price charge amount={total} locale={locale} />}</dd>
           </div>
         </dl>
         {freeOrder ? null : <UsdEstimate totalFils={totalFils} className="mt-2 text-xs text-muted" />}
