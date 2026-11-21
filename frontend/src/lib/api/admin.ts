@@ -692,6 +692,9 @@ export type SiteSettings = {
   /** Uploaded store logo / home picture (absolute URLs, "" = bundled default). Read-only here. */
   logo_image_url?: string;
   hero_image_url?: string;
+  /** Admin → Store design (see lib/design.ts). */
+  theme?: Partial<import("@/lib/design").StoreTheme>;
+  home_layout?: import("@/lib/design").HomeSection[];
   updated_at?: string;
 };
 
@@ -1470,6 +1473,11 @@ export type SiteImageTarget = "logo" | "hero";
 
 export function uploadSiteImage(token: string, target: SiteImageTarget, file: File) {
   return adminFetch<SiteSettings>(`/admin/settings/image/?target=${target}`, { token, method: "POST", body: imageForm(file) });
+}
+
+/** A picture for a home page image section (Admin → Store design); returns its stored address. */
+export function uploadDesignImage(token: string, file: File) {
+  return adminFetch<{ url: string; absolute_url: string }>("/admin/settings/design-image/", { token, method: "POST", body: imageForm(file) });
 }
 
 export function deleteSiteImage(token: string, target: SiteImageTarget) {

@@ -1,6 +1,7 @@
 import { getSettings } from "@/lib/api/cms";
 import { resolveMediaUrl } from "@/lib/media";
 import { normalizeCurrencies, type DisplayCurrency } from "@/lib/currency";
+import { DEFAULT_HOME_LAYOUT, DEFAULT_THEME, normalizeHomeLayout, normalizeTheme, type HomeSection, type StoreTheme } from "@/lib/design";
 import { EMPTY_SITE_CONTACT, type SiteContact } from "@/lib/site-contact";
 
 export type StoreSettings = {
@@ -12,6 +13,8 @@ export type StoreSettings = {
   heroUrl: string;
   /** Display currencies switched on in Settings (JOD first). */
   currencies: DisplayCurrency[];
+  theme: StoreTheme;
+  homeLayout: HomeSection[];
 };
 
 export async function loadStoreSettings(): Promise<StoreSettings> {
@@ -30,6 +33,8 @@ export async function loadStoreSettings(): Promise<StoreSettings> {
       logoUrl: resolveMediaUrl(data?.logo_image_url),
       heroUrl: resolveMediaUrl(data?.hero_image_url),
       currencies: normalizeCurrencies(data?.currencies),
+      theme: normalizeTheme(data?.theme),
+      homeLayout: normalizeHomeLayout(data?.home_layout),
     };
   } catch {
     return {
@@ -39,6 +44,8 @@ export async function loadStoreSettings(): Promise<StoreSettings> {
       logoUrl: "",
       heroUrl: "",
       currencies: normalizeCurrencies([]),
+      theme: DEFAULT_THEME,
+      homeLayout: DEFAULT_HOME_LAYOUT,
     };
   }
 }

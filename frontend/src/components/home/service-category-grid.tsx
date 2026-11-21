@@ -19,7 +19,7 @@ export function ServiceCategoryGrid() {
   if (!tiles.length) return null;
   return (
     <section className="container-mmh py-6 sm:py-8" aria-label={t("home.services")}>
-      <h2 className="mb-5 text-center text-xl font-bold tracking-tight sm:mb-6 sm:text-2xl">{t("home.services")}</h2>
+      <h2 className="mmh-heading mb-5 text-center text-xl font-bold tracking-tight sm:mb-6 sm:text-2xl">{t("home.services")}</h2>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 sm:gap-6 lg:grid-cols-4 lg:gap-8">
         {tiles.map((tile) => (
           <Link

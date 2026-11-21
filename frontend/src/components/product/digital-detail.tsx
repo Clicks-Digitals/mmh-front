@@ -24,7 +24,7 @@ import { useLocalStorage } from "@/hooks/use-local-storage";
 import { getSnapshotCategories } from "@/lib/catalog-snapshot";
 import { discountPercent } from "@/lib/format";
 import { useCurrency } from "@/context/currency-context";
-import { defaultRegionId, denominationSellable, denominationsForRegion, matchDenominationId } from "@/lib/digital-options";
+import { defaultSellableRegionId, denominationSellable, denominationsForRegion, matchDenominationId } from "@/lib/digital-options";
 import { clampQuantity, lowStockCount, quantityLimits } from "@/lib/quantity";
 import { STORAGE_KEYS } from "@/lib/storage";
 import { customerFieldError, firstInvalidField, normalizeFieldValue } from "@/lib/validation";
@@ -65,7 +65,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
   const [payOpen, setPayOpen] = useState(false);
   const [pendingBuy, setPendingBuy] = useState<QuickBuyPayload | null>(null);
 
-  const initialRegion = defaultRegionId(options.regions);
+  const initialRegion = defaultSellableRegionId(product);
   const [regionId, setRegionId] = useState(initialRegion);
   const [denominationId, setDenominationId] = useState(
     () => denominationsForRegion(product, initialRegion).find(denominationSellable)?.id ?? "",

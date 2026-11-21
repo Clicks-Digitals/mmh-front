@@ -14,6 +14,7 @@ import { Providers } from "@/context/providers";
 import { BrandAssetsProvider } from "@/context/brand-assets-context";
 import { CurrencyProvider } from "@/context/currency-context";
 import { CURRENCY_COOKIE } from "@/lib/currency";
+import { themeCss } from "@/lib/design";
 import { CatalogBoot } from "@/components/storefront/catalog-boot";
 import { isMaintenanceExempt, PATHNAME_HEADER } from "@/lib/maintenance";
 import { resolveMenuCategories, resolveStorefrontCategories, resolveStorefrontProducts } from "@/server/catalog/resolve";
@@ -49,8 +50,10 @@ export default async function StorefrontLayout({ children }: { children: React.R
     resolveMenuCategories(),
     loadFooterPages(),
   ]);
+  const themeStyle = themeCss(settings.theme);
   return (
-    <div className="flex min-h-full flex-col bg-deep text-fg">
+    <div className="flex min-h-full flex-col bg-deep text-fg" data-neon={settings.theme.neon}>
+      {themeStyle ? <style dangerouslySetInnerHTML={{ __html: themeStyle }} /> : null}
       <Providers locale={locale}>
         <BrandAssetsProvider value={{ logoUrl: settings.logoUrl, heroUrl: settings.heroUrl }}>
           <CurrencyProvider currencies={settings.currencies} initialCode={currencyCode}>

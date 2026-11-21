@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { Hero } from "@/components/home/hero";
 import { HomeBanners, type HomeBanner } from "@/components/home/home-banners";
 import { CategorySwiperSection } from "@/components/home/category-swiper-section";
@@ -7,12 +8,14 @@ import { LatestProducts } from "@/components/home/latest-products";
 import { PlatformQuickLinks } from "@/components/home/platform-quick-links";
 import { ServiceCategoryGrid } from "@/components/home/service-category-grid";
 import { SuggestedGamesGrid } from "@/components/home/suggested-games-grid";
+import { HomeImageSection, HomeProductsSection } from "@/components/home/home-custom-sections";
+import type { HomeSection } from "@/lib/design";
 import { listBanners } from "@/lib/api/cms";
 import { resolveMediaUrl } from "@/lib/media";
 import { fetchApiHomeTiles, fetchApiPlatforms } from "@/server/catalog/from-api";
 import { pageMeta } from "@/lib/seo";
 import { hasContactChannel } from "@/lib/site-contact";
-import { loadSiteContact } from "@/server/site-contact";
+import { loadStoreSettings } from "@/server/site-contact";
 
 export const metadata = pageMeta(
   "Digital gaming cards and top-ups in Jordan",
@@ -44,22 +47,44 @@ async function loadHomeBanners(): Promise<HomeBanner[]> {
 }
 
 export default async function HomePage() {
-  const [banners, contact, platforms, suggested] = await Promise.all([
+  const [banners, settings, platforms, suggested] = await Promise.all([
     loadHomeBanners(),
-    loadSiteContact(),
+    loadStoreSettings(),
     fetchApiPlatforms(),
     fetchApiHomeTiles("SUGGESTED"),
   ]);
+  // Admin → Store design decides the order and which sections show.
+  const render = (section: HomeSection) => {
+    switch (section.type) {
+      case "banners":
+        return banners.length ? <HomeBanners banners={banners} /> : <Hero />;
+      case "promo":
+        return <HomePromoBanner />;
+      case "platforms":
+        return <PlatformQuickLinks platforms={platforms} />;
+      case "categories":
+        return <CategorySwiperSection />;
+      case "best_sellers":
+        return <LatestProducts />;
+      case "services":
+        return <ServiceCategoryGrid />;
+      case "suggested":
+        return <SuggestedGamesGrid tiles={suggested} />;
+      case "support":
+        return <HomeSupportCta hasContact={hasContactChannel(settings.contact)} />;
+      case "products":
+        return <HomeProductsSection section={section} />;
+      case "image":
+        return <HomeImageSection section={section} />;
+    }
+  };
   return (
     <>
-      {banners.length ? <HomeBanners banners={banners} /> : <Hero />}
-      <HomePromoBanner />
-      <PlatformQuickLinks platforms={platforms} />
-      <CategorySwiperSection />
-      <LatestProducts />
-      <ServiceCategoryGrid />
-      <SuggestedGamesGrid tiles={suggested} />
-      <HomeSupportCta hasContact={hasContactChannel(contact)} />
+      {settings.homeLayout
+        .filter((section) => section.visible)
+        .map((section) => (
+          <Fragment key={section.id}>{render(section)}</Fragment>
+        ))}
     </>
   );
 }

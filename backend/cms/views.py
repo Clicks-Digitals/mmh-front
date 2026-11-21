@@ -15,6 +15,7 @@ from audit.services import AuditedModelViewSetMixin, record_audit
 from catalog.serializers import media_absolute_url
 from catalog.services.entity_images import entity_image_response
 from cms.currencies import clean_currency_rates, effective_currencies
+from cms.design import clean_home_layout, clean_theme
 from cms.models import Banner, ContentPage, FAQ, HomeTile, SiteSettings
 
 BANNER_PUBLIC_FIELDS = (
@@ -248,6 +249,8 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
             "maintenance_mode",
             "currency_rates",
             "currencies",
+            "theme",
+            "home_layout",
             "logo_image",
             "logo_image_url",
             "hero_image",
@@ -266,6 +269,18 @@ class SiteSettingsSerializer(serializers.ModelSerializer):
     def validate_currency_rates(self, value):
         try:
             return clean_currency_rates(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_theme(self, value):
+        try:
+            return clean_theme(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_home_layout(self, value):
+        try:
+            return clean_home_layout(value)
         except ValueError as exc:
             raise serializers.ValidationError(str(exc)) from exc
 
@@ -289,6 +304,8 @@ PUBLIC_SETTINGS_FIELDS = (
     "youtube_url",
     "logo_image_url",
     "hero_image_url",
+    "theme",
+    "home_layout",
 )
 
 
@@ -542,6 +559,27 @@ class AdminSiteSettingsImageView(APIView):
 
     def delete(self, request):
         return self._handle(request)
+
+
+class AdminDesignImageView(APIView):
+    """POST multipart ``file``: store a picture for a home page image section; returns {url}."""
+
+    permission_classes = [IsAdminUser, HasAdminPermission]
+    admin_permission = "settings.manage"
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        from catalog.services.media import MediaUploadError, save_upload
+
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"detail": "Choose a picture.", "code": "validation_error"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            _path, url, _mime = save_upload(upload, upload.name)
+        except MediaUploadError as exc:
+            return Response({"detail": str(exc), "code": "validation_error"}, status=status.HTTP_400_BAD_REQUEST)
+        record_audit(request.user, "settings.design_image_uploaded", entity_type="SiteSettings", entity_id=1, meta={"url": url})
+        return Response({"url": url, "absolute_url": media_absolute_url(request, url)}, status=status.HTTP_201_CREATED)
 
 
 # Backward-compatible list/create alias used previously

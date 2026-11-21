@@ -107,6 +107,9 @@ class SiteSettings(models.Model):
     maintenance_mode = models.BooleanField(default=False)
     # Storefront display currencies {code: {rate, enabled}}; see cms/currencies.py for defaults.
     currency_rates = models.JSONField(default=dict, blank=True)
+    # Store design (cms/design.py): {} / [] mean the built-in look and home page order.
+    theme = models.JSONField(default=dict, blank=True)
+    home_layout = models.JSONField(default=list, blank=True)
     # Uploaded brand pictures (MEDIA_URL paths); empty -> the store's bundled defaults.
     logo_image = models.CharField(max_length=512, blank=True, default="")
     hero_image = models.CharField(max_length=512, blank=True, default="")

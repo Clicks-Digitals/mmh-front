@@ -87,7 +87,7 @@ export function CategorySwiperSection() {
   return (
     <section className="py-6 sm:py-8" aria-label={t("home.categoriesTitle")}>
       <div className="container-mmh mb-5 sm:mb-6">
-        <h2 className="text-center text-xl font-bold tracking-tight sm:text-2xl">{t("home.categoriesTitle")}</h2>
+        <h2 className="mmh-heading text-center text-xl font-bold tracking-tight sm:text-2xl">{t("home.categoriesTitle")}</h2>
         <p className="mx-auto mt-2 max-w-xl text-center text-sm text-muted">{t("home.categoriesSubtitle")}</p>
       </div>
 
@@ -113,7 +113,7 @@ export function CategorySwiperSection() {
                 FOCUS_RING,
               )}
             >
-              <span className="relative aspect-square w-full rounded-full bg-[radial-gradient(circle_at_35%_30%,#3a3b63,#17182b_70%)] p-[3px] shadow-[0_0_0_1px_rgba(247,192,55,0.35),0_12px_28px_rgba(0,0,0,0.35)] transition-[box-shadow] duration-300 group-hover:shadow-[0_0_0_2px_rgba(247,192,55,0.8),0_0_28px_rgba(139,92,246,0.55),0_18px_40px_rgba(0,0,0,0.45)] sm:p-[4px]">
+              <span className="relative aspect-square w-full rounded-full bg-[radial-gradient(circle_at_35%_30%,var(--surface-elevated),var(--background)_70%)] p-[3px] shadow-[0_0_0_1px_color-mix(in_srgb,var(--primary)_35%,transparent),0_12px_28px_rgba(0,0,0,0.35)] transition-[box-shadow] duration-300 group-hover:shadow-[0_0_0_2px_color-mix(in_srgb,var(--primary)_80%,transparent),0_0_28px_var(--secondary-hover),0_18px_40px_rgba(0,0,0,0.45)] sm:p-[4px]">
                 <span className="relative block h-full w-full overflow-hidden rounded-full border border-brand/40 bg-[#17182b]">
                   <span className="block h-full w-full transition-transform duration-500 ease-out group-hover:scale-110">
                     <CategoryTileImage entity={item.picture} alt="" className="h-full w-full" />

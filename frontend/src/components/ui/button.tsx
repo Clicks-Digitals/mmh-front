@@ -33,10 +33,11 @@ const sizes: Record<Size, string> = {
 
 export function buttonClass(variant: Variant = "primary", size: Size = "md", className?: string) {
   return cn(
-    "inline-flex items-center justify-center gap-2 font-medium transition-colors duration-200 disabled:cursor-not-allowed",
+    "inline-flex items-center justify-center gap-2 font-medium transition-[color,background-color,border-color,box-shadow] duration-200 disabled:cursor-not-allowed",
     "[&_svg]:pointer-events-none [&_svg]:shrink-0",
     FOCUS_RING,
     variants[variant],
+    (variant === "primary" || variant === "gold") && "mmh-btn-glow",
     sizes[size],
     className,
   );

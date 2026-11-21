@@ -50,7 +50,7 @@ export function ProductCard({
 
   if (variant === "category") {
     return (
-      <article className="group relative flex h-full flex-col overflow-hidden rounded-md border border-line/80 bg-card">
+      <article className="mmh-card group relative flex h-full flex-col overflow-hidden rounded-md border border-line/80 bg-card">
         <div className="relative overflow-hidden">
           <Link href={`/product/${product.slug}`} className="relative block">
             <div className="transition-transform duration-500 [@media(hover:hover)]:group-hover:scale-[1.03]">
@@ -126,7 +126,7 @@ export function ProductCard({
   return (
     <article
       className={cn(
-        "group relative overflow-hidden rounded-[12px] border border-line bg-card transition-colors [@media(hover:hover)]:hover:border-gold/38",
+        "mmh-card group relative overflow-hidden rounded-[12px] border border-line bg-card transition-[border-color,box-shadow] [@media(hover:hover)]:hover:border-gold/38",
         list ? "grid grid-cols-[112px_minmax(0,1fr)] sm:grid-cols-[200px_minmax(0,1fr)] md:grid-cols-[240px_minmax(0,1fr)]" : "flex h-full flex-col",
       )}
     >

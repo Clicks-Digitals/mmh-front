@@ -27,6 +27,7 @@ import {
   Users,
   Warehouse,
   Boxes,
+  Palette,
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -92,8 +93,9 @@ export const ADMIN_NAV: Array<AdminNavItem | AdminNavGroup> = [
     id: "content",
     label: "Content",
     icon: FileText,
-    permissionAny: ["content.read", "content.write"],
+    permissionAny: ["content.read", "content.write", "settings.manage"],
     items: [
+      { href: "/admin/design", label: "Store design", icon: Palette, permission: "settings.manage" },
       { href: "/admin/banners", label: "Banners", icon: ImageIcon, permission: "content.read" },
       { href: "/admin/home-tiles", label: "Home tiles", icon: LayoutGrid, permission: "content.read" },
       { href: "/admin/pages", label: "Pages", icon: FileText, permission: "content.read" },

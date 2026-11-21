@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultRegionId, denominationsForRegion, isGiftCardProduct, matchDenominationId, uniqueFaceValues } from "@/lib/digital-options";
+import { defaultRegionId, defaultSellableRegionId, denominationsForRegion, isGiftCardProduct, matchDenominationId, uniqueFaceValues } from "@/lib/digital-options";
 import { PRODUCTS } from "@/data/products";
 import type { DigitalDenomination, Product } from "@/types";
 
@@ -31,6 +31,24 @@ describe("digital option visibility", () => {
   it("defaults to UAE/MENA when available", () => {
     const psn = PRODUCTS.find((item) => item.id === "psn-store")!;
     expect(defaultRegionId(psn.digitalOptions.regions)).toBe("uae");
+  });
+
+  it("opens on a region that has stock when the usual one is sold out", () => {
+    const psn = PRODUCTS.find((item) => item.id === "psn-store")!;
+    const regions = psn.digitalOptions.regions.map((r) => r.id);
+    const other = regions.find((id) => id !== "uae")!;
+    const product = {
+      ...psn,
+      digitalOptions: {
+        ...psn.digitalOptions,
+        denominations: [
+          { ...psn.digitalOptions.denominations[0], id: "a", regionId: "uae", inStock: false },
+          { ...psn.digitalOptions.denominations[0], id: "b", regionId: other, inStock: true, availableQuantity: 3 },
+        ],
+      },
+    };
+    expect(defaultSellableRegionId(product)).toBe(other);
+    expect(defaultSellableRegionId(psn)).toBe("uae");
   });
 
   it("treats wallet and gift-card products as gift cards", () => {

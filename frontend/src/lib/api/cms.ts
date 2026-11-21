@@ -40,6 +40,9 @@ export type ApiSiteSettings = {
   /** Uploaded in Admin → Settings; "" → the store's bundled logo / home picture. */
   logo_image_url?: string;
   hero_image_url?: string;
+  /** Admin → Store design (normalised by lib/design.ts). */
+  theme?: unknown;
+  home_layout?: unknown;
 };
 
 export function listBanners(placement = "HOME") {

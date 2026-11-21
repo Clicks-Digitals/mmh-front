@@ -13,6 +13,14 @@ export function defaultRegionId(regions: DigitalRegion[]): string {
   return regions[0]?.id ?? "";
 }
 
+/** The region a product page opens on: the usual default, unless it has nothing in stock and another region does. */
+export function defaultSellableRegionId(product: Product): string {
+  const regions = product.digitalOptions.regions;
+  const first = defaultRegionId(regions);
+  const order = [first, ...regions.map((region) => region.id).filter((id) => id !== first)];
+  return order.find((id) => denominationsForRegion(product, id).some(denominationSellable)) ?? first;
+}
+
 export function uniqueFaceValues(items: DigitalDenomination[]): DigitalDenomination[] {
   const seen = new Set<string>();
   return items.filter((item) => {

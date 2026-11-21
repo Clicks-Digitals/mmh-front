@@ -288,10 +288,9 @@ function MobileMenuPanel() {
           </ul>
 
           <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-            <div className="flex items-center justify-between gap-3">
-              <LanguageSwitcher />
-              <CurrencySelect tone="menu" />
-            </div>
+            <LanguageSwitcher />
+            <p className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wider text-muted">{t("currency.label")}</p>
+            <CurrencySelect tone="menu" />
           </div>
         </nav>
       </aside>

@@ -536,3 +536,43 @@ body:has(.clicks-shell) {
 }
 .mmh-chip:disabled { cursor: not-allowed; opacity: 0.38; }
 @media (prefers-reduced-motion: reduce) { .mmh-chip, .mmh-chip:hover:not(:disabled) { transform: none; transition: none; } }
+
+/* Store design → neon level (data-neon on the storefront wrapper). "accents": glow on interaction
+   only; "full": soft neon edges at rest too, glowing headings and a lit header line. */
+[data-neon="accents"] .mmh-btn-glow:not(:disabled):hover,
+[data-neon="full"] .mmh-btn-glow:not(:disabled) {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 60%, transparent), 0 0 22px -4px var(--primary);
+}
+[data-neon="full"] .mmh-btn-glow:not(:disabled):hover {
+  box-shadow: 0 0 0 1px var(--primary), 0 0 30px -2px var(--primary);
+}
+@media (hover: hover) {
+  [data-neon="accents"] .mmh-card:hover,
+  [data-neon="full"] .mmh-card:hover {
+    border-color: color-mix(in srgb, var(--secondary-hover) 80%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--secondary-hover) 40%, transparent), 0 0 26px -6px var(--secondary-hover);
+  }
+}
+[data-neon="full"] .mmh-card {
+  border-color: color-mix(in srgb, var(--secondary-hover) 38%, transparent);
+  box-shadow: 0 0 18px -10px var(--secondary-hover);
+}
+[data-neon="full"] .mmh-heading {
+  text-shadow: 0 0 18px color-mix(in srgb, var(--secondary-hover) 70%, transparent), 0 0 2px color-mix(in srgb, var(--primary) 40%, transparent);
+}
+[data-neon="full"] [data-mmh-nav] {
+  border-bottom-color: transparent;
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--secondary-hover) 60%, transparent), 0 6px 24px -14px var(--secondary-hover);
+}
+[data-neon="full"] {
+  background-image: radial-gradient(60rem 30rem at 85% -5%, color-mix(in srgb, var(--secondary) 22%, transparent), transparent 70%),
+    radial-gradient(50rem 26rem at 0% 40%, color-mix(in srgb, var(--primary) 7%, transparent), transparent 70%);
+  background-attachment: fixed;
+}
+[data-neon="off"] .mmh-chip:hover:not(:disabled),
+[data-neon="off"] .mmh-chip[aria-pressed="true"] {
+  box-shadow: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-neon] .mmh-btn-glow, [data-neon] .mmh-card { transition: none; }
+}
