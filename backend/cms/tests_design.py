@@ -29,6 +29,10 @@ class CleanDesignTests(TestCase):
             clean_theme({"primary": "red"})
         with self.assertRaises(ValueError):
             clean_theme({"neon": "max"})
+        with self.assertRaises(ValueError):
+            clean_theme({"background": "#ffffff"})  # white text on white
+        for preset_bg in ("#17182b", "#0c0b1d", "#120d22", "#14132a"):
+            self.assertEqual(clean_theme({"background": preset_bg})["background"], preset_bg)
 
     def test_layout_rules(self):
         rows = clean_home_layout(

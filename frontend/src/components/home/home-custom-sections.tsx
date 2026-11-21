@@ -62,7 +62,7 @@ export function HomeImageSection({ section }: { section: ImageSection }) {
   const picture = (
     <picture>
       <source media="(max-width: 639px)" srcSet={mobile} />
-      <img src={desktop} alt={alt} loading="lazy" decoding="async" className="block h-auto w-full" />
+      <img src={desktop} alt={alt} loading="lazy" decoding="async" className="block h-auto max-h-[28rem] w-full object-cover sm:max-h-[32rem]" />
     </picture>
   );
   const frame = "mmh-card block overflow-hidden rounded-2xl border border-line bg-card";

@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/admin/ui/page-header";
 import { useAdminToast } from "@/components/admin/ui/toast";
 import { useAdminQuery } from "@/hooks/use-admin-query";
 import {
-  asList,
+  fetchAllPages,
   getSiteSettings,
   listCategories,
   listProducts,
@@ -23,6 +23,7 @@ import { resolveMediaUrl } from "@/lib/media";
 import {
   BUILTIN_SECTIONS,
   THEME_PRESETS,
+  isBackgroundTooLight,
   normalizeHomeLayout,
   normalizeTheme,
   type BuiltinSectionType,
@@ -33,7 +34,7 @@ import {
   type StoreTheme,
 } from "@/lib/design";
 import { ArrowDown, ArrowUp, Eye, EyeOff, ExternalLink, ImagePlus, LayoutList, Pencil, Plus, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const ICON_BTN = "rounded-md p-1.5 text-[var(--clicks-muted)] hover:bg-[#EEF1F6] hover:text-[var(--clicks-text)] disabled:opacity-25";
 const STORE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://www.mmhcard.com";
@@ -408,8 +409,11 @@ function ImageDialog({ initial, token, onClose, onSave }: { initial: ImageSectio
 export function StoreDesignClient() {
   const { data: settings, loading, error, reload, token, setData } = useAdminQuery((tok) => getSiteSettings(tok));
   const { data: catalog } = useAdminQuery(async (tok) => {
-    const [cats, prods] = await Promise.all([listCategories(tok, { page_size: 200 }), listProducts(tok, { page_size: 100 })]);
-    return { categories: asList(cats).items as AdminCategory[], products: asList(prods).items as AdminProduct[] };
+    const [categories, products] = await Promise.all([
+      fetchAllPages<AdminCategory>((params) => listCategories(tok, params)),
+      fetchAllPages<AdminProduct>((params) => listProducts(tok, params)),
+    ]);
+    return { categories, products };
   });
   const [round, setRound] = useState(0);
   return (
@@ -465,9 +469,18 @@ function DesignEditor({
   const dirty = JSON.stringify({ t: theme, l: layout }) !== saved;
   const categoryName = (slug: string) => categories.find((c) => c.slug === slug)?.name_en ?? slug;
   const missingBuiltins = BUILTIN_SECTIONS.filter((key) => !layout.some((s) => s.type === key));
+  const tooLight = isBackgroundTooLight(theme.background);
+
+  // Warn before leaving the page with unsaved changes.
+  useEffect(() => {
+    if (!dirty) return;
+    const onLeave = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", onLeave);
+    return () => window.removeEventListener("beforeunload", onLeave);
+  }, [dirty]);
 
   async function save() {
-    if (!token) return;
+    if (!token || tooLight) return;
     setSaving(true);
     try {
       const next = await updateSiteSettings(token, { theme, home_layout: layout });
@@ -527,6 +540,11 @@ function DesignEditor({
               <ColorInput id="c-secondary" label="Second colour (glow, highlights)" value={theme.secondary} onChange={(v) => setTheme({ ...theme, secondary: v })} />
               <ColorInput id="c-background" label="Background" value={theme.background} onChange={(v) => setTheme({ ...theme, background: v })} />
             </div>
+            {tooLight ? (
+              <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700">
+                This background is too light. The store&apos;s text is white, so it would be hard to read. Pick a darker background.
+              </p>
+            ) : null}
             <fieldset className="space-y-2">
               <legend className="mb-1 text-[12px] font-medium text-[var(--clicks-text)]">Neon glow</legend>
               <div className="grid gap-2 sm:grid-cols-3">
@@ -646,7 +664,7 @@ function DesignEditor({
             <button type="button" className="rounded-md px-2 py-1 text-white/80 hover:text-white" onClick={onUndo}>
               Undo
             </button>
-            <button type="button" className="rounded-md bg-white px-3 py-1 font-semibold text-[var(--clicks-navy)]" onClick={save} disabled={saving}>
+            <button type="button" className="rounded-md bg-white px-3 py-1 font-semibold text-[var(--clicks-navy)]" onClick={save} disabled={saving || tooLight} title={tooLight ? "Pick a darker background first" : undefined}>
               {saving ? "Saving…" : "Save & publish"}
             </button>
           </div>

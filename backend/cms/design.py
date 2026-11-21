@@ -33,6 +33,13 @@ MAX_PRODUCTS = 24
 DEFAULT_HOME_LAYOUT = [{"id": key, "type": key, "visible": True} for key in BUILTIN_SECTIONS]
 
 
+def background_too_light(hex_colour: str) -> bool:
+    """The storefront's text is white; keep the background dark (same rule as the panel)."""
+    n = int(hex_colour[1:], 16)
+    r, g, b = (n >> 16) & 255, (n >> 8) & 255, n & 255
+    return 0.299 * r + 0.587 * g + 0.114 * b > 90
+
+
 def clean_theme(value) -> dict:
     if value in (None, "") or value == {}:
         return {}
@@ -44,6 +51,8 @@ def clean_theme(value) -> dict:
         if not HEX.match(raw):
             raise ValueError(f"{key}: use a colour like #f7c037.")
         cleaned[key] = raw.lower()
+    if background_too_light(cleaned["background"]):
+        raise ValueError("background: the store's text is white, so pick a darker background.")
     neon = str(value.get("neon") or DEFAULT_THEME["neon"]).strip().lower()
     if neon not in NEON_LEVELS:
         raise ValueError("neon must be off, accents or full.")

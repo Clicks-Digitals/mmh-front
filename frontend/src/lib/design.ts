@@ -135,6 +135,13 @@ function mix(hex: string, target: [number, number, number], amount: number): str
 const lighten = (hex: string, amount: number) => mix(hex, [255, 255, 255], amount);
 const darken = (hex: string, amount: number) => mix(hex, [0, 0, 0], amount);
 
+/** The storefront's text is white, so the background must stay dark (same rule as the backend). */
+export function isBackgroundTooLight(hex: string): boolean {
+  if (!HEX.test(hex)) return false;
+  const [r, g, b] = hexToRgb(hex);
+  return 0.299 * r + 0.587 * g + 0.114 * b > 90;
+}
+
 /** Dark or light text that reads on the given colour. */
 function readableOn(hex: string): string {
   const [r, g, b] = hexToRgb(hex);

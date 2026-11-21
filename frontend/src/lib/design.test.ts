@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_HOME_LAYOUT, DEFAULT_THEME, normalizeHomeLayout, normalizeTheme, themeCss } from "@/lib/design";
+import { DEFAULT_HOME_LAYOUT, DEFAULT_THEME, THEME_PRESETS, isBackgroundTooLight, normalizeHomeLayout, normalizeTheme, themeCss } from "@/lib/design";
 import { moveSection, sectionSummary } from "@/components/admin/modules/store-design-client";
 import { productsForSection } from "@/components/home/home-custom-sections";
 import { PRODUCTS } from "@/data/products";
 
 describe("store design", () => {
+  it("blocks light backgrounds but allows every preset", () => {
+    expect(isBackgroundTooLight("#ffffff")).toBe(true);
+    expect(isBackgroundTooLight("#d0d0d0")).toBe(true);
+    for (const preset of THEME_PRESETS) expect(isBackgroundTooLight(preset.theme.background)).toBe(false);
+  });
+
   it("falls back to the built-in look", () => {
     expect(normalizeTheme(undefined)).toEqual(DEFAULT_THEME);
     expect(normalizeTheme({ primary: "nope", neon: "max" })).toEqual(DEFAULT_THEME);
