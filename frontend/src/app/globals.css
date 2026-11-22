@@ -596,6 +596,24 @@ body:has(.clicks-shell) {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 70%, transparent), 0 0 16px -4px var(--primary);
   text-shadow: 0 0 10px color-mix(in srgb, var(--primary) 60%, transparent);
 }
+/* Side menu rows: full-width, so the glow is gold text plus a lit bar on the reading-start edge. */
+:is([data-neon="accents"], [data-neon="full"]) .mmh-neon-row {
+  transition: color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease, text-shadow 0.18s ease;
+}
+:is([data-neon="accents"], [data-neon="full"]) .mmh-neon-row:is(:hover, :focus-visible, :active) {
+  color: var(--primary);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--primary) 60%, transparent);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 14%, transparent), transparent 70%);
+  box-shadow: inset 3px 0 0 var(--primary), inset 14px 0 18px -14px var(--primary);
+}
+[dir="rtl"] :is([data-neon="accents"], [data-neon="full"]) .mmh-neon-row:is(:hover, :focus-visible, :active) {
+  background: linear-gradient(270deg, color-mix(in srgb, var(--primary) 14%, transparent), transparent 70%);
+  box-shadow: inset -3px 0 0 var(--primary), inset -14px 0 18px -14px var(--primary);
+}
+:is([data-neon="accents"], [data-neon="full"]) .mmh-neon-row:is(:hover, :focus-visible, :active) svg {
+  color: var(--primary);
+  filter: drop-shadow(0 0 4px var(--primary));
+}
 @media (hover: hover) {
   :is([data-neon="accents"], [data-neon="full"]) [data-mmh-nav] {
     transition: box-shadow 0.25s ease, border-color 0.25s ease, background-color 0.25s ease;

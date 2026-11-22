@@ -185,7 +185,7 @@ function MobileMenuPanel() {
     const pad = depth === 0 ? "ps-5" : depth === 1 ? "ps-9" : "ps-12";
     const text =
       depth === 0 ? "min-h-[54px] text-[15px] font-semibold text-white" : depth === 1 ? "min-h-11 text-[14px] text-white/85" : "min-h-10 text-[13px] text-white/70";
-    const base = cn("flex w-full items-center justify-between gap-3 pe-5 text-start transition hover:bg-white/5 hover:text-white", pad, text);
+    const base = cn("mmh-neon-row flex w-full items-center justify-between gap-3 pe-5 text-start transition hover:bg-white/5 hover:text-white", pad, text);
     if (!row.children.length) {
       const content = <span className="min-w-0 truncate">{row.label}</span>;
       return (
@@ -236,7 +236,7 @@ function MobileMenuPanel() {
           <button
             ref={closeRef}
             type="button"
-            className={cn(ICON_HIT, "h-10 w-10 text-white hover:bg-white/10")}
+            className={cn(ICON_HIT, "mmh-neon-hover h-10 w-10 rounded-xl text-white hover:bg-white/10")}
             onClick={close}
             aria-label={t("nav.close")}
           >
@@ -247,7 +247,7 @@ function MobileMenuPanel() {
         <nav className="flex-1 overflow-y-auto overscroll-contain" aria-label={t("nav.menu")}>
           <ul className="border-t border-white/10">
             <li className="border-b border-white/10">
-              <Link href="/" onClick={close} className={cn("flex min-h-[54px] items-center px-5 text-[15px] font-semibold text-white hover:bg-white/5", pathname === "/" && "text-gold")}>
+              <Link href="/" onClick={close} className={cn("mmh-neon-row flex min-h-[54px] items-center px-5 text-[15px] font-semibold text-white hover:bg-white/5", pathname === "/" && "text-gold")}>
                 {t("common.home")}
               </Link>
             </li>
@@ -275,7 +275,7 @@ function MobileMenuPanel() {
                   href={href}
                   onClick={close}
                   className={cn(
-                    "flex min-h-11 items-center gap-2 rounded-xl bg-white/5 px-3 font-medium text-white hover:bg-white/10",
+                    "mmh-neon-hover flex min-h-11 items-center gap-2 rounded-xl bg-white/5 px-3 font-medium text-white hover:bg-white/10",
                     active(href) && "text-gold",
                   )}
                 >
