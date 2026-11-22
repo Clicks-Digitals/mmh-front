@@ -1,6 +1,5 @@
 "use client";
 
-import { CurrencySelect } from "@/components/navigation/currency-select";
 import { LanguageSwitcher } from "@/components/navigation/language-switcher";
 import { ICON_HIT } from "@/components/ui/control";
 import { useLanguage } from "@/context/language-context";
@@ -289,8 +288,6 @@ function MobileMenuPanel() {
 
           <div className="p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
             <LanguageSwitcher />
-            <p className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-wider text-muted">{t("currency.label")}</p>
-            <CurrencySelect tone="menu" />
           </div>
         </nav>
       </aside>

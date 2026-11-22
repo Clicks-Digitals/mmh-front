@@ -23,7 +23,7 @@ export function ProductGallery({ product, className }: { product: Product; class
   return (
     <div className={cn("space-y-3", className)}>
       <div
-        className="relative overflow-hidden rounded-[16px] border border-line bg-[#17182B]"
+        className="mmh-neon-frame relative overflow-hidden rounded-[16px] border border-line bg-[#17182B]"
         onKeyDown={(event) => {
           if (!many) return;
           if (event.key === "ArrowRight") step(1);

@@ -31,9 +31,9 @@ export function Header() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  const iconButton = cn(ICON_HIT, "h-10 w-10 rounded-xl text-fg hover:bg-white/8");
+  const iconButton = cn(ICON_HIT, "mmh-neon-hover h-10 w-9 shrink-0 rounded-xl text-fg hover:bg-white/8 sm:w-10");
   const textButton = cn(
-    "inline-flex h-10 items-center gap-1.5 rounded-xl px-2.5 text-[13px] font-medium text-fg/85 transition-colors hover:bg-white/8 hover:text-fg",
+    "mmh-neon-hover inline-flex h-10 items-center gap-1.5 rounded-xl px-2.5 text-[13px] font-medium text-fg/85 transition-colors hover:bg-white/8 hover:text-fg",
     FOCUS_RING,
   );
 
@@ -49,17 +49,18 @@ export function Header() {
     >
       <div className="container-mmh grid h-16 grid-cols-[1fr_auto_1fr] items-center gap-2 sm:h-[72px]">
         <div className="flex min-w-0 items-center gap-0.5 sm:gap-1">
-          <button type="button" className={cn(textButton, "ps-2 text-[14px] font-semibold text-fg")} onClick={() => setMobileNavOpen(true)}>
-            <Menu className="h-6 w-6" strokeWidth={2.25} aria-hidden />
+          <button type="button" className={cn(textButton, "shrink-0 px-1.5 text-[14px] font-semibold text-fg sm:px-2.5 sm:ps-2")} onClick={() => setMobileNavOpen(true)}>
+            <Menu className="h-6 w-6 shrink-0" strokeWidth={2.25} aria-hidden />
             <span className="hidden sm:inline">{t("nav.menu")}</span>
             <span className="sr-only sm:hidden">{t("nav.menu")}</span>
           </button>
           <button type="button" className={iconButton} onClick={() => setSearchOpen(true)} aria-label={t("nav.search")}>
             <Search className="h-5 w-5" />
           </button>
+          <CurrencySelect tone="compact" className="lg:hidden" />
         </div>
 
-        <Logo className="justify-self-center" size={40} />
+        <Logo className="justify-self-center max-[350px]:[&>span]:hidden" size={40} />
 
         <div className="flex min-w-0 items-center justify-end gap-0.5 sm:gap-1">
           <button
@@ -109,7 +110,7 @@ function NavbarLinks() {
   if (!links.length) return null;
   return (
     <nav aria-label="Featured" className="border-t border-line/60">
-      <ul className="container-mmh flex h-11 items-center gap-1 overflow-x-auto [scrollbar-width:none] sm:justify-center [&::-webkit-scrollbar]:hidden">
+      <ul className="container-mmh flex h-11 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] sm:justify-center [&::-webkit-scrollbar]:hidden">
         {links.map((link) => {
           const active = pathname === link.href || pathname.startsWith(`${link.href}/`);
           return (
@@ -117,7 +118,7 @@ function NavbarLinks() {
               <Link
                 href={link.href}
                 className={cn(
-                  "inline-flex h-8 items-center rounded-lg px-3 text-[13px] font-medium transition-colors",
+                  "mmh-neon-hover inline-flex h-8 items-center rounded-lg px-3 text-[13px] font-medium transition-colors",
                   FOCUS_RING,
                   active ? "bg-white/10 text-gold" : "text-fg/80 hover:bg-white/8 hover:text-fg",
                 )}

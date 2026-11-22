@@ -14,39 +14,15 @@ function symbolOf(code: string, locale: "en" | "ar") {
   return locale === "ar" ? meta.symbolAr : meta.symbolEn === code ? "" : meta.symbolEn;
 }
 
-/** Display-currency picker (prices are still charged in JOD). Hidden when only JOD is on. */
-export function CurrencySelect({ className, tone = "header" }: { className?: string; tone?: "header" | "menu" }) {
-  const { currency, currencies, setCurrency } = useCurrency();
-  const { t, locale } = useLanguage();
+/** Display-currency picker (prices are still charged in JOD). Hidden when only JOD is on.
+ *  "compact" shows just the code (phone header). */
+export function CurrencySelect({ className, tone = "header" }: { className?: string; tone?: "header" | "compact" }) {
+  const { currencies } = useCurrency();
   if (currencies.length < 2) return null;
-  if (tone === "menu") {
-    return (
-      <div className={cn("w-full", className)} role="group" aria-label={t("currency.label")}>
-        <div className="grid grid-cols-3 gap-1.5">
-          {currencies.map((c) => {
-            const active = c.code === currency.code;
-            return (
-              <button
-                key={c.code}
-                type="button"
-                title={currencyName(c.code, locale)}
-                onClick={() => setCurrency(c.code)}
-                className={cn("mmh-chip flex flex-col items-center px-1 py-1.5 text-center", FOCUS_RING)}
-                aria-pressed={active}
-              >
-                <span className={cn("text-[13px] font-bold", active ? "text-gold" : "text-fg")}>{c.code}</span>
-                <span className="truncate text-[10px] text-muted">{currencyName(c.code, locale)}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    );
-  }
-  return <CurrencyPopover className={className} />;
+  return <CurrencyPopover className={className} compact={tone === "compact"} />;
 }
 
-function CurrencyPopover({ className }: { className?: string }) {
+function CurrencyPopover({ className, compact = false }: { className?: string; compact?: boolean }) {
   const { currency, currencies, setCurrency } = useCurrency();
   const { t, locale } = useLanguage();
   const [open, setOpen] = useState(false);
@@ -113,14 +89,15 @@ function CurrencyPopover({ className }: { className?: string }) {
           }
         }}
         className={cn(
-          "inline-flex h-10 items-center gap-1 rounded-xl px-2.5 text-[13px] font-medium text-fg/85 transition hover:bg-white/8 hover:text-fg",
+          "mmh-neon-hover inline-flex h-10 items-center gap-1 rounded-xl text-[13px] font-medium text-fg/85 transition hover:bg-white/8 hover:text-fg",
+          compact ? "shrink-0 px-1 text-[12px]" : "px-2.5",
           open && "bg-white/8 text-fg",
           FOCUS_RING,
         )}
       >
-        <span className="text-muted">{t("currency.label")}:</span>
+        {compact ? null : <span className="text-muted">{t("currency.label")}:</span>}
         <span className="font-semibold">{currency.code}</span>
-        <ChevronDown className={cn("h-3.5 w-3.5 opacity-60 transition-transform", open && "rotate-180")} aria-hidden />
+        {compact ? null : <ChevronDown className={cn("h-3.5 w-3.5 opacity-60 transition-transform", open && "rotate-180")} aria-hidden />}
       </button>
       {open ? (
         <ul
@@ -131,7 +108,7 @@ function CurrencyPopover({ className }: { className?: string }) {
           aria-label={t("currency.label")}
           aria-activedescendant={`${listId}-${active}`}
           onKeyDown={onListKey}
-          className="mmh-currency-pop absolute end-0 top-full z-[var(--z-dropdown)] mt-2 max-h-[min(70vh,26rem)] w-64 overflow-y-auto overscroll-contain rounded-2xl border border-line-strong bg-elevated/95 p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)] outline-none backdrop-blur-md"
+          className={cn("mmh-currency-pop absolute top-full z-[var(--z-dropdown)] mt-2 max-h-[min(70vh,26rem)] w-64 overflow-y-auto overscroll-contain rounded-2xl border border-line-strong bg-elevated/95 p-1.5 shadow-[0_18px_50px_rgba(0,0,0,0.5)] outline-none backdrop-blur-md", compact ? "start-0" : "end-0")}
         >
           {currencies.map((c, index) => {
             const selected = c.code === currency.code;

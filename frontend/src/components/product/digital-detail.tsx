@@ -249,7 +249,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
       {qtyNotice && !soldOut ? <p className="text-xs text-amber">{qtyNotice}</p> : null}
       {left && stockOk ? <p className="text-xs font-medium text-amber">{t("stock.onlyNLeft", { count: left })}</p> : null}
 
-      <div className="flex items-center justify-between gap-3 rounded-xl bg-brand-deep px-4 py-3.5 text-white">
+      <div className="mmh-neon-frame flex items-center justify-between gap-3 rounded-xl border border-transparent bg-brand-deep px-4 py-3.5 text-white">
         <span className="min-w-0">
           <span className="block text-sm font-medium text-white/75">{t("product.optionPrice")}</span>
           {regionLine ? <span className="block truncate text-xs text-white/60">{regionLine}</span> : null}
@@ -273,14 +273,14 @@ export function DigitalProductDetail({ product }: { product: Product }) {
 
       <div className="flex gap-2">
         <Button
-          className="min-h-12 flex-1"
+          className="mmh-neon-btn min-h-12 flex-1"
           disabled={!stockOk}
           aria-describedby={nextStep ? "product-buy-hint" : undefined}
           onClick={addToCart}
         >
           {soldOut ? t("product.outOfStock") : t("product.add")}
         </Button>
-        <Button className="min-h-12 flex-1" variant="outline" disabled={!stockOk} aria-disabled={!stockOk} onClick={startBuyNow}>
+        <Button className="mmh-neon-btn min-h-12 flex-1" variant="outline" disabled={!stockOk} aria-disabled={!stockOk} onClick={startBuyNow}>
           {t("product.buyNow")}
         </Button>
       </div>
@@ -345,7 +345,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
           <p className="mt-3 text-sm text-muted">{deliveryText}</p>
 
           {!hasConfigurableOptions ? (
-            <div className="mt-6 space-y-5 rounded-2xl border border-line bg-card p-4 sm:p-5">
+            <div className="mmh-neon-frame mt-6 space-y-5 rounded-2xl border border-line bg-card p-4 sm:p-5">
               <div>
                 {soldOut ? (
                   <>
@@ -366,7 +366,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
             </div>
           ) : null}
 
-          <div className="mt-6 overflow-hidden rounded-2xl border border-line bg-card">
+          <div className="mmh-neon-frame mt-6 overflow-hidden rounded-2xl border border-line bg-card">
             <div className="flex gap-1 border-b border-line bg-elevated/70 p-1.5">
               {tabs.map((tab) => (
                 <button
@@ -552,7 +552,7 @@ export function DigitalProductDetail({ product }: { product: Product }) {
         </button>
       </div>
 
-      <div className="fixed inset-x-0 bottom-0 z-[35] border-t border-line bg-card/97 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-12px_40px_rgba(23,24,43,0.12)] backdrop-blur-md">
+      <div className="mmh-neon-bar fixed inset-x-0 bottom-0 z-[35] border-t border-line bg-card/97 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-12px_40px_rgba(23,24,43,0.12)] backdrop-blur-md">
         <div className="container-mmh flex items-center gap-3">
           <div className="hidden h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-line bg-[#17182b] sm:block">
             <ProductCover product={product} shot="cover" compact label={productName} className="aspect-square h-full w-full p-0 [&_img]:p-1" />
@@ -571,10 +571,10 @@ export function DigitalProductDetail({ product }: { product: Product }) {
               onLimit={(max) => setQtyNotice(t("product.qtyMax", { max }))}
             />
           </div>
-          <Button className="min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" disabled={!stockOk} onClick={addToCart}>
+          <Button className="mmh-neon-btn min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" disabled={!stockOk} onClick={addToCart}>
             {soldOut ? t("product.outOfStock") : t("product.add")}
           </Button>
-          <Button className="min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" variant="secondary" disabled={!stockOk} aria-disabled={!stockOk} onClick={startBuyNow}>
+          <Button className="mmh-neon-btn-alt min-h-11 min-w-0 flex-1 px-3 text-sm sm:flex-none sm:min-w-[8.5rem]" variant="secondary" disabled={!stockOk} aria-disabled={!stockOk} onClick={startBuyNow}>
             {t("product.buyNow")}
           </Button>
         </div>
